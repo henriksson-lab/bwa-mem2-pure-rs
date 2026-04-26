@@ -6,6 +6,7 @@ use crate::generated::bwa_h::bseq1_t;
 use crate::generated::bwamem_cpp::{mem_opt_init, mem_process_seqs, with_current_rayon_pool};
 use crate::generated::bwamem_h::{mem_opt_t, worker_t};
 use crate::generated::fmi_search_cpp::FMI_search;
+use crate::output::RunOutput;
 
 const MEM_F_PE: i32 = 0x2;
 
@@ -26,9 +27,39 @@ pub struct MemAligner {
     rayon_pool: Option<Arc<rayon::ThreadPool>>,
 }
 
+pub struct MemAlignerBuilder<'a> {
+    index_prefix: &'a Path,
+    threads: usize,
+    rayon_pool: Option<Arc<rayon::ThreadPool>>,
+}
+
+impl<'a> MemAlignerBuilder<'a> {
+    pub fn threads(mut self, threads: usize) -> Self {
+        self.threads = threads;
+        self
+    }
+
+    pub fn thread_pool(mut self, rayon_pool: Arc<rayon::ThreadPool>) -> Self {
+        self.rayon_pool = Some(rayon_pool);
+        self
+    }
+
+    pub fn build(self) -> Result<MemAligner> {
+        MemAligner::new_inner(self.index_prefix, self.threads, self.rayon_pool)
+    }
+}
+
 impl MemAligner {
+    pub fn builder(index_prefix: &Path) -> MemAlignerBuilder<'_> {
+        MemAlignerBuilder {
+            index_prefix,
+            threads: 1,
+            rayon_pool: None,
+        }
+    }
+
     pub fn new(index_prefix: &Path, threads: usize) -> Result<Self> {
-        Self::new_inner(index_prefix, threads, None)
+        Self::builder(index_prefix).threads(threads).build()
     }
 
     pub fn new_with_thread_pool(
@@ -36,7 +67,10 @@ impl MemAligner {
         threads: usize,
         rayon_pool: Arc<rayon::ThreadPool>,
     ) -> Result<Self> {
-        Self::new_inner(index_prefix, threads, Some(rayon_pool))
+        Self::builder(index_prefix)
+            .threads(threads)
+            .thread_pool(rayon_pool)
+            .build()
     }
 
     fn new_inner(
@@ -143,6 +177,24 @@ impl MemAligner {
         Ok(sam)
     }
 
+    pub fn write_sam_for_pairs(
+        &mut self,
+        pairs: &[MemReadPair<'_>],
+        output: &dyn RunOutput,
+    ) -> Result<()> {
+        for line in self.sam_header()?.lines() {
+            output
+                .stdout(format_args!("{line}"))
+                .map_err(|e| format!("failed to write SAM header: {e}"))?;
+        }
+        for line in self.align_pairs(pairs)? {
+            output
+                .stdout(format_args!("{}", line.trim_end_matches('\n')))
+                .map_err(|e| format!("failed to write SAM record: {e}"))?;
+        }
+        Ok(())
+    }
+
     fn bns(&self) -> Result<&bntseq_t> {
         self.worker
             .fmi
@@ -188,22 +240,41 @@ fn make_bseq(id: i32, name: &str, seq: &[u8], qual: &[u8]) -> Result<bseq1_t> {
 #[cfg(test)]
 mod tests {
     use super::MemAligner;
+    use super::MemAlignerBuilder;
+    use crate::output::{RunOutput, SharedWriterOutput};
     use rayon::ThreadPoolBuilder;
     use std::sync::Arc;
 
     #[test]
-    fn new_with_thread_pool_is_available() {
-        let _ctor: fn(
-            &std::path::Path,
-            usize,
-            Arc<rayon::ThreadPool>,
-        ) -> super::Result<MemAligner> = MemAligner::new_with_thread_pool;
+    fn builder_api_is_available() {
+        let _builder: fn(&std::path::Path) -> MemAlignerBuilder<'_> = MemAligner::builder;
         let pool = Arc::new(
             ThreadPoolBuilder::new()
                 .num_threads(1)
                 .build()
                 .expect("thread pool"),
         );
+        let _builder = MemAligner::builder(std::path::Path::new("index"))
+            .threads(1)
+            .thread_pool(pool.clone());
         assert_eq!(pool.current_num_threads(), 1);
+    }
+
+    #[test]
+    fn legacy_new_with_thread_pool_is_available() {
+        let _ctor: fn(
+            &std::path::Path,
+            usize,
+            Arc<rayon::ThreadPool>,
+        ) -> super::Result<MemAligner> = MemAligner::new_with_thread_pool;
+    }
+
+    #[test]
+    fn output_capture_api_is_available() {
+        let output = SharedWriterOutput::with_stream_labels(Vec::new());
+        output.stdout(format_args!("@HD\tVN:1.6")).unwrap();
+        output.stderr(format_args!("diagnostic")).unwrap();
+        let text = String::from_utf8(output.into_inner().unwrap()).unwrap();
+        assert_eq!(text, "[stdout] @HD\tVN:1.6\n[stderr] diagnostic\n");
     }
 }

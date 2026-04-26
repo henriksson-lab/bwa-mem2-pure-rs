@@ -7,4 +7,5 @@
 
 pub mod generated;
 pub mod mem_api;
+pub mod output;
 pub mod support;

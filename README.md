@@ -27,6 +27,53 @@ But:
 
 This blurb might be out of date. Go to [this page](https://github.com/henriksson-lab/rustification) for the latest information and further information about how we approach translation
 
+## Library Usage
+
+Add the crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+bwa-mem2-pure-rs = "0.1"
+```
+
+Load an existing `bwa-mem2` index once, then align paired reads in batches:
+
+```rust
+use std::path::Path;
+
+use bwa_mem2_pure_rs::mem_api::{MemAligner, MemReadPair};
+use bwa_mem2_pure_rs::output::SharedWriterOutput;
+
+fn main() -> Result<(), String> {
+    let index_prefix = Path::new("ref/ecoli_rel606");
+    let mut aligner = MemAligner::builder(index_prefix)
+        .threads(2)
+        .build()?;
+
+    let pairs = vec![MemReadPair {
+        name: "read-1".to_string(),
+        r1: b"ACGTACGTACGT",
+        q1: b"FFFFFFFFFFFF",
+        r2: b"TGCATGCATGCA",
+        q2: b"FFFFFFFFFFFF",
+    }];
+
+    print!("{}", aligner.sam_header()?);
+    for sam_record in aligner.align_pairs(&pairs)? {
+        print!("{sam_record}");
+    }
+
+    // Or capture output instead of writing to process stdout/stderr.
+    let captured = SharedWriterOutput::with_stream_labels(Vec::new());
+    aligner.write_sam_for_pairs(&pairs, &captured)?;
+    let captured_text = String::from_utf8(captured.into_inner().unwrap()).unwrap();
+    assert!(captured_text.contains("[stdout] @SQ"));
+
+    Ok(())
+}
+```
+
+The index files must already exist for `index_prefix`, for example from `bwa-mem2-rs index -p ref/ecoli_rel606 ref/ecoli_rel606.fasta`. For server applications that already use Rayon, pass an existing `Arc<rayon::ThreadPool>` with `.thread_pool(pool)` to share it instead of creating an internal pool. The `output` module also provides `StdioOutput` and `SharedWriterOutput` for stdout/stderr-style library capture.
 
 ## Benchmark Setup
 
