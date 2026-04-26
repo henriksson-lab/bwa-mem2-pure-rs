@@ -1,0 +1,17 @@
+[package]
+name = "bwa-mem2-rs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+libc = "0.2"
+rayon = "1.10"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
