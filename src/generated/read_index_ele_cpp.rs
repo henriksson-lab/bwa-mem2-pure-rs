@@ -1,18 +1,25 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/read_index_ele.cpp`.
 
 use std::io::Read;
 use std::path::Path;
 
-use crate::generated::bntseq_cpp::bns_restore;
 use crate::generated::bntseq_cpp::bns_destroy;
-use crate::generated::read_index_ele_h::{bwaidx_fm_t, BWA_IDX_BNS, BWA_IDX_PAC, indexEle};
+use crate::generated::bntseq_cpp::bns_restore;
+use crate::generated::read_index_ele_h::{bwaidx_fm_t, indexEle, BWA_IDX_BNS, BWA_IDX_PAC};
 
 impl indexEle {
     #[doc = "Original function: indexEle::indexEle:40"]
     pub fn ctor() -> Self {
-        Self { idx: bwaidx_fm_t::default() }
+        Self {
+            idx: bwaidx_fm_t::default(),
+        }
     }
 
     #[doc = "Original function: indexEle::~indexEle:46"]
@@ -129,7 +136,10 @@ mod tests {
     fn infer_prefix_returns_none_when_missing() {
         let prefix = temp_prefix("missing");
         let ele = indexEle::ctor();
-        assert_eq!(ele.bwa_idx_infer_prefix(prefix.to_str().expect("utf8 path")), None);
+        assert_eq!(
+            ele.bwa_idx_infer_prefix(prefix.to_str().expect("utf8 path")),
+            None
+        );
         fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
     }
 

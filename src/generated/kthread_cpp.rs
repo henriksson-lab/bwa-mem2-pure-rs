@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kthread.cpp`.
 
@@ -13,6 +18,10 @@ pub fn ktf_worker(_arg0: crate::support::Opaque) {
 }
 
 #[doc = "Original function: kt_for:80"]
-pub fn kt_for(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque) {
+pub fn kt_for(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+) {
     crate::support::stub::<()>("kt_for")
 }

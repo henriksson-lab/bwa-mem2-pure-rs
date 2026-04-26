@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kopen.cpp`.
 
@@ -38,17 +43,27 @@ impl Default for koaux_t {
 }
 
 #[doc = "Original function: socket_wait:65"]
-pub fn socket_wait(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn socket_wait(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("socket_wait")
 }
 
 #[doc = "Original function: socket_connect:80"]
-pub fn socket_connect(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn socket_connect(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("socket_connect")
 }
 
 #[doc = "Original function: write_bytes:102"]
-pub fn write_bytes(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque) -> crate::support::Opaque {
+pub fn write_bytes(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("write_bytes")
 }
 
@@ -63,7 +78,11 @@ pub fn kftp_get_response(_arg0: crate::support::Opaque) -> crate::support::Opaqu
 }
 
 #[doc = "Original function: kftp_send_cmd:215"]
-pub fn kftp_send_cmd(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque) -> crate::support::Opaque {
+pub fn kftp_send_cmd(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("kftp_send_cmd")
 }
 
@@ -78,7 +97,12 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
     if trimmed.is_empty() {
         return None;
     }
-    Some(trimmed.split_whitespace().map(ToString::to_string).collect())
+    Some(
+        trimmed
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect(),
+    )
 }
 
 #[doc = "Original function: kopen:312"]
@@ -124,7 +148,10 @@ pub fn kclose(aux: koaux_t) -> i32 {
 }
 
 #[doc = "Original function: main:401"]
-pub fn main(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn main(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("main")
 }
 

@@ -1,17 +1,28 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bwa.cpp`.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use crate::generated::bwa_h::bseq1_t;
+use crate::generated::bntseq_cpp::bns_get_seq_into;
 use crate::generated::bntseq_h::bntseq_t;
-use crate::generated::bntseq_cpp::bns_get_seq;
+use crate::generated::bwa_h::bseq1_t;
 use crate::generated::kseq_h::{kseq_read, kseq_t};
-use crate::generated::ksw_cpp::ksw_global2;
 use crate::generated::kstring_h::{kputc, kputw, kstring_t};
+use crate::generated::ksw_cpp::ksw_global2;
 use crate::generated::utils_cpp::{err_fputc, err_fputs, ErrFile};
+
+// Thread-local rseq scratch for bwa_gen_cigar2 (allocated once per ~100K alignments otherwise).
+thread_local! {
+    static BWA_GEN_CIGAR_RSEQ: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct bwa_cigar_t {
@@ -37,20 +48,42 @@ pub fn trim_readno(s: &mut kstring_t) {
 
 #[doc = "Original function: kseq2bseq1:68"]
 pub fn kseq2bseq1(ks: &kseq_t, s: &mut bseq1_t) {
-    s.name = Some(ks.name.as_str().to_string());
-    s.comment = if ks.comment.l != 0 { Some(ks.comment.as_str().to_string()) } else { None };
-    s.seq = Some(ks.seq.as_str().to_string());
-    s.qual = if ks.qual.l != 0 { Some(ks.qual.as_str().to_string()) } else { None };
+    s.name = Some(ks.name.as_str().to_string().into_boxed_str());
+    s.comment = if ks.comment.l != 0 {
+        Some(ks.comment.as_str().to_string().into_boxed_str())
+    } else {
+        None
+    };
+    s.seq = Some(ks.seq.as_str().to_string().into_boxed_str());
+    s.qual = if ks.qual.l != 0 {
+        Some(ks.qual.as_str().to_string().into_boxed_str())
+    } else {
+        None
+    };
     s.l_seq = i32::try_from(ks.seq.l).expect("sequence length");
 }
 
 #[doc = "Original function: bseq_read:78"]
-pub fn bseq_read(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque, _arg3: crate::support::Opaque, _arg4: crate::support::Opaque, _arg5: crate::support::Opaque, _arg6: crate::support::Opaque) -> crate::support::Opaque {
+pub fn bseq_read(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+    _arg3: crate::support::Opaque,
+    _arg4: crate::support::Opaque,
+    _arg5: crate::support::Opaque,
+    _arg6: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bseq_read")
 }
 
 #[doc = "Original function: bseq_read_orig:170"]
-pub fn bseq_read_orig(chunk_size: i64, n_: &mut i32, ks1: &mut kseq_t, ks2: Option<&mut kseq_t>, s: &mut i64) -> Vec<bseq1_t> {
+pub fn bseq_read_orig(
+    chunk_size: i64,
+    n_: &mut i32,
+    ks1: &mut kseq_t,
+    ks2: Option<&mut kseq_t>,
+    s: &mut i64,
+) -> Vec<bseq1_t> {
     let mut size = 0_i64;
     let mut seqs = Vec::new();
     let mut ks2 = ks2;
@@ -95,7 +128,12 @@ pub fn bseq_read_orig(chunk_size: i64, n_: &mut i32, ks1: &mut kseq_t, ks2: Opti
 }
 
 #[doc = "Original function: bseq_read_one_fasta_file:218"]
-pub fn bseq_read_one_fasta_file(chunk_size: i64, n_: &mut i32, text: &str, s: &mut i64) -> Vec<bseq1_t> {
+pub fn bseq_read_one_fasta_file(
+    chunk_size: i64,
+    n_: &mut i32,
+    text: &str,
+    s: &mut i64,
+) -> Vec<bseq1_t> {
     let mut ks = kseq_t::from_text(text);
     bseq_read_orig(chunk_size, n_, &mut ks, None, s)
 }
@@ -140,6 +178,7 @@ pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<
 }
 
 #[doc = "Original function: bwa_fill_scmat:248"]
+#[inline]
 pub fn bwa_fill_scmat(a: i32, b: i32, mat: &mut [i8; 25]) {
     let mut k = 0_usize;
     for i in 0..4 {
@@ -187,8 +226,10 @@ pub fn bwa_gen_cigar2(
     }
 
     let mut rlen = 0_i64;
-    let mut rseq = bns_get_seq(l_pac, pac, rb, re, &mut rlen)?;
-    if re - rb != rlen {
+    // Take the thread-local rseq buffer (capacity reused across ~100K calls).
+    let mut rseq = BWA_GEN_CIGAR_RSEQ.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    if !bns_get_seq_into(l_pac, pac, rb, re, &mut rlen, &mut rseq) || re - rb != rlen {
+        BWA_GEN_CIGAR_RSEQ.with(|cell| *cell.borrow_mut() = rseq);
         return None;
     }
 
@@ -212,11 +253,15 @@ pub fn bwa_gen_cigar2(
         }
     } else {
         let half_query = (l_query + 1) >> 1;
-        let max_ins = (((half_query * i32::from(mat[0]) - o_ins) as f64) / e_ins as f64 + 1.0) as i32;
-        let max_del = (((half_query * i32::from(mat[0]) - o_del) as f64) / e_del as f64 + 1.0) as i32;
+        let max_ins =
+            (((half_query * i32::from(mat[0]) - o_ins) as f64) / e_ins as f64 + 1.0) as i32;
+        let max_del =
+            (((half_query * i32::from(mat[0]) - o_del) as f64) / e_del as f64 + 1.0) as i32;
         let mut max_gap = max_ins.max(max_del);
         max_gap = max_gap.max(1);
-        let mut w = (max_gap + i32::try_from((rlen - i64::from(l_query)).abs()).expect("band delta") + 1) >> 1;
+        let mut w =
+            (max_gap + i32::try_from((rlen - i64::from(l_query)).abs()).expect("band delta") + 1)
+                >> 1;
         w = w.min(w_);
         let min_w = i32::try_from((rlen - i64::from(l_query)).abs()).expect("min_w") + 3;
         w = w.max(min_w);
@@ -235,8 +280,16 @@ pub fn bwa_gen_cigar2(
             o_ins,
             e_ins,
             w,
-            if n_cigar_slot.is_some() { Some(&mut n_cigar_tmp) } else { None },
-            if n_cigar_slot.is_some() { Some(&mut cigar_tmp) } else { None },
+            if n_cigar_slot.is_some() {
+                Some(&mut n_cigar_tmp)
+            } else {
+                None
+            },
+            if n_cigar_slot.is_some() {
+                Some(&mut cigar_tmp)
+            } else {
+                None
+            },
         );
         if n_cigar_slot.is_some() {
             if let Some(n_cigar) = n_cigar_slot.as_deref_mut() {
@@ -292,12 +345,17 @@ pub fn bwa_gen_cigar2(
         if let Some(nm) = nm_slot.as_deref_mut() {
             *nm = n_mm + n_gap;
         }
-        md = str.as_bytes().to_vec();
+        // Move the kstring buffer instead of cloning bytes.
+        str.s.truncate(str.l);
+        md = str.s;
     }
 
     if rb >= l_pac {
         query[..l_query_usize].reverse();
     }
+
+    // Restore the rseq buffer to the thread-local for the next call's reuse.
+    BWA_GEN_CIGAR_RSEQ.with(|cell| *cell.borrow_mut() = rseq);
 
     out_cigar.map(|cigar| bwa_cigar_t { cigar, md })
 }
@@ -318,7 +376,9 @@ pub fn bwa_gen_cigar(
     n_cigar: Option<&mut i32>,
     NM: Option<&mut i32>,
 ) -> Option<bwa_cigar_t> {
-    bwa_gen_cigar2(mat, q, r, q, r, w_, l_pac, pac, l_query, query, rb, re, score, n_cigar, NM)
+    bwa_gen_cigar2(
+        mat, q, r, q, r, w_, l_pac, pac, l_query, query, rb, re, score, n_cigar, NM,
+    )
 }
 
 #[doc = "Original function: bwa_idx_infer_prefix:358"]
@@ -332,12 +392,18 @@ pub fn bwa_idx_load_bwt(_arg0: crate::support::Opaque) -> crate::support::Opaque
 }
 
 #[doc = "Original function: bwa_idx_load_from_disk:402"]
-pub fn bwa_idx_load_from_disk(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn bwa_idx_load_from_disk(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx_load_from_disk")
 }
 
 #[doc = "Original function: bwa_idx_load:433"]
-pub fn bwa_idx_load(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn bwa_idx_load(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx_load")
 }
 
@@ -347,7 +413,11 @@ pub fn bwa_idx_destroy(_arg0: crate::support::Opaque) {
 }
 
 #[doc = "Original function: bwa_mem2idx:452"]
-pub fn bwa_mem2idx(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque) -> crate::support::Opaque {
+pub fn bwa_mem2idx(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_mem2idx")
 }
 
@@ -472,11 +542,12 @@ pub fn bwa_insert_header(s: Option<&str>, hdr: Option<String>) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::{
-        bseq_classify, bseq_read_one_fasta_file, bseq_read_orig, bwa_escape, bwa_fill_scmat, bwa_gen_cigar, bwa_gen_cigar2,
-        bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg, kseq2bseq1, trim_readno, BWA_PG, BWA_RG_ID, BWA_VERBOSE,
+        bseq_classify, bseq_read_one_fasta_file, bseq_read_orig, bwa_escape, bwa_fill_scmat,
+        bwa_gen_cigar, bwa_gen_cigar2, bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg,
+        kseq2bseq1, trim_readno, BWA_PG, BWA_RG_ID, BWA_VERBOSE,
     };
-    use crate::generated::bwa_h::bseq1_t;
     use crate::generated::bntseq_h::{bntann1_t, bntseq_t};
+    use crate::generated::bwa_h::bseq1_t;
     use crate::generated::kseq_h::{kseq_read, kseq_t};
     use crate::generated::kstring_h::kstring_t;
     use crate::generated::utils_cpp::{err_fclose, err_xopen_core};
@@ -524,21 +595,57 @@ mod tests {
     #[test]
     fn bseq_classify_splits_singletons_and_pairs_by_adjacent_name() {
         let seqs = vec![
-            bseq1_t { name: Some("solo0".into()), id: 0, ..Default::default() },
-            bseq1_t { name: Some("pair1".into()), id: 1, ..Default::default() },
-            bseq1_t { name: Some("pair1".into()), id: 2, ..Default::default() },
-            bseq1_t { name: Some("solo3".into()), id: 3, ..Default::default() },
-            bseq1_t { name: Some("pair4".into()), id: 4, ..Default::default() },
-            bseq1_t { name: Some("pair4".into()), id: 5, ..Default::default() },
-            bseq1_t { name: Some("solo6".into()), id: 6, ..Default::default() },
+            bseq1_t {
+                name: Some("solo0".into()),
+                id: 0,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("pair1".into()),
+                id: 1,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("pair1".into()),
+                id: 2,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("solo3".into()),
+                id: 3,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("pair4".into()),
+                id: 4,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("pair4".into()),
+                id: 5,
+                ..Default::default()
+            },
+            bseq1_t {
+                name: Some("solo6".into()),
+                id: 6,
+                ..Default::default()
+            },
         ];
         let mut counts = [0, 0];
         let mut sep = [Vec::new(), Vec::new()];
-        bseq_classify(i32::try_from(seqs.len()).expect("len"), &seqs, &mut counts, &mut sep);
+        bseq_classify(
+            i32::try_from(seqs.len()).expect("len"),
+            &seqs,
+            &mut counts,
+            &mut sep,
+        );
 
         assert_eq!(counts, [3, 4]);
         assert_eq!(
-            sep[0].iter().map(|s| s.name.as_deref().unwrap()).collect::<Vec<_>>(),
+            sep[0]
+                .iter()
+                .map(|s| s.name.as_deref().unwrap())
+                .collect::<Vec<_>>(),
             vec!["solo0", "solo3", "solo6"]
         );
         assert_eq!(
@@ -689,7 +796,10 @@ mod tests {
 
     #[test]
     fn bwa_escape_unescapes_control_sequences() {
-        assert_eq!(bwa_escape(r"@RG\tID:foo\nSM:bar\\baz"), "@RG\tID:foo\nSM:bar\\baz");
+        assert_eq!(
+            bwa_escape(r"@RG\tID:foo\nSM:bar\\baz"),
+            "@RG\tID:foo\nSM:bar\\baz"
+        );
     }
 
     #[test]
@@ -716,8 +826,18 @@ mod tests {
         let bns = bntseq_t {
             n_seqs: 2,
             anns: vec![
-                bntann1_t { name: "chr1".into(), len: 10, is_alt: 0, ..Default::default() },
-                bntann1_t { name: "alt1".into(), len: 7, is_alt: 1, ..Default::default() },
+                bntann1_t {
+                    name: "chr1".into(),
+                    len: 10,
+                    is_alt: 0,
+                    ..Default::default()
+                },
+                bntann1_t {
+                    name: "alt1".into(),
+                    len: 7,
+                    is_alt: 1,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };

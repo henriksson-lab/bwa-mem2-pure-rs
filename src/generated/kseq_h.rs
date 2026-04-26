@@ -1,9 +1,14 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kseq.h`.
 
-use flate2::read::MultiGzDecoder;
 use crate::generated::kstring_h::{ks_resize, kstring_t};
+use flate2::read::MultiGzDecoder;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -63,7 +68,12 @@ fn parse_records(text: &str) -> Vec<KseqRecord> {
                 }
                 i += 1;
             }
-            records.push(KseqRecord { name, comment, seq, qual: None });
+            records.push(KseqRecord {
+                name,
+                comment,
+                seq,
+                qual: None,
+            });
             continue;
         }
         if let Some(header) = line.strip_prefix('@') {
@@ -86,7 +96,12 @@ fn parse_records(text: &str) -> Vec<KseqRecord> {
                 qual.push_str(trim_cr(lines[i]));
                 i += 1;
             }
-            records.push(KseqRecord { name, comment, seq, qual: Some(qual) });
+            records.push(KseqRecord {
+                name,
+                comment,
+                seq,
+                qual: Some(qual),
+            });
             continue;
         }
         i += 1;
@@ -228,7 +243,10 @@ impl kseq_t {
     }
 }
 
-fn read_trimmed_line(reader: &mut dyn BufRead, buf: &mut String) -> std::io::Result<Option<String>> {
+fn read_trimmed_line(
+    reader: &mut dyn BufRead,
+    buf: &mut String,
+) -> std::io::Result<Option<String>> {
     buf.clear();
     let n = reader.read_line(buf)?;
     if n == 0 {
@@ -279,7 +297,10 @@ fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
 
     if !is_fastq {
         loop {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf).ok().flatten() else {
+            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
+                .ok()
+                .flatten()
+            else {
                 seq.f.is_eof = 1;
                 break;
             };
@@ -293,7 +314,10 @@ fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
         }
     } else {
         loop {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf).ok().flatten() else {
+            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
+                .ok()
+                .flatten()
+            else {
                 seq.f.is_eof = 1;
                 break;
             };
@@ -306,7 +330,10 @@ fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
         }
         let qual_buf = qual.as_mut().expect("fastq qual");
         while qual_buf.len() < body.len() {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf).ok().flatten() else {
+            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
+                .ok()
+                .flatten()
+            else {
                 seq.f.is_eof = 1;
                 break;
             };
@@ -352,7 +379,12 @@ pub fn kseq_read(seq: &mut kseq_t) -> i64 {
 pub fn kseq_destroy(_ks: kseq_t) {}
 
 #[doc = "Original function: ks_getuntil:152"]
-pub fn ks_getuntil(ks: &mut kstream_t, delimiter: i32, str_: &mut kstring_t, dret: Option<&mut i32>) -> i32 {
+pub fn ks_getuntil(
+    ks: &mut kstream_t,
+    delimiter: i32,
+    str_: &mut kstring_t,
+    dret: Option<&mut i32>,
+) -> i32 {
     let bytes = &ks.input;
     if ks.cursor >= bytes.len() {
         ks.is_eof = 1;
@@ -390,7 +422,11 @@ pub fn ks_getuntil(ks: &mut kstream_t, delimiter: i32, str_: &mut kstring_t, dre
     }
     set_kstring(str_, std::str::from_utf8(out).expect("kseq text utf8"));
     if let Some(dret) = dret {
-        *dret = if end < bytes.len() { i32::from(bytes[end]) } else { 0 };
+        *dret = if end < bytes.len() {
+            i32::from(bytes[end])
+        } else {
+            0
+        };
     }
     i32::try_from(str_.l).expect("ks_getuntil length")
 }
@@ -427,18 +463,26 @@ mod tests {
         let mut ks = kstream_t::from_text("name comment here\nnext");
         let mut out = kstring_t::default();
         let mut delim = 0;
-        assert_eq!(ks_getuntil(&mut ks, KS_SEP_SPACE, &mut out, Some(&mut delim)), 4);
+        assert_eq!(
+            ks_getuntil(&mut ks, KS_SEP_SPACE, &mut out, Some(&mut delim)),
+            4
+        );
         assert_eq!(out.as_str(), "name");
         assert_eq!(delim, i32::from(b' '));
 
-        assert_eq!(ks_getuntil(&mut ks, KS_SEP_LINE, &mut out, Some(&mut delim)), 12);
+        assert_eq!(
+            ks_getuntil(&mut ks, KS_SEP_LINE, &mut out, Some(&mut delim)),
+            12
+        );
         assert_eq!(out.as_str(), "comment here");
         assert_eq!(delim, i32::from(b'\n'));
     }
 
     #[test]
     fn kseq_read_streams_fastq_records_without_preparse() {
-        let reader = Box::new(BufReader::new("@r0 note\nAC\nGT\n+\nII\nJJ\n@r1\nTT\n+\nHH\n".as_bytes()));
+        let reader = Box::new(BufReader::new(
+            "@r0 note\nAC\nGT\n+\nII\nJJ\n@r1\nTT\n+\nHH\n".as_bytes(),
+        ));
         let mut ks = kseq_t::from_reader(reader);
         assert_eq!(kseq_read(&mut ks), 4);
         assert_eq!(ks.name.as_str(), "r0");

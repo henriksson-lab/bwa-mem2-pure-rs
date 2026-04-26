@@ -1,12 +1,17 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bwamem.h`.
 
 use crate::generated::bandedswa_h::SeqPair;
 use crate::generated::bwa_h::bseq1_t;
 use crate::generated::bwt_h::bwtintv_v;
-use crate::generated::fmi_search_h::SMEM;
 use crate::generated::fmi_search_cpp::FMI_search;
+use crate::generated::fmi_search_h::SMEM;
 
 #[doc = "Original struct: abc (bwa-mem2/src/bwamem.h)"]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

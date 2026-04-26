@@ -1,16 +1,18 @@
-use bwa_mem2_rs::generated::bwa_cpp::bseq_read_orig;
+use bwa_mem2_rs::generated::bwa_cpp::{bseq_read_orig, bwa_fill_scmat};
 use bwa_mem2_rs::generated::bwa_h::bseq1_t;
-use bwa_mem2_rs::generated::bwamem_cpp::{mem_chain2aln_across_reads_V2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt};
+use bwa_mem2_rs::generated::bwamem_cpp::{
+    mem_chain2aln_across_reads_V2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt,
+};
 use bwa_mem2_rs::generated::bwamem_h::worker_t;
-use bwa_mem2_rs::generated::bwamem_h::mem_alnreg_v;
+use bwa_mem2_rs::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_seed_t};
 use bwa_mem2_rs::generated::bwamem_pair_cpp::{
     mem_pair, mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
 };
-use bwa_mem2_rs::generated::ksw_h::kswr_t;
-use bwa_mem2_rs::generated::fastmap_cpp::memoryAlloc;
+use bwa_mem2_rs::generated::fastmap_cpp::{memoryAlloc, update_a};
 use bwa_mem2_rs::generated::fastmap_h::ktp_aux_t;
 use bwa_mem2_rs::generated::fmi_search_cpp::FMI_search;
 use bwa_mem2_rs::generated::kseq_h::kseq_t;
+use bwa_mem2_rs::generated::ksw_h::kswr_t;
 
 fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
     let l_pac_usize = usize::try_from(l_pac).expect("l_pac");
@@ -36,6 +38,7 @@ fn main() {
         .unwrap_or("1")
         .parse()
         .expect("n_threads");
+    let extra_args: Vec<String> = args.collect();
 
     let r1_text = std::fs::read_to_string(&r1).expect("read r1");
     let r2_text = std::fs::read_to_string(&r2).expect("read r2");
@@ -46,8 +49,28 @@ fn main() {
     fmi.load_index();
 
     let mut opt = (*mem_opt_init()).clone();
+    let mut opt0 = opt.clone();
     opt.flag |= 0x2;
     opt.n_threads = n_threads.max(1);
+    let mut i = 0;
+    while i < extra_args.len() {
+        match extra_args[i].as_str() {
+            "-A" => {
+                i += 1;
+                opt.a = extra_args[i].parse().expect("-A value");
+                opt0.a = 1;
+            }
+            "-d" => {
+                i += 1;
+                opt.zdrop = extra_args[i].parse().expect("-d value");
+                opt0.zdrop = 1;
+            }
+            other => panic!("unsupported dump flag {other}"),
+        }
+        i += 1;
+    }
+    update_a(&mut opt, &opt0);
+    bwa_fill_scmat(opt.a, opt.b, &mut opt.mat);
 
     let task_size = opt.chunk_size * i64::from(opt.n_threads);
     let aux = ktp_aux_t {
@@ -62,7 +85,13 @@ fn main() {
     let mut batch_index = 0_i64;
     let mut n_processed = 0_i64;
     let seqs = loop {
-        let seqs = bseq_read_orig(task_size, &mut n, &mut ks1, Some(&mut ks2), &mut total_bases);
+        let seqs = bseq_read_orig(
+            task_size,
+            &mut n,
+            &mut ks1,
+            Some(&mut ks2),
+            &mut total_bases,
+        );
         assert!(n > 0, "target not found");
         if seqs
             .iter()
@@ -83,6 +112,15 @@ fn main() {
     worker.seqs = seqs;
     worker.nreads = n;
     worker.n_processed = n_processed;
+    worker.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
+    let n_usize = usize::try_from(n).expect("n");
+    worker.regs.resize(n_usize, mem_alnreg_v::default());
+    worker.chain_ar.resize(n_usize, mem_chain_v::default());
+    let want_seed_buf = usize::try_from(worker.nthreads.max(1))
+        .expect("nthreads")
+        .saturating_mul(bwa_mem2_rs::generated::macro_h::BATCH_SIZE)
+        .saturating_mul(64);
+    worker.seedBuf.resize(want_seed_buf, mem_seed_t::default());
     {
         let fmi_ref = worker.fmi.as_ref().expect("fmi");
         let bns = fmi_ref.base.idx.bns.as_ref().expect("bns");
@@ -138,9 +176,7 @@ fn main() {
         let regs = &worker.regs[seq_idx];
         println!(
             "side={side} name={:?} l_seq={} regs_n={}",
-            seq.name,
-            seq.l_seq,
-            regs.n
+            seq.name, seq.l_seq, regs.n
         );
         for (i, reg) in regs.a.iter().take(regs.n.min(12)).enumerate() {
             println!(
@@ -193,7 +229,7 @@ fn main() {
             a: worker.regs[pair_start + 1].a.clone(),
         },
     ];
-    let pair_seqs = [
+    let _pair_seqs = [
         worker.seqs[pair_start].clone(),
         worker.seqs[pair_start + 1].clone(),
     ];
@@ -213,7 +249,12 @@ fn main() {
     println!("after_primary n_pri={n_pri:?}");
     for side in 0..2usize {
         println!("post_primary side={side}");
-        for (i, reg) in pair_regs[side].a.iter().take(pair_regs[side].n.min(12)).enumerate() {
+        for (i, reg) in pair_regs[side]
+            .a
+            .iter()
+            .take(pair_regs[side].n.min(12))
+            .enumerate()
+        {
             println!(
                 "  reg[{i}] score={} sub={} csub={} qb={} qe={} rb={} re={} sec={} sec_all={} seedcov={}",
                 reg.score, reg.sub, reg.csub, reg.qb, reg.qe, reg.rb, reg.re, reg.secondary, reg.secondary_all, reg.seedcov
@@ -236,7 +277,6 @@ fn main() {
             .expect("bns"),
         &[],
         &worker.pes,
-        &pair_seqs,
         &mut pair_regs,
         i32::try_from(pair_start >> 1).expect("pair id"),
         &mut sub,
@@ -264,7 +304,15 @@ fn main() {
         let reg_pair: &[mem_alnreg_v; 2] = (&sam_regs[i..i + 2]).try_into().expect("reg_pair");
         mem_sam_pe_batch_pre(
             worker.opt.as_deref().expect("opt"),
-            worker.fmi.as_ref().expect("fmi").base.idx.bns.as_ref().expect("bns"),
+            worker
+                .fmi
+                .as_ref()
+                .expect("fmi")
+                .base
+                .idx
+                .bns
+                .as_ref()
+                .expect("bns"),
             &worker.fmi.as_ref().expect("fmi").base.idx.pac,
             &worker.pes,
             pair_id,
@@ -278,7 +326,9 @@ fn main() {
             0,
         );
     }
-    println!("batch_pre pcnt={pcnt} gcnt={gcnt} max_ref_len={max_ref_len} max_qer_len={max_qer_len}");
+    println!(
+        "batch_pre pcnt={pcnt} gcnt={gcnt} max_ref_len={max_ref_len} max_qer_len={max_qer_len}"
+    );
     let pcnt8 = i32::try_from(sort_classify(&mut worker.mmc, i64::from(pcnt), 0)).expect("pcnt8");
     let mut aln = vec![kswr_t::default(); usize::try_from(pcnt + 256).expect("aln len")];
     mem_sam_pe_batch(
@@ -294,8 +344,10 @@ fn main() {
     gcnt = 0;
     for i in (0..usize::try_from(n).expect("n")).step_by(2) {
         let pair_id = u64::try_from(i >> 1).expect("pair_id");
-        let seq_pair: &mut [bseq1_t; 2] = (&mut worker.seqs[i..i + 2]).try_into().expect("seq_pair");
-        let reg_pair: &mut [mem_alnreg_v; 2] = (&mut sam_regs[i..i + 2]).try_into().expect("reg_pair");
+        let seq_pair: &mut [bseq1_t; 2] =
+            (&mut worker.seqs[i..i + 2]).try_into().expect("seq_pair");
+        let reg_pair: &mut [mem_alnreg_v; 2] =
+            (&mut sam_regs[i..i + 2]).try_into().expect("reg_pair");
         if i == pair_start {
             println!("before_batch_post target pair gcnt={gcnt}");
             let gar_ids: Vec<i32> = worker.mmc.seqPairArrayAux[0]
@@ -316,7 +368,12 @@ fn main() {
             }
             for side in 0..2usize {
                 println!("  batch_pre side={side} regs_n={}", reg_pair[side].n);
-                for (j, reg) in reg_pair[side].a.iter().take(reg_pair[side].n.min(12)).enumerate() {
+                for (j, reg) in reg_pair[side]
+                    .a
+                    .iter()
+                    .take(reg_pair[side].n.min(12))
+                    .enumerate()
+                {
                     println!(
                         "    reg[{j}] score={} sub={} csub={} qb={} qe={} rb={} re={} sec={} sec_all={} seedcov={}",
                         reg.score, reg.sub, reg.csub, reg.qb, reg.qe, reg.rb, reg.re, reg.secondary, reg.secondary_all, reg.seedcov
@@ -326,7 +383,15 @@ fn main() {
         }
         mem_sam_pe_batch_post(
             worker.opt.as_deref().expect("opt"),
-            worker.fmi.as_ref().expect("fmi").base.idx.bns.as_ref().expect("bns"),
+            worker
+                .fmi
+                .as_ref()
+                .expect("fmi")
+                .base
+                .idx
+                .bns
+                .as_ref()
+                .expect("bns"),
             &worker.fmi.as_ref().expect("fmi").base.idx.pac,
             &worker.pes,
             pair_id,
@@ -341,15 +406,26 @@ fn main() {
             println!("after_batch_post target pair gcnt={gcnt}");
             for side in 0..2usize {
                 println!("  batch_post side={side} regs_n={}", reg_pair[side].n);
-                for (j, reg) in reg_pair[side].a.iter().take(reg_pair[side].n.min(16)).enumerate() {
+                for (j, reg) in reg_pair[side]
+                    .a
+                    .iter()
+                    .take(reg_pair[side].n.min(16))
+                    .enumerate()
+                {
                     println!(
                         "    reg[{j}] score={} sub={} csub={} qb={} qe={} rb={} re={} sec={} sec_all={} seedcov={}",
                         reg.score, reg.sub, reg.csub, reg.qb, reg.qe, reg.rb, reg.re, reg.secondary, reg.secondary_all, reg.seedcov
                     );
                 }
             }
-            println!("target SAM1={}", worker.seqs[i].sam.as_deref().unwrap_or(""));
-            println!("target SAM2={}", worker.seqs[i + 1].sam.as_deref().unwrap_or(""));
+            println!(
+                "target SAM1={}",
+                worker.seqs[i].sam.as_deref().unwrap_or("")
+            );
+            println!(
+                "target SAM2={}",
+                worker.seqs[i + 1].sam.as_deref().unwrap_or("")
+            );
             break;
         }
     }

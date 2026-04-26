@@ -1,7 +1,13 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kstring.h`.
 
+#[inline]
 fn kroundup32(mut x: usize) -> usize {
     if x == 0 {
         return 0;
@@ -30,14 +36,17 @@ pub struct kstring_t {
 pub type __kstring_t = kstring_t;
 
 impl kstring_t {
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.s[..self.l]
     }
 
+    #[inline]
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(self.as_bytes()).expect("kstring_t contains invalid UTF-8")
     }
 
+    #[inline]
     fn ensure_allocated(&mut self, size: usize) {
         if self.m < size {
             self.m = kroundup32(size);
@@ -47,6 +56,7 @@ impl kstring_t {
 }
 
 #[doc = "Original function: ks_resize:53"]
+#[inline]
 pub fn ks_resize(s: &mut kstring_t, size: usize) {
     if s.m < size {
         s.ensure_allocated(size);
@@ -54,6 +64,7 @@ pub fn ks_resize(s: &mut kstring_t, size: usize) {
 }
 
 #[doc = "Original function: kputsn:62"]
+#[inline]
 pub fn kputsn(p: &[u8], l: i32, s: &mut kstring_t) -> i32 {
     let l = usize::try_from(l).expect("kputsn length must be non-negative");
     if s.l + l + 1 >= s.m {
@@ -66,11 +77,17 @@ pub fn kputsn(p: &[u8], l: i32, s: &mut kstring_t) -> i32 {
 }
 
 #[doc = "Original function: kputs:75"]
+#[inline]
 pub fn kputs(p: &str, s: &mut kstring_t) -> i32 {
-    kputsn(p.as_bytes(), i32::try_from(p.len()).expect("kputs length overflow"), s)
+    kputsn(
+        p.as_bytes(),
+        i32::try_from(p.len()).expect("kputs length overflow"),
+        s,
+    )
 }
 
 #[doc = "Original function: kputc:80"]
+#[inline]
 pub fn kputc(c: i32, s: &mut kstring_t) -> i32 {
     if s.l + 1 >= s.m {
         s.ensure_allocated(s.l + 2);
@@ -81,6 +98,7 @@ pub fn kputc(c: i32, s: &mut kstring_t) -> i32 {
     c
 }
 
+#[inline]
 fn append_decimal(text: &str, s: &mut kstring_t) {
     let len = text.len();
     if s.l + len + 1 >= s.m {
@@ -92,6 +110,7 @@ fn append_decimal(text: &str, s: &mut kstring_t) {
 }
 
 #[doc = "Original function: kputw:92"]
+#[inline]
 pub fn kputw(c: i32, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
@@ -101,6 +120,7 @@ pub fn kputw(c: i32, s: &mut kstring_t) -> i32 {
 }
 
 #[doc = "Original function: kputuw:109"]
+#[inline]
 pub fn kputuw(c: u32, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
@@ -110,6 +130,7 @@ pub fn kputuw(c: u32, s: &mut kstring_t) -> i32 {
 }
 
 #[doc = "Original function: kputl:126"]
+#[inline]
 pub fn kputl(c: i64, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
@@ -120,7 +141,7 @@ pub fn kputl(c: i64, s: &mut kstring_t) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{kputc, kputs, kputl, kputsn, kputuw, kputw, ks_resize, kstring_t};
+    use super::{kputc, kputl, kputs, kputsn, kputuw, kputw, ks_resize, kstring_t};
 
     #[test]
     fn ks_resize_rounds_up_and_zero_fills() {

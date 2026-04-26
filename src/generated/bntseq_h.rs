@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bntseq.h`.
 
@@ -37,6 +42,7 @@ pub struct bntseq_t {
 }
 
 #[doc = "Original function: bns_depos:87"]
+#[inline]
 pub fn bns_depos(bns: &bntseq_t, pos: i64, is_rev: &mut i32) -> i64 {
     if pos >= bns.l_pac {
         *is_rev = 1;
@@ -53,7 +59,10 @@ mod tests {
 
     #[test]
     fn bns_depos_tracks_forward_and_reverse_coordinates() {
-        let bns = bntseq_t { l_pac: 10, ..Default::default() };
+        let bns = bntseq_t {
+            l_pac: 10,
+            ..Default::default()
+        };
         let mut is_rev = -1;
         assert_eq!(bns_depos(&bns, 3, &mut is_rev), 3);
         assert_eq!(is_rev, 0);

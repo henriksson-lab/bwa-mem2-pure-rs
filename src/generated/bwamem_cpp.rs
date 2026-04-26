@@ -1,30 +1,41 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bwamem.cpp`.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use rayon::{scope, ThreadPoolBuilder};
 
-use crate::generated::bntseq_h::bntseq_t;
-use crate::generated::bntseq_h::bns_depos;
-use crate::generated::bwa_cpp::{bwa_fill_scmat, bwa_gen_cigar2, BWA_VERBOSE};
-use crate::generated::bwa_h::bseq1_t;
-use crate::generated::bwamem_h::{mem_aln_t, mem_alnreg_t, mem_alnreg_v, mem_cache, mem_chain_t, mem_chain_v, mem_opt_t, mem_pestat_t, mem_seed_t, smem_aux_t, worker_t};
-use crate::generated::bwamem_extra_cpp::mem_gen_alt;
-use crate::generated::bwamem_pair_cpp::{mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre};
-use crate::generated::fmi_search_cpp::FMI_search;
-use crate::generated::fmi_search_h::SMEM;
-use crate::generated::bandedswa_h::SeqPair;
 use crate::generated::bandedswa_cpp::BandedPairWiseSW;
-use crate::generated::kstring_cpp::ksprintf;
-use crate::generated::kstring_h::{kputc, kputl, kputs, kputsn, kputw, ks_resize, kstring_t};
-use crate::generated::macro_h::{BATCH_SIZE, SEEDS_PER_CHAIN};
-use crate::generated::ksw_cpp::ksw_align2;
-use crate::generated::ksw_h::{kswr_t, KSW_XBYTE, KSW_XSTART};
+use crate::generated::bandedswa_h::SeqPair;
 use crate::generated::bntseq_cpp::bns_intv2rid;
 use crate::generated::bntseq_cpp::bns_pos2rid;
+use crate::generated::bntseq_h::bns_depos;
+use crate::generated::bntseq_h::bntseq_t;
+use crate::generated::bwa_cpp::{bwa_fill_scmat, bwa_gen_cigar2, BWA_VERBOSE};
+use crate::generated::bwa_h::bseq1_t;
+use crate::generated::bwamem_extra_cpp::mem_gen_alt;
+use crate::generated::bwamem_h::{
+    mem_aln_t, mem_alnreg_t, mem_alnreg_v, mem_cache, mem_chain_t, mem_chain_v, mem_opt_t,
+    mem_pestat_t, mem_seed_t, smem_aux_t, worker_t,
+};
+use crate::generated::bwamem_pair_cpp::{
+    mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
+};
+use crate::generated::fmi_search_cpp::FMI_search;
+use crate::generated::fmi_search_h::SMEM;
+use crate::generated::kstring_cpp::ksprintf;
+use crate::generated::kstring_h::{kputc, kputl, kputs, kputsn, kputw, ks_resize, kstring_t};
+use crate::generated::ksw_cpp::ksw_align2;
+use crate::generated::ksw_h::{kswr_t, KSW_XBYTE, KSW_XSTART};
+use crate::generated::macro_h::{BATCH_SIZE, SEEDS_PER_CHAIN};
 use crate::generated::utils_h::hash_64;
 
 const PATCH_MAX_R_BW: f64 = 0.05;
@@ -58,18 +69,39 @@ static COMPUTE_POOLS: LazyLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> =
 // is auto-vectorized by LLVM with VPGATHERDD on AVX2/AVX-512 targets.
 const NT4_LUT: [u8; 256] = {
     let mut t = [4_u8; 256];
-    t[b'A' as usize] = 0; t[b'a' as usize] = 0;
-    t[b'C' as usize] = 1; t[b'c' as usize] = 1;
-    t[b'G' as usize] = 2; t[b'g' as usize] = 2;
-    t[b'T' as usize] = 3; t[b't' as usize] = 3;
-    t[b'U' as usize] = 3; t[b'u' as usize] = 3;
+    t[b'A' as usize] = 0;
+    t[b'a' as usize] = 0;
+    t[b'C' as usize] = 1;
+    t[b'c' as usize] = 1;
+    t[b'G' as usize] = 2;
+    t[b'g' as usize] = 2;
+    t[b'T' as usize] = 3;
+    t[b't' as usize] = 3;
+    t[b'U' as usize] = 3;
+    t[b'u' as usize] = 3;
     t
 };
 
+#[inline]
 fn seq_to_nt4(seq: &str) -> Vec<u8> {
-    seq.as_bytes().iter().map(|&c| NT4_LUT[c as usize]).collect()
+    seq.as_bytes()
+        .iter()
+        .map(|&c| NT4_LUT[c as usize])
+        .collect()
 }
 
+#[inline]
+fn clear_vec_with_cap<T>(v: &mut Vec<T>, keep_cap: usize) {
+    v.clear();
+    if v.capacity() > keep_cap {
+        v.shrink_to(keep_cap);
+    }
+}
+
+const KEEP_REG_CAP: usize = 16;
+const KEEP_CHAIN_CAP: usize = 16;
+
+#[inline]
 pub fn nt4_cow(seq: &crate::generated::bwa_h::bseq1_t) -> std::borrow::Cow<'_, [u8]> {
     if !seq.seq_nt4.is_empty() || seq.l_seq == 0 {
         std::borrow::Cow::Borrowed(&seq.seq_nt4)
@@ -91,10 +123,14 @@ fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
 }
 
 fn debug_trace_read(name: Option<&str>) -> bool {
-    let Ok(target) = std::env::var("BWA_MEM2_RS_TRACE_READ") else {
+    static TARGET: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(target) = TARGET
+        .get_or_init(|| std::env::var("BWA_MEM2_RS_TRACE_READ").ok())
+        .as_deref()
+    else {
         return false;
     };
-    !target.is_empty() && name.is_some_and(|n| n == target)
+    !target.is_empty() && name == Some(target)
 }
 
 #[derive(Clone, Copy)]
@@ -124,7 +160,28 @@ fn compute_pool(nthreads: usize) -> Arc<rayon::ThreadPool> {
         .clone()
 }
 
-fn run_worker_chunks_parallel(worker: &mut worker_t, n: i32, func: fn(&mut worker_t, i32, i32, i32)) {
+pub fn with_current_rayon_pool<R>(f: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            USE_CURRENT_RAYON_POOL.with(|flag| flag.set(self.0));
+        }
+    }
+
+    let previous = USE_CURRENT_RAYON_POOL.with(|flag| {
+        let previous = flag.get();
+        flag.set(true);
+        previous
+    });
+    let _reset = Reset(previous);
+    f()
+}
+
+fn run_worker_chunks_parallel(
+    worker: &mut worker_t,
+    n: i32,
+    func: fn(&mut worker_t, i32, i32, i32),
+) {
     let n_usize = usize::try_from(n.max(0)).expect("n");
     if n_usize == 0 {
         return;
@@ -146,9 +203,8 @@ fn run_worker_chunks_parallel(worker: &mut worker_t, n: i32, func: fn(&mut worke
         return;
     }
 
-    let pool = compute_pool(nthreads);
     let worker_ptr = WorkerPtr(worker as *mut worker_t);
-    pool.install(|| {
+    let run_chunks = || {
         scope(|s| {
             for tid in 0..nthreads {
                 s.spawn(move |_| {
@@ -171,24 +227,37 @@ fn run_worker_chunks_parallel(worker: &mut worker_t, n: i32, func: fn(&mut worke
                 });
             }
         });
-    });
+    };
+    if USE_CURRENT_RAYON_POOL.with(Cell::get) {
+        run_chunks();
+    } else {
+        let pool = compute_pool(nthreads);
+        pool.install(run_chunks);
+    }
 }
 
+#[inline(always)]
 fn chn_beg(ch: &mem_chain_t) -> i32 {
     ch.seeds[0].qbeg
 }
 
+#[inline(always)]
 fn chn_end(ch: &mem_chain_t) -> i32 {
     let last = &ch.seeds[usize::try_from(ch.n - 1).expect("chain n")];
     last.qbeg + last.len
 }
 
+#[inline]
 fn recompute_seedcov_for_aln(chain: &mem_chain_t, a: &mut mem_alnreg_t) {
     if a.rb == H0_ as i64 || a.qb == H0_ || a.qe == H0_ || a.re == H0_ as i64 {
         return;
     }
     a.seedcov = 0;
-    for t in chain.seeds.iter().take(usize::try_from(chain.n).expect("chain n")) {
+    for t in chain
+        .seeds
+        .iter()
+        .take(usize::try_from(chain.n).expect("chain n"))
+    {
         if t.qbeg >= a.qb
             && t.qbeg + t.len <= a.qe
             && t.rbeg >= a.rb
@@ -212,12 +281,17 @@ fn stable_alnreg_hash(id: i64, p: &mem_alnreg_t) -> u64 {
 }
 
 #[doc = "Original function: cal_max_gap:66"]
+#[inline]
 pub fn cal_max_gap(opt: &mem_opt_t, qlen: i32) -> i32 {
     let l_del = (((qlen * opt.a - opt.o_del) as f64) / opt.e_del as f64 + 1.0) as i32;
     let l_ins = (((qlen * opt.a - opt.o_ins) as f64) / opt.e_ins as f64 + 1.0) as i32;
     let mut l = if l_del > l_ins { l_del } else { l_ins };
     l = if l > 1 { l } else { 1 };
-    if l < (opt.w << 1) { l } else { opt.w << 1 }
+    if l < (opt.w << 1) {
+        l
+    } else {
+        opt.w << 1
+    }
 }
 
 #[doc = "Original function: smem_aux_init:80"]
@@ -290,10 +364,12 @@ pub fn sort_alnreg_score(_n: i32, a: &mut [mem_alnreg_t]) {
     ks_introsort_mem_ars(a);
 }
 
+#[inline(always)]
 fn mem_ars2_lt(lhs: &mem_alnreg_t, rhs: &mem_alnreg_t) -> bool {
     lhs.re < rhs.re
 }
 
+#[inline(always)]
 fn mem_ars_lt(lhs: &mem_alnreg_t, rhs: &mem_alnreg_t) -> bool {
     lhs.score > rhs.score
         || (lhs.score == rhs.score && (lhs.rb < rhs.rb || (lhs.rb == rhs.rb && lhs.qb < rhs.qb)))
@@ -655,10 +731,16 @@ pub fn mem_dedup_patch(
             let p_re = a[i].re;
             let q = a[j];
             let or_ = q.re - p_rb;
-            let oq = if q.qb < p_qb { q.qe - p_qb } else { p_qe - q.qb };
+            let oq = if q.qb < p_qb {
+                q.qe - p_qb
+            } else {
+                p_qe - q.qb
+            };
             let mr = (q.re - q.rb).min(p_re - p_rb);
             let mq = i64::from((q.qe - q.qb).min(p_qe - p_qb));
-            if (or_ as f32) > opt.mask_level_redun * mr as f32 && (oq as f32) > opt.mask_level_redun * mq as f32 {
+            if (or_ as f32) > opt.mask_level_redun * mr as f32
+                && (oq as f32) > opt.mask_level_redun * mq as f32
+            {
                 if a[i].score < a[j].score {
                     a[i].qe = a[i].qb;
                     break;
@@ -667,7 +749,8 @@ pub fn mem_dedup_patch(
                 }
             } else if a[j].rb < a[i].rb {
                 let mut w = 0;
-                let score = mem_patch_reg(opt, bns, pac, query.as_deref_mut(), &a[j], &a[i], &mut w);
+                let score =
+                    mem_patch_reg(opt, bns, pac, query.as_deref_mut(), &a[j], &a[i], &mut w);
                 if score > 0 {
                     let q_n_comp = a[j].n_comp;
                     let q_seedcov = a[j].seedcov;
@@ -738,6 +821,7 @@ pub fn mem_sort_dedup_patch(
 }
 
 #[doc = "Original function: test_and_merge:357"]
+#[inline]
 pub fn test_and_merge(
     opt: &mem_opt_t,
     l_pac: i64,
@@ -782,7 +866,8 @@ pub fn test_and_merge(
                 new_seeds[..used].copy_from_slice(&c.seeds[..used]);
                 c.seeds = new_seeds;
             } else {
-                c.seeds.resize(usize::try_from(c.m).expect("c.m"), mem_seed_t::default());
+                c.seeds
+                    .resize(usize::try_from(c.m).expect("c.m"), mem_seed_t::default());
             }
         }
         c.seeds[usize::try_from(c.n).expect("c.n")] = *p;
@@ -793,6 +878,7 @@ pub fn test_and_merge(
 }
 
 #[doc = "Original function: mem_seed_sw:401"]
+#[inline]
 pub fn mem_seed_sw(
     opt: &mem_opt_t,
     bns: &bntseq_t,
@@ -828,26 +914,49 @@ pub fn mem_seed_sw(
     let mut rid = -1;
     let mut fetch_rb = rb;
     let mut fetch_re = re;
-    let mut rseq = crate::generated::bntseq_cpp::bns_fetch_seq(bns, pac, &mut fetch_rb, mid, &mut fetch_re, &mut rid);
-    let mut qseq = query[usize::try_from(qb).expect("qb")..usize::try_from(qe).expect("qe")].to_vec();
-    let x = ksw_align2(
-        qe - qb,
-        &mut qseq,
-        i32::try_from(rseq.len()).expect("rseq len"),
-        &mut rseq,
-        5,
-        &opt.mat,
-        opt.o_del,
-        opt.e_del,
-        opt.o_ins,
-        opt.e_ins,
-        KSW_XSTART,
-        None,
-    );
-    x.score
+    MEM_SEED_SW_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        let (rseq, qseq) = &mut *buf;
+        crate::generated::bntseq_cpp::bns_fetch_seq_into(
+            bns,
+            pac,
+            &mut fetch_rb,
+            mid,
+            &mut fetch_re,
+            &mut rid,
+            rseq,
+        );
+        qseq.clear();
+        qseq.extend_from_slice(
+            &query[usize::try_from(qb).expect("qb")..usize::try_from(qe).expect("qe")],
+        );
+        let rseq_len = i32::try_from(rseq.len()).expect("rseq len");
+        let x = ksw_align2(
+            qe - qb,
+            qseq,
+            rseq_len,
+            rseq,
+            5,
+            &opt.mat,
+            opt.o_del,
+            opt.e_del,
+            opt.o_ins,
+            opt.e_ins,
+            KSW_XSTART,
+            None,
+        );
+        x.score
+    })
+}
+
+// Thread-local scratch for mem_seed_sw rseq + qseq (called ~1.25M times per 50K-read run).
+thread_local! {
+    static MEM_SEED_SW_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<u8>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 
 #[doc = "Original function: mem_chain_weight:429"]
+#[inline]
 pub fn mem_chain_weight(c: &mem_chain_t) -> i32 {
     let mut end = 0_i64;
     let mut w = 0_i64;
@@ -1009,7 +1118,11 @@ fn ks_introsort_mem_flt(a: &mut [mem_chain_t]) {
 pub fn mem_print_chain(bns: &bntseq_t, chn: &[mem_chain_t]) -> String {
     let mut out = String::new();
     for (i, p) in chn.iter().enumerate() {
-        out.push_str(&format!("* Found CHAIN({i}): n={}; weight={}", p.n, mem_chain_weight(p)));
+        out.push_str(&format!(
+            "* Found CHAIN({i}): n={}; weight={}",
+            p.n,
+            mem_chain_weight(p)
+        ));
         for seed in p.seeds.iter().take(usize::try_from(p.n).expect("p.n")) {
             let mut is_rev = 0;
             let mut pos = bns_depos(bns, seed.rbeg, &mut is_rev);
@@ -1033,6 +1146,22 @@ pub fn mem_print_chain(bns: &bntseq_t, chn: &[mem_chain_t]) -> String {
     out
 }
 
+// Thread-local kept-seeds buffer for mem_flt_chained_seeds (called ~250K times per 50K-read run).
+thread_local! {
+    static MEM_FLT_CHAINED_KEPT: std::cell::RefCell<Vec<crate::generated::bwamem_h::mem_seed_t>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    // Reused across mem_chain_flt calls (~50K per 50K-read run). filtered/ranges/result/chains/
+    // group are all small (chains-per-read typically <20) but per-call allocs add up.
+    static MEM_CHAIN_FLT_SCRATCH: std::cell::RefCell<(
+        Vec<mem_chain_t>,
+        Vec<(usize, usize)>,
+        Vec<mem_chain_t>,
+        Vec<usize>,
+        Vec<mem_chain_t>,
+    )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+}
+
 #[doc = "Original function: mem_flt_chained_seeds:472"]
 pub fn mem_flt_chained_seeds(
     opt: &mem_opt_t,
@@ -1044,7 +1173,8 @@ pub fn mem_flt_chained_seeds(
 ) {
     for c in a.iter_mut().take(usize::try_from(n_chn).expect("n_chn")) {
         let seqid = usize::try_from(c.seqid).expect("seqid");
-        let query = nt4_cow(&seq_[seqid]).into_owned();
+        let query_cow = nt4_cow(&seq_[seqid]);
+        let query: &[u8] = &query_cow;
         let l_query = seq_[seqid].l_seq;
 
         let min_l = if opt.min_chain_weight != 0 {
@@ -1057,18 +1187,27 @@ pub fn mem_flt_chained_seeds(
             continue;
         }
 
-        let mut kept = Vec::with_capacity(usize::try_from(c.n).expect("c.n"));
-        for mut s in c.seeds.iter().take(usize::try_from(c.n).expect("c.n")).copied() {
-            s.score = mem_seed_sw(opt, bns, pac, l_query, &query, &s);
-            if s.score < 0 || s.score >= min_hsp_score {
-                s.score = if s.score < 0 { s.len * opt.a } else { s.score };
-                kept.push(s);
+        MEM_FLT_CHAINED_KEPT.with(|cell| {
+            let mut kept = cell.borrow_mut();
+            kept.clear();
+            kept.reserve(usize::try_from(c.n).expect("c.n"));
+            for mut s in c
+                .seeds
+                .iter()
+                .take(usize::try_from(c.n).expect("c.n"))
+                .copied()
+            {
+                s.score = mem_seed_sw(opt, bns, pac, l_query, query, &s);
+                if s.score < 0 || s.score >= min_hsp_score {
+                    s.score = if s.score < 0 { s.len * opt.a } else { s.score };
+                    kept.push(s);
+                }
             }
-        }
-        c.n = i32::try_from(kept.len()).expect("kept");
-        for (dst, src) in c.seeds.iter_mut().zip(kept.into_iter()) {
-            *dst = src;
-        }
+            c.n = i32::try_from(kept.len()).expect("kept");
+            for (dst, src) in c.seeds.iter_mut().zip(kept.iter().copied()) {
+                *dst = src;
+            }
+        });
     }
 }
 
@@ -1078,103 +1217,118 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
         return 0;
     }
 
-    let mut filtered = Vec::new();
-    for mut c in a_.iter().take(usize::try_from(n_chn_).expect("n_chn")).cloned() {
-        c.first = -1;
-        c.kept = 0;
-        c.w = u32::try_from(mem_chain_weight(&c)).expect("chain weight");
-        if i32::try_from(c.w).expect("chain w") >= opt.min_chain_weight {
-            filtered.push(c);
+    MEM_CHAIN_FLT_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        let (filtered, ranges, result, chains, group) = &mut *buf;
+        filtered.clear();
+        ranges.clear();
+        result.clear();
+
+        for mut c in a_
+            .iter()
+            .take(usize::try_from(n_chn_).expect("n_chn"))
+            .cloned()
+        {
+            c.first = -1;
+            c.kept = 0;
+            c.w = u32::try_from(mem_chain_weight(&c)).expect("chain weight");
+            if i32::try_from(c.w).expect("chain w") >= opt.min_chain_weight {
+                filtered.push(c);
+            }
         }
-    }
-    if filtered.is_empty() {
-        a_.clear();
-        return 0;
-    }
-
-    let mut ranges = Vec::new();
-    let mut start = 0_usize;
-    let mut pseqid = filtered[0].seqid;
-    for i in 1..filtered.len() {
-        if filtered[i].seqid != pseqid {
-            ranges.push((start, i));
-            start = i;
+        if filtered.is_empty() {
+            a_.clear();
+            return 0;
         }
-        pseqid = filtered[i].seqid;
-    }
-    ranges.push((start, filtered.len()));
 
-    let mut result = Vec::new();
-    for (start, end) in ranges {
-        let mut group = filtered[start..end].to_vec();
-        ks_introsort_mem_flt(&mut group);
+        let mut start = 0_usize;
+        let mut pseqid = filtered[0].seqid;
+        for i in 1..filtered.len() {
+            if filtered[i].seqid != pseqid {
+                ranges.push((start, i));
+                start = i;
+            }
+            pseqid = filtered[i].seqid;
+        }
+        ranges.push((start, filtered.len()));
 
-        let mut chains = vec![0_usize];
-        group[0].kept = 3;
-        for i in 1..group.len() {
-            let mut large_ovlp = false;
-            let mut admitted = true;
-            for &j in &chains {
-                let b_max = chn_beg(&group[j]).max(chn_beg(&group[i]));
-                let e_min = chn_end(&group[j]).min(chn_end(&group[i]));
-                if e_min > b_max && (group[j].is_alt == 0 || group[i].is_alt != 0) {
-                    let li = chn_end(&group[i]) - chn_beg(&group[i]);
-                    let lj = chn_end(&group[j]) - chn_beg(&group[j]);
-                    let min_l = li.min(lj);
-                    if ((e_min - b_max) as f32) >= (min_l as f32) * opt.mask_level && min_l < opt.max_chain_gap {
-                        large_ovlp = true;
-                        if group[j].first < 0 {
-                            group[j].first = i32::try_from(i).expect("i");
-                        }
-                        if (group[i].w as f32) < (group[j].w as f32) * opt.drop_ratio
-                            && i32::try_from(group[j].w - group[i].w).expect("dw") >= (opt.min_seed_len << 1)
+        for &(start, end) in ranges.iter() {
+            group.clear();
+            group.extend_from_slice(&filtered[start..end]);
+            ks_introsort_mem_flt(group);
+
+            chains.clear();
+            chains.push(0_usize);
+            group[0].kept = 3;
+            for i in 1..group.len() {
+                let mut large_ovlp = false;
+                let mut admitted = true;
+                for &j in chains.iter() {
+                    let b_max = chn_beg(&group[j]).max(chn_beg(&group[i]));
+                    let e_min = chn_end(&group[j]).min(chn_end(&group[i]));
+                    if e_min > b_max && (group[j].is_alt == 0 || group[i].is_alt != 0) {
+                        let li = chn_end(&group[i]) - chn_beg(&group[i]);
+                        let lj = chn_end(&group[j]) - chn_beg(&group[j]);
+                        let min_l = li.min(lj);
+                        if ((e_min - b_max) as f32) >= (min_l as f32) * opt.mask_level
+                            && min_l < opt.max_chain_gap
                         {
-                            admitted = false;
-                            break;
+                            large_ovlp = true;
+                            if group[j].first < 0 {
+                                group[j].first = i32::try_from(i).expect("i");
+                            }
+                            if (group[i].w as f32) < (group[j].w as f32) * opt.drop_ratio
+                                && i32::try_from(group[j].w - group[i].w).expect("dw")
+                                    >= (opt.min_seed_len << 1)
+                            {
+                                admitted = false;
+                                break;
+                            }
                         }
                     }
                 }
-            }
-            if admitted {
-                chains.push(i);
-                group[i].kept = if large_ovlp { 2 } else { 3 };
-            }
-        }
-
-        for &idx in &chains {
-            let first = group[idx].first;
-            if first >= 0 {
-                group[usize::try_from(first).expect("first")].kept = 1;
-            }
-        }
-
-        // Match C++ bwamem.cpp:597-603: when max_chain_extend triggers a break, the
-        // index of the breaking chain is the start of the zero-out loop (NOT i+1).
-        let mut limited = 0_i32;
-        let mut i = 0_usize;
-        let mut hit_limit = false;
-        while i < group.len() {
-            if group[i].kept != 0 && group[i].kept != 3 {
-                limited += 1;
-                if limited >= opt.max_chain_extend {
-                    hit_limit = true;
-                    break;
+                if admitted {
+                    chains.push(i);
+                    group[i].kept = if large_ovlp { 2 } else { 3 };
                 }
             }
-            i += 1;
-        }
-        let tail_start = if hit_limit { i } else { group.len() };
-        for c in group.iter_mut().skip(tail_start) {
-            if c.kept < 3 {
-                c.kept = 0;
+
+            for &idx in chains.iter() {
+                let first = group[idx].first;
+                if first >= 0 {
+                    group[usize::try_from(first).expect("first")].kept = 1;
+                }
             }
+
+            // Match C++ bwamem.cpp:597-603: when max_chain_extend triggers a break, the
+            // index of the breaking chain is the start of the zero-out loop (NOT i+1).
+            let mut limited = 0_i32;
+            let mut i = 0_usize;
+            let mut hit_limit = false;
+            while i < group.len() {
+                if group[i].kept != 0 && group[i].kept != 3 {
+                    limited += 1;
+                    if limited >= opt.max_chain_extend {
+                        hit_limit = true;
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            let tail_start = if hit_limit { i } else { group.len() };
+            for c in group.iter_mut().skip(tail_start) {
+                if c.kept < 3 {
+                    c.kept = 0;
+                }
+            }
+
+            result.extend(group.drain(..).filter(|c| c.kept != 0));
         }
 
-        result.extend(group.into_iter().filter(|c| c.kept != 0));
-    }
-
-    *a_ = result;
-    i32::try_from(a_.len()).expect("num chains")
+        a_.clear();
+        a_.append(result);
+        i32::try_from(a_.len()).expect("num chains")
+    })
 }
 
 #[doc = "Original function: kv_push:564"]
@@ -1203,7 +1357,10 @@ pub fn mem_collect_smem(
     let mut num_smem2 = 0_i64;
     let mut num_smem3 = 0_i64;
     let mut max_readlength = -1_i32;
-    let mut query_cum_len_ar = vec![0_i32; nseq_usize];
+    let mut query_cum_len_ar =
+        MEM_COLLECT_QUERY_CUM_LEN.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    query_cum_len_ar.clear();
+    query_cum_len_ar.resize(nseq_usize, 0);
 
     min_intv_ar.resize(nseq_usize.max(min_intv_ar.len()), 0);
     rid.resize(nseq_usize.max(rid.len()), 0);
@@ -1277,7 +1434,8 @@ pub fn mem_collect_smem(
         let want = usize::try_from((mem_lim + num_smem1).max(0)).expect("match_array size");
         let extra = want.saturating_sub(match_array.capacity());
         match_array.reserve(extra);
-        mmc.wsize_mem[tid_usize] = i64::try_from(match_array.capacity()).expect("match_array capacity");
+        mmc.wsize_mem[tid_usize] =
+            i64::try_from(match_array.capacity()).expect("match_array capacity");
     }
 
     let original_len = match_array.len();
@@ -1304,7 +1462,8 @@ pub fn mem_collect_smem(
             let want = usize::try_from(want.max(0)).expect("match_array size");
             let extra = want.saturating_sub(match_array.capacity());
             match_array.reserve(extra);
-            mmc.wsize_mem[tid_usize] = i64::try_from(match_array.capacity()).expect("match_array capacity");
+            mmc.wsize_mem[tid_usize] =
+                i64::try_from(match_array.capacity()).expect("match_array capacity");
         }
         for value in min_intv_ar.iter_mut().take(nseq_usize) {
             *value = i32::try_from(opt.max_mem_intv).expect("max_mem_intv");
@@ -1335,6 +1494,7 @@ pub fn mem_collect_smem(
         match_array[smem_ptr..=pos].sort_by_key(|s| (s.m, s.n));
         smem_ptr = pos + 1;
     }
+    MEM_COLLECT_QUERY_CUM_LEN.with(|c| *c.borrow_mut() = query_cum_len_ar);
 }
 
 #[doc = "Original function: mem_chain_seeds:806"]
@@ -1355,18 +1515,31 @@ pub fn mem_chain_seeds(
     let mut smem_ptr = 0_usize;
     let l_pac = bns.l_pac;
     let mut smem_buf_size = 6000_i64;
-    let mut sa_coord = Vec::with_capacity(usize::try_from(opt.max_occ).expect("max_occ") * usize::try_from(smem_buf_size).expect("buf"));
+    let mut sa_coord = MEM_CHAIN_SEEDS_SA_COORD.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let initial_sa_cap = usize::try_from(opt.max_occ).expect("max_occ")
+        * usize::try_from(smem_buf_size).expect("buf");
+    if sa_coord.capacity() < initial_sa_cap {
+        sa_coord.reserve(initial_sa_cap - sa_coord.capacity());
+    }
     let mut seed_buf_count = 0_usize;
 
-    for chain in chain_ar.iter_mut().take(usize::try_from(nseq).expect("nseq")) {
-        *chain = mem_chain_v::default();
+    for chain in chain_ar
+        .iter_mut()
+        .take(usize::try_from(nseq).expect("nseq"))
+    {
+        clear_vec_with_cap(&mut chain.a, KEEP_CHAIN_CAP);
+        chain.n = 0;
+        chain.m = 0;
+        chain.cc = 0;
     }
 
     for l in 0..usize::try_from(nseq).expect("nseq") {
         if pos >= num_smem - 1 {
             break;
         }
-        if smem_ptr >= matchArray.len() || usize::try_from(matchArray[smem_ptr].rid).expect("rid") > l {
+        if smem_ptr >= matchArray.len()
+            || usize::try_from(matchArray[smem_ptr].rid).expect("rid") > l
+        {
             continue;
         }
         if seq_[l].l_seq < opt.min_seed_len {
@@ -1374,7 +1547,9 @@ pub fn mem_chain_seeds(
         }
         assert_eq!(usize::try_from(matchArray[smem_ptr].rid).expect("rid"), l);
 
-        let mut chains: Vec<mem_chain_t> = Vec::new();
+        // Reuse chain_ar[l].a's capacity (was kept by clear_vec_with_cap above) instead of
+        // allocating a fresh Vec here that would replace it on assignment.
+        let mut chains: Vec<mem_chain_t> = std::mem::take(&mut chain_ar[l].a);
         let chain = &mut chain_ar[l];
 
         let mut b = 0_i32;
@@ -1395,7 +1570,10 @@ pub fn mem_chain_seeds(
                     e = e.max(se);
                 }
             }
-            if pos >= num_smem - 1 || matchArray[usize::try_from(pos).expect("pos")].rid != matchArray[usize::try_from(pos + 1).expect("pos1")].rid {
+            if pos >= num_smem - 1
+                || matchArray[usize::try_from(pos).expect("pos")].rid
+                    != matchArray[usize::try_from(pos + 1).expect("pos1")].rid
+            {
                 break;
             }
         }
@@ -1467,17 +1645,22 @@ pub fn mem_chain_seeds(
                     if to_add {
                         tmp.n = 1;
                         tmp.m = i32::try_from(SEEDS_PER_CHAIN).expect("SEEDS_PER_CHAIN");
-                        if seed_buf_count + usize::try_from(tmp.m).expect("tmp.m") <= seedBuf.len() {
-                            tmp.seeds = seedBuf[seed_buf_count..seed_buf_count + usize::try_from(tmp.m).expect("tmp.m")].to_vec();
+                        if seed_buf_count + usize::try_from(tmp.m).expect("tmp.m") <= seedBuf.len()
+                        {
+                            tmp.seeds = seedBuf[seed_buf_count
+                                ..seed_buf_count + usize::try_from(tmp.m).expect("tmp.m")]
+                                .to_vec();
                             seed_buf_count += usize::try_from(tmp.m).expect("tmp.m");
                         } else {
                             tmp.m += 1;
-                            tmp.seeds = vec![mem_seed_t::default(); usize::try_from(tmp.m).expect("tmp.m")];
+                            tmp.seeds =
+                                vec![mem_seed_t::default(); usize::try_from(tmp.m).expect("tmp.m")];
                         }
                         tmp.seeds[0] = s;
                         tmp.rid = rid;
                         tmp.seqid = i32::try_from(l).expect("l");
-                        tmp.is_alt = u32::from(bns.anns[usize::try_from(rid).expect("rid")].is_alt != 0);
+                        tmp.is_alt =
+                            u32::from(bns.anns[usize::try_from(rid).expect("rid")].is_alt != 0);
                         chains.insert(insert_idx, tmp);
                     }
                 }
@@ -1494,6 +1677,7 @@ pub fn mem_chain_seeds(
         chain.m = chains.len();
         chain.a = chains;
     }
+    MEM_CHAIN_SEEDS_SA_COORD.with(|c| *c.borrow_mut() = sa_coord);
 }
 
 #[doc = "Original function: mem_kernel1_core:976"]
@@ -1546,10 +1730,14 @@ pub fn mem_kernel1_core(
         let cap = usize::try_from(tot_len).expect("tot_len");
         let extra = cap.saturating_sub(mmc.matchArray[tid_usize].capacity());
         mmc.matchArray[tid_usize].reserve(extra);
-        mmc.min_intv_ar[tid_usize].resize(cap, 0);
-        mmc.query_pos_ar[tid_usize].resize(cap, 0);
-        mmc.enc_qdb[tid_usize].resize(cap, 0);
-        mmc.rid[tid_usize].resize(cap, 0);
+        let min_intv_extra = cap.saturating_sub(mmc.min_intv_ar[tid_usize].capacity());
+        let query_pos_extra = cap.saturating_sub(mmc.query_pos_ar[tid_usize].capacity());
+        let enc_qdb_extra = cap.saturating_sub(mmc.enc_qdb[tid_usize].capacity());
+        let rid_extra = cap.saturating_sub(mmc.rid[tid_usize].capacity());
+        mmc.min_intv_ar[tid_usize].reserve(min_intv_extra);
+        mmc.query_pos_ar[tid_usize].reserve(query_pos_extra);
+        mmc.enc_qdb[tid_usize].reserve(enc_qdb_extra);
+        mmc.rid[tid_usize].reserve(rid_extra);
     }
 
     let mut num_smem = 0_i64;
@@ -1558,6 +1746,10 @@ pub fn mem_kernel1_core(
     let mut query_pos_ar = std::mem::take(&mut mmc.query_pos_ar[tid_usize]);
     let mut enc_qdb = std::mem::take(&mut mmc.enc_qdb[tid_usize]);
     let mut rid = std::mem::take(&mut mmc.rid[tid_usize]);
+    min_intv_ar.clear();
+    query_pos_ar.clear();
+    enc_qdb.clear();
+    rid.clear();
 
     mem_collect_smem(
         fmi,
@@ -1588,7 +1780,10 @@ pub fn mem_kernel1_core(
         num_smem,
     );
 
-    for chn in chain_ar.iter_mut().take(usize::try_from(nseq).expect("nseq")) {
+    for chn in chain_ar
+        .iter_mut()
+        .take(usize::try_from(nseq).expect("nseq"))
+    {
         chn.n = usize::try_from(mem_chain_flt(
             opt,
             i32::try_from(chn.n).expect("chain count"),
@@ -1601,7 +1796,10 @@ pub fn mem_kernel1_core(
 
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
-    for chn in chain_ar.iter_mut().take(usize::try_from(nseq).expect("nseq")) {
+    for chn in chain_ar
+        .iter_mut()
+        .take(usize::try_from(nseq).expect("nseq"))
+    {
         mem_flt_chained_seeds(
             opt,
             bns,
@@ -1633,24 +1831,21 @@ pub fn mem_kernel2_core(
     tid: i32,
 ) -> i32 {
     for reg in regs.iter_mut().take(usize::try_from(nseq).expect("nseq")) {
-        *reg = mem_alnreg_v::default();
+        clear_vec_with_cap(&mut reg.a, KEEP_REG_CAP);
+        reg.n = 0;
+        reg.m = 0;
     }
 
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
     mem_chain2aln_across_reads_V2(
-        opt,
-        bns,
-        pac,
-        seq_,
-        nseq,
-        chain_ar,
-        regs,
-        mmc,
-        ref_string,
-        tid,
+        opt, bns, pac, seq_, nseq, chain_ar, regs, mmc, ref_string, tid,
     );
-    for (l, reg) in regs.iter().take(usize::try_from(nseq).expect("nseq")).enumerate() {
+    for (l, reg) in regs
+        .iter()
+        .take(usize::try_from(nseq).expect("nseq"))
+        .enumerate()
+    {
         if debug_trace_read(seq_[l].name.as_deref()) {
             eprintln!(
                 "[trace::kernel2:after_chain2aln] read={} regs={:?}",
@@ -1658,14 +1853,28 @@ pub fn mem_kernel2_core(
                 reg.a
                     .iter()
                     .take(reg.n.min(16))
-                    .map(|r| (r.score, r.sub, r.csub, r.qb, r.qe, r.rb, r.re, r.secondary, r.secondary_all, r.c))
+                    .map(|r| (
+                        r.score,
+                        r.sub,
+                        r.csub,
+                        r.qb,
+                        r.qe,
+                        r.rb,
+                        r.re,
+                        r.secondary,
+                        r.secondary_all,
+                        r.c
+                    ))
                     .collect::<Vec<_>>(),
             );
         }
     }
 
-    for chain in chain_ar.iter_mut().take(usize::try_from(nseq).expect("nseq")) {
-        chain.a.clear();
+    for chain in chain_ar
+        .iter_mut()
+        .take(usize::try_from(nseq).expect("nseq"))
+    {
+        clear_vec_with_cap(&mut chain.a, KEEP_CHAIN_CAP);
         chain.n = 0;
         chain.m = 0;
     }
@@ -1684,8 +1893,18 @@ pub fn mem_kernel2_core(
         reg.a.truncate(m);
     }
 
-    for (l, reg) in regs.iter_mut().take(usize::try_from(nseq).expect("nseq")).enumerate() {
-        let mut encoded_query = nt4_cow(&seq_[l]).into_owned();
+    // Hoisted to amortize the per-read encoded_query allocation across nseq iterations.
+    // mem_sort_dedup_patch needs &mut [u8] (bwa_gen_cigar2 reverses in place + restores),
+    // so we copy seq_nt4 into this buffer per read but keep the capacity.
+    let mut encoded_query: Vec<u8> = Vec::new();
+    for (l, reg) in regs
+        .iter_mut()
+        .take(usize::try_from(nseq).expect("nseq"))
+        .enumerate()
+    {
+        let nt4 = nt4_cow(&seq_[l]);
+        encoded_query.clear();
+        encoded_query.extend_from_slice(&nt4);
         reg.n = usize::try_from(mem_sort_dedup_patch(
             opt,
             Some(bns),
@@ -1703,7 +1922,18 @@ pub fn mem_kernel2_core(
                 reg.a
                     .iter()
                     .take(reg.n.min(16))
-                    .map(|r| (r.score, r.sub, r.csub, r.qb, r.qe, r.rb, r.re, r.secondary, r.secondary_all, r.c))
+                    .map(|r| (
+                        r.score,
+                        r.sub,
+                        r.csub,
+                        r.qb,
+                        r.qe,
+                        r.rb,
+                        r.re,
+                        r.secondary,
+                        r.secondary_all,
+                        r.c
+                    ))
                     .collect::<Vec<_>>(),
             );
         }
@@ -1743,14 +1973,10 @@ pub fn worker_aln(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
 pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     let opt = data.opt.as_deref().expect("worker opt");
     let fmi = data.fmi.as_ref().expect("worker fmi");
-    let mut seedBufSz = data.seedBufSize;
-    let memSize = data.nreads;
-    if usize::try_from(batch_size).expect("batch_size") < BATCH_SIZE {
-        seedBufSz = i64::from(memSize - seq_id) * i64::try_from(AVG_SEEDS_PER_READ).expect("avg seeds");
-    }
     let seq_start = usize::try_from(seq_id).expect("seq_id");
     let batch = usize::try_from(batch_size).expect("batch_size");
-    let seed_offset = seq_start * AVG_SEEDS_PER_READ;
+    let tid_usize = usize::try_from(tid).expect("tid");
+    let seed_offset = tid_usize * BATCH_SIZE * AVG_SEEDS_PER_READ;
     for seq in data.seqs[seq_start..seq_start + batch].iter_mut() {
         if seq.seq_nt4.is_empty() {
             if let Some(text) = seq.seq.as_deref() {
@@ -1765,7 +1991,7 @@ pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
         batch_size,
         &mut data.chain_ar[seq_start..seq_start + batch],
         &mut data.seedBuf[seed_offset..],
-        seedBufSz,
+        data.seedBufSize,
         &mut data.mmc,
         tid,
     );
@@ -1808,7 +2034,11 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
     if data.opt.as_ref().expect("worker opt missing").flag & MEM_F_PE != 0 {
         let start = usize::try_from(seqid).expect("seqid");
         let end = start + usize::try_from(batch_size).expect("batch_size");
-        assert_eq!((end - start) & 1, 0, "paired-end worker_sam requires an even batch size");
+        assert_eq!(
+            (end - start) & 1,
+            0,
+            "paired-end worker_sam requires an even batch size"
+        );
         let tid_usize = usize::try_from(tid).expect("tid");
         let opt = data.opt.as_ref().expect("worker opt missing");
         let fmi = data.fmi.as_ref().expect("worker fmi missing");
@@ -1821,10 +2051,15 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
         let mut gcnt = 0_i32;
         let mut pos = start >> 1;
         for i in (start..end).step_by(2) {
-            let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos")).expect("pair id");
+            let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos"))
+                .expect("pair id");
             pos += 1;
-            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2]).try_into().expect("paired seq slice");
-            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2]).try_into().expect("paired reg slice");
+            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
+                .try_into()
+                .expect("paired seq slice");
+            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
+                .try_into()
+                .expect("paired reg slice");
             mem_sam_pe_batch_pre(
                 opt,
                 bns,
@@ -1842,17 +2077,32 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
             );
         }
 
-        let pcnt8 = i32::try_from(sort_classify(&mut data.mmc, i64::from(pcnt), tid)).expect("pcnt8");
+        let pcnt8 =
+            i32::try_from(sort_classify(&mut data.mmc, i64::from(pcnt), tid)).expect("pcnt8");
         let mut aln = vec![kswr_t::default(); usize::try_from(pcnt + 256).expect("aln len")];
-        mem_sam_pe_batch(opt, &mut data.mmc, pcnt, pcnt8, &mut aln, maxRefLen, maxQerLen, tid_usize);
+        mem_sam_pe_batch(
+            opt,
+            &mut data.mmc,
+            pcnt,
+            pcnt8,
+            &mut aln,
+            maxRefLen,
+            maxQerLen,
+            tid_usize,
+        );
 
         gcnt = 0;
         pos = start >> 1;
         for i in (start..end).step_by(2) {
-            let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos")).expect("pair id");
+            let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos"))
+                .expect("pair id");
             pos += 1;
-            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2]).try_into().expect("paired seq slice");
-            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2]).try_into().expect("paired reg slice");
+            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
+                .try_into()
+                .expect("paired seq slice");
+            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
+                .try_into()
+                .expect("paired reg slice");
             mem_sam_pe_batch_post(
                 opt,
                 bns,
@@ -1867,10 +2117,20 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
                 tid_usize,
             );
             for regs in reg_pair.iter_mut() {
-                regs.a.clear();
+                clear_vec_with_cap(&mut regs.a, KEEP_REG_CAP);
                 regs.n = 0;
                 regs.m = 0;
             }
+            seq_pair[0].name = None;
+            seq_pair[0].comment = None;
+            seq_pair[0].seq = None;
+            seq_pair[0].qual = None;
+            seq_pair[1].name = None;
+            seq_pair[1].comment = None;
+            seq_pair[1].seq = None;
+            seq_pair[1].qual = None;
+            seq_pair[0].seq_nt4 = Vec::new();
+            seq_pair[1].seq_nt4 = Vec::new();
         }
     } else {
         let opt = data.opt.as_ref().expect("worker opt missing");
@@ -1896,9 +2156,14 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
                 0,
                 None,
             );
-            data.regs[i].a.clear();
+            clear_vec_with_cap(&mut data.regs[i].a, KEEP_REG_CAP);
             data.regs[i].n = 0;
             data.regs[i].m = 0;
+            data.seqs[i].name = None;
+            data.seqs[i].comment = None;
+            data.seqs[i].seq = None;
+            data.seqs[i].qual = None;
+            data.seqs[i].seq_nt4 = Vec::new();
         }
     }
 }
@@ -1908,14 +2173,14 @@ pub fn mem_process_seqs(
     opt: &mut mem_opt_t,
     n_processed: i64,
     n: i32,
-    seqs: &mut [bseq1_t],
+    seqs: &mut Vec<bseq1_t>,
     pes0: Option<&[mem_pestat_t; 4]>,
     w: &mut worker_t,
 ) {
     w.opt = Some(Box::new(opt.clone()));
     w.n_processed = n_processed;
     w.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
-    w.seqs = seqs.to_vec();
+    w.seqs = std::mem::take(seqs);
     let n_usize = usize::try_from(n.max(0)).expect("n");
     if w.regs.len() < n_usize {
         w.regs.resize(n_usize, mem_alnreg_v::default());
@@ -1923,7 +2188,10 @@ pub fn mem_process_seqs(
     if w.chain_ar.len() < n_usize {
         w.chain_ar.resize(n_usize, mem_chain_v::default());
     }
-    let want_seed_buf = n_usize.saturating_mul(AVG_SEEDS_PER_READ);
+    let want_seed_buf = usize::try_from(w.nthreads.max(1))
+        .expect("nthreads")
+        .saturating_mul(BATCH_SIZE)
+        .saturating_mul(AVG_SEEDS_PER_READ);
     if w.seedBuf.len() < want_seed_buf {
         w.seedBuf.resize(want_seed_buf, mem_seed_t::default());
     }
@@ -1982,13 +2250,16 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         run_worker_chunks_parallel(w, n_, worker_aln);
         run_worker_chunks_parallel(w, n_, worker_sam);
     }
-    for (dst, src) in seqs.iter_mut().zip(w.seqs.iter()) {
-        dst.sam = src.sam.clone();
-    }
+    *seqs = std::mem::take(&mut w.seqs);
 }
 
 #[doc = "Original function: mem_mark_primary_se_core:1392"]
-pub fn mem_mark_primary_se_core(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], z: &mut Vec<usize>) {
+pub fn mem_mark_primary_se_core(
+    opt: &mem_opt_t,
+    n: i32,
+    a: &mut [mem_alnreg_t],
+    z: &mut Vec<usize>,
+) {
     let mut tmp = opt.a + opt.b;
     tmp = tmp.max(opt.o_del + opt.e_del);
     tmp = tmp.max(opt.o_ins + opt.e_ins);
@@ -2042,7 +2313,9 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
         p.alt_sc = 0;
         p.secondary = -1;
         p.secondary_all = -1;
-        p.hash = hash_64(u64::from_ne_bytes((id + i64::try_from(i).expect("i")).to_ne_bytes()));
+        p.hash = hash_64(u64::from_ne_bytes(
+            (id + i64::try_from(i).expect("i")).to_ne_bytes(),
+        ));
         if p.is_alt == 0 {
             n_pri += 1;
         }
@@ -2088,7 +2361,9 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
         }
         for i in 0..usize::try_from(n).expect("n") {
             if a[i].secondary >= 0 {
-                a[i].secondary_all = i32::try_from(rank[usize::try_from(a[i].secondary).expect("secondary")]).expect("secondary_all");
+                a[i].secondary_all =
+                    i32::try_from(rank[usize::try_from(a[i].secondary).expect("secondary")])
+                        .expect("secondary_all");
                 if a[i].is_alt != 0 {
                     a[i].secondary = i32::MAX;
                 }
@@ -2102,7 +2377,12 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
                 p.secondary = -1;
             }
             z.clear();
-            mem_mark_primary_se_core(opt, n_pri, &mut a[..usize::try_from(n_pri).expect("n_pri")], &mut z);
+            mem_mark_primary_se_core(
+                opt,
+                n_pri,
+                &mut a[..usize::try_from(n_pri).expect("n_pri")],
+                &mut z,
+            );
         }
     } else {
         for p in a.iter_mut().take(usize::try_from(n).expect("n")) {
@@ -2113,8 +2393,13 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
 }
 
 #[doc = "Original function: mem_approx_mapq_se:1470"]
+#[inline]
 pub fn mem_approx_mapq_se(opt: &mem_opt_t, a: &mem_alnreg_t) -> i32 {
-    let mut sub = if a.sub != 0 { a.sub } else { opt.min_seed_len * opt.a };
+    let mut sub = if a.sub != 0 {
+        a.sub
+    } else {
+        opt.min_seed_len * opt.a
+    };
     sub = sub.max(a.csub);
     if sub >= a.score {
         return 0;
@@ -2124,11 +2409,18 @@ pub fn mem_approx_mapq_se(opt: &mem_opt_t, a: &mem_alnreg_t) -> i32 {
     let mut mapq = if a.score == 0 {
         0
     } else if opt.mapQ_coef_len > 0.0 {
-        let mut tmp = if (l as f32) < opt.mapQ_coef_len { 1.0 } else { f64::from(opt.mapQ_coef_fac) / f64::from(l).ln() };
+        let mut tmp = if (l as f32) < opt.mapQ_coef_len {
+            1.0
+        } else {
+            f64::from(opt.mapQ_coef_fac) / f64::from(l).ln()
+        };
         tmp *= identity * identity;
         (6.02 * f64::from(a.score - sub) / f64::from(opt.a) * tmp * tmp + 0.499) as i32
     } else {
-        let mut mapq = (MEM_MAPQ_COEF * (1.0 - f64::from(sub) / f64::from(a.score)) * f64::from(a.seedcov).ln() + 0.499) as i32;
+        let mut mapq = (MEM_MAPQ_COEF
+            * (1.0 - f64::from(sub) / f64::from(a.score))
+            * f64::from(a.seedcov).ln()
+            + 0.499) as i32;
         if identity < 0.95 {
             mapq = (f64::from(mapq) * identity * identity + 0.499) as i32;
         }
@@ -2142,6 +2434,7 @@ pub fn mem_approx_mapq_se(opt: &mem_opt_t, a: &mem_alnreg_t) -> i32 {
 }
 
 #[doc = "Original function: mem_reorder_primary5:1496"]
+#[inline]
 pub fn mem_reorder_primary5(T: i32, a: &mut mem_alnreg_v) {
     let mut n_pri = 0_i32;
     let mut left_st = i32::MAX;
@@ -2187,7 +2480,7 @@ pub fn mem_reg2sam(
     extra_flag: i32,
     m: Option<&mem_aln_t>,
 ) {
-    let xa = if (opt.flag & MEM_F_ALL) == 0 {
+    let mut xa = if (opt.flag & MEM_F_ALL) == 0 {
         mem_gen_alt(opt, bns, pac, a, s.l_seq, s.seq.as_deref().unwrap_or(""))
     } else {
         vec![None; a.n]
@@ -2205,23 +2498,44 @@ pub fn mem_reg2sam(
             continue;
         }
         if p.secondary >= 0
-            && usize::try_from(p.secondary).ok().is_some_and(|idx| idx < a.a.len())
-            && (p.score as f32) < (a.a[usize::try_from(p.secondary).expect("secondary")].score as f32) * opt.drop_ratio
+            && usize::try_from(p.secondary)
+                .ok()
+                .is_some_and(|idx| idx < a.a.len())
+            && (p.score as f32)
+                < (a.a[usize::try_from(p.secondary).expect("secondary")].score as f32)
+                    * opt.drop_ratio
         {
             continue;
         }
 
-        let mut q = mem_reg2aln(opt, bns, pac, s.l_seq, s.seq.as_deref().unwrap_or(""), Some(p));
+        let mut q = mem_reg2aln(
+            opt,
+            bns,
+            pac,
+            s.l_seq,
+            s.seq.as_deref().unwrap_or(""),
+            Some(p),
+        );
         assert!(q.rid >= 0, "mem_reg2sam expected mapped alignment");
-        q.XA = xa[k].clone();
+        // Take xa[k] by value (xa not used after this loop) — avoids the String clone.
+        q.XA = std::mem::take(&mut xa[k]);
         q.flag |= extra_flag;
         if p.secondary >= 0 {
             q.sub = -1;
         }
         if l != 0 && p.secondary < 0 {
-            q.flag |= if (opt.flag & MEM_F_NO_MULTI) != 0 { 0x10000 } else { 0x800 };
+            q.flag |= if (opt.flag & MEM_F_NO_MULTI) != 0 {
+                0x10000
+            } else {
+                0x800
+            };
         }
-        if (opt.flag & MEM_F_KEEP_SUPP_MAPQ) == 0 && l != 0 && p.is_alt == 0 && !aa.is_empty() && q.mapq > aa[0].mapq {
+        if (opt.flag & MEM_F_KEEP_SUPP_MAPQ) == 0
+            && l != 0
+            && p.is_alt == 0
+            && !aa.is_empty()
+            && q.mapq > aa[0].mapq
+        {
             q.mapq = aa[0].mapq;
         }
         aa.push(q);
@@ -2235,17 +2549,43 @@ pub fn mem_reg2sam(
     } else {
         let n = i32::try_from(aa.len()).expect("aa len");
         for k in 0..aa.len() {
-            mem_aln2sam(opt, bns, &mut str_, s, n, &aa, i32::try_from(k).expect("k"), m);
+            mem_aln2sam(
+                opt,
+                bns,
+                &mut str_,
+                s,
+                n,
+                &aa,
+                i32::try_from(k).expect("k"),
+                m,
+            );
         }
     }
 
-    s.sam = Some(str_.as_str().to_owned());
+    // Move the kstring buffer into the String to avoid the as_str().to_owned() clone.
+    let mut bytes = str_.s;
+    bytes.truncate(str_.l);
+    s.sam = Some(
+        String::from_utf8(bytes)
+            .expect("SAM record contains invalid UTF-8")
+            .into(),
+    );
 }
 
 #[doc = "Original function: add_cigar:1579"]
-pub fn add_cigar(opt: &mem_opt_t, p: &mem_aln_t, str_: &mut crate::generated::kstring_h::kstring_t, which: i32) {
+#[inline]
+pub fn add_cigar(
+    opt: &mem_opt_t,
+    p: &mem_aln_t,
+    str_: &mut crate::generated::kstring_h::kstring_t,
+    which: i32,
+) {
     if p.n_cigar > 0 {
-        for &cigar in p.cigar.iter().take(usize::try_from(p.n_cigar).expect("n_cigar")) {
+        for &cigar in p
+            .cigar
+            .iter()
+            .take(usize::try_from(p.n_cigar).expect("n_cigar"))
+        {
             let mut c = i32::try_from(cigar & 0xf).expect("op");
             if (opt.flag & 0x200) == 0 && p.is_alt == 0 && (c == 3 || c == 4) {
                 c = if which != 0 { 4 } else { 3 };
@@ -2280,7 +2620,11 @@ pub fn mem_aln2sam(
 
     p.flag |= if m.is_some() { 0x1 } else { 0 };
     p.flag |= if p.rid < 0 { 0x4 } else { 0 };
-    p.flag |= if m.as_ref().is_some_and(|mate| mate.rid < 0) { 0x8 } else { 0 };
+    p.flag |= if m.as_ref().is_some_and(|mate| mate.rid < 0) {
+        0x8
+    } else {
+        0
+    };
     if p.rid < 0 {
         if let Some(mate) = m.as_ref() {
             if mate.rid >= 0 {
@@ -2304,17 +2648,31 @@ pub fn mem_aln2sam(
         }
     }
     p.flag |= if p.is_rev != 0 { 0x10 } else { 0 };
-    p.flag |= if m.as_ref().is_some_and(|mate| mate.is_rev != 0) { 0x20 } else { 0 };
+    p.flag |= if m.as_ref().is_some_and(|mate| mate.is_rev != 0) {
+        0x20
+    } else {
+        0
+    };
 
     let qname = s.name.as_deref().expect("read name missing");
     let l_seq = usize::try_from(s.l_seq).expect("l_seq");
     let seq_text = s.seq.as_deref().unwrap_or("");
     let qual_text = s.qual.as_deref();
 
-    ks_resize(str_, str_.l + l_seq + qname.len() + qual_text.map_or(0, str::len) + 20);
-    kputsn(qname.as_bytes(), i32::try_from(qname.len()).expect("qname len"), str_);
+    ks_resize(
+        str_,
+        str_.l + l_seq + qname.len() + qual_text.map_or(0, str::len) + 20,
+    );
+    kputsn(
+        qname.as_bytes(),
+        i32::try_from(qname.len()).expect("qname len"),
+        str_,
+    );
     kputc(i32::from(b'\t'), str_);
-    kputw((p.flag & 0xffff) | if (p.flag & 0x10000) != 0 { 0x100 } else { 0 }, str_);
+    kputw(
+        (p.flag & 0xffff) | if (p.flag & 0x10000) != 0 { 0x100 } else { 0 },
+        str_,
+    );
     kputc(i32::from(b'\t'), str_);
 
     if p.rid >= 0 {
@@ -2336,13 +2694,21 @@ pub fn mem_aln2sam(
             if p.rid == mate.rid {
                 kputc(i32::from(b'='), str_);
             } else {
-                kputs(&bns.anns[usize::try_from(mate.rid).expect("mate rid")].name, str_);
+                kputs(
+                    &bns.anns[usize::try_from(mate.rid).expect("mate rid")].name,
+                    str_,
+                );
             }
             kputc(i32::from(b'\t'), str_);
             kputl(mate.pos + 1, str_);
             kputc(i32::from(b'\t'), str_);
             if p.rid == mate.rid {
-                let p0 = p.pos + if p.is_rev != 0 { i64::from(get_rlen(p.n_cigar, &p.cigar) - 1) } else { 0 };
+                let p0 = p.pos
+                    + if p.is_rev != 0 {
+                        i64::from(get_rlen(p.n_cigar, &p.cigar) - 1)
+                    } else {
+                        0
+                    };
                 let p1 = mate.pos
                     + if mate.is_rev != 0 {
                         i64::from(get_rlen(mate.n_cigar, &mate.cigar) - 1)
@@ -2352,7 +2718,14 @@ pub fn mem_aln2sam(
                 if mate.n_cigar == 0 || p.n_cigar == 0 {
                     kputc(i32::from(b'0'), str_);
                 } else {
-                    let tlen = -(p0 - p1 + if p0 > p1 { 1 } else if p0 < p1 { -1 } else { 0 });
+                    let tlen = -(p0 - p1
+                        + if p0 > p1 {
+                            1
+                        } else if p0 < p1 {
+                            -1
+                        } else {
+                            0
+                        });
                     kputl(tlen, str_);
                 }
             } else {
@@ -2379,13 +2752,26 @@ pub fn mem_aln2sam(
                 qe -= usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
             }
         }
-        let seq_nt4 = seq_to_nt4(seq_text);
+        // Reuse s.seq_nt4 if populated (worker_bwt fills it); otherwise encode on the fly.
+        let seq_nt4_owned: Option<Vec<u8>>;
+        let seq_nt4: &[u8] = if !s.seq_nt4.is_empty() {
+            seq_nt4_owned = None;
+            &s.seq_nt4
+        } else {
+            seq_nt4_owned = Some(seq_to_nt4(seq_text));
+            seq_nt4_owned.as_deref().expect("seq_nt4 encoded")
+        };
+        let _ = &seq_nt4_owned; // suppress unused warning when populated path is taken
         ks_resize(str_, str_.l + (qe - qb) + 1);
         if p.is_rev == 0 {
-            for &base in &seq_nt4[qb..qe] {
-                str_.s[str_.l] = b"ACGTN"[usize::from(base)];
-                str_.l += 1;
+            let dst = str_.l;
+            let src = &seq_nt4[qb..qe];
+            let n = src.len();
+            let out = &mut str_.s[dst..dst + n];
+            for (o, &base) in out.iter_mut().zip(src.iter()) {
+                *o = b"ACGTN"[usize::from(base)];
             }
+            str_.l += n;
         } else {
             let mut rq_b = qb;
             let mut rq_e = qe;
@@ -2399,24 +2785,30 @@ pub fn mem_aln2sam(
                     rq_b += usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
                 }
             }
-            for &base in seq_nt4[rq_b..rq_e].iter().rev() {
-                str_.s[str_.l] = b"TGCAN"[usize::from(base)];
-                str_.l += 1;
+            let dst = str_.l;
+            let src = &seq_nt4[rq_b..rq_e];
+            let n = src.len();
+            let out = &mut str_.s[dst..dst + n];
+            for (o, &base) in out.iter_mut().zip(src.iter().rev()) {
+                *o = b"TGCAN"[usize::from(base)];
             }
+            str_.l += n;
         }
         str_.s[str_.l] = 0;
         kputc(i32::from(b'\t'), str_);
         if let Some(qual) = qual_text {
             ks_resize(str_, str_.l + (qe - qb) + 1);
             if p.is_rev == 0 {
-                for &ch in &qual.as_bytes()[qb..qe] {
-                    str_.s[str_.l] = ch;
-                    str_.l += 1;
-                }
+                let dst = str_.l;
+                let src = &qual.as_bytes()[qb..qe];
+                let n = src.len();
+                str_.s[dst..dst + n].copy_from_slice(src);
+                str_.l += n;
             } else {
                 let mut rq_b = qb;
                 let mut rq_e = qe;
-                if p.n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p.is_alt == 0 {
+                if p.n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p.is_alt == 0
+                {
                     rq_e = l_seq;
                     rq_b = 0;
                     if cigar_end_clip(p.cigar[0]) {
@@ -2426,10 +2818,14 @@ pub fn mem_aln2sam(
                         rq_b += usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
                     }
                 }
-                for &ch in qual.as_bytes()[rq_b..rq_e].iter().rev() {
-                    str_.s[str_.l] = ch;
-                    str_.l += 1;
+                let dst = str_.l;
+                let src = &qual.as_bytes()[rq_b..rq_e];
+                let n = src.len();
+                let out = &mut str_.s[dst..dst + n];
+                for (o, &ch) in out.iter_mut().zip(src.iter().rev()) {
+                    *o = ch;
                 }
+                str_.l += n;
             }
             str_.s[str_.l] = 0;
         } else {
@@ -2485,9 +2881,16 @@ pub fn mem_aln2sam(
                 kputc(i32::from(b','), str_);
                 kputc(i32::from(if r.is_rev != 0 { b'-' } else { b'+' }), str_);
                 kputc(i32::from(b','), str_);
-                for &cigar in r.cigar.iter().take(usize::try_from(r.n_cigar).expect("n_cigar")) {
+                for &cigar in r
+                    .cigar
+                    .iter()
+                    .take(usize::try_from(r.n_cigar).expect("n_cigar"))
+                {
                     kputw(i32::try_from(cigar >> 4).expect("len"), str_);
-                    kputc(i32::from(b"MIDSH"[usize::try_from(cigar & 0xf).expect("op")]), str_);
+                    kputc(
+                        i32::from(b"MIDSH"[usize::try_from(cigar & 0xf).expect("op")]),
+                        str_,
+                    );
                 }
                 kputc(i32::from(b','), str_);
                 kputw(i32::try_from(r.mapq).expect("mapq"), str_);
@@ -2497,7 +2900,10 @@ pub fn mem_aln2sam(
             }
         }
         if p.alt_sc > 0 {
-            let _ = ksprintf(str_, format_args!("\tpa:f:{:.3}", (p.score as f64) / (p.alt_sc as f64)));
+            let _ = ksprintf(
+                str_,
+                format_args!("\tpa:f:{:.3}", (p.score as f64) / (p.alt_sc as f64)),
+            );
         }
     }
     if let Some(xa) = p.XA.as_deref() {
@@ -2551,8 +2957,9 @@ pub fn mem_reg2aln(
     let qe = ar.qe;
     let rb = ar.rb;
     let re = ar.re;
-    let query = seq_to_nt4(query_);
-    assert_eq!(query.len(), usize::try_from(l_query).expect("l_query"));
+    // The full nt4-encoded query is only needed for the qb..qe slice below.
+    // Skip the full seq_to_nt4 allocation by encoding the subslice directly.
+    debug_assert_eq!(query_.len(), usize::try_from(l_query).expect("l_query"));
 
     a.mapq = if ar.secondary < 0 {
         u32::try_from(mem_approx_mapq_se(opt, ar)).expect("mapq")
@@ -2563,8 +2970,22 @@ pub fn mem_reg2aln(
         a.flag |= 0x100;
     }
 
-    let tmp = infer_bw(qe - qb, i32::try_from(re - rb).expect("ref span"), ar.truesc, opt.a, opt.o_del, opt.e_del);
-    let mut w2 = infer_bw(qe - qb, i32::try_from(re - rb).expect("ref span"), ar.truesc, opt.a, opt.o_ins, opt.e_ins);
+    let tmp = infer_bw(
+        qe - qb,
+        i32::try_from(re - rb).expect("ref span"),
+        ar.truesc,
+        opt.a,
+        opt.o_del,
+        opt.e_del,
+    );
+    let mut w2 = infer_bw(
+        qe - qb,
+        i32::try_from(re - rb).expect("ref span"),
+        ar.truesc,
+        opt.a,
+        opt.o_ins,
+        opt.e_ins,
+    );
     if w2 < tmp {
         w2 = tmp;
     }
@@ -2577,10 +2998,17 @@ pub fn mem_reg2aln(
     let mut last_sc = -(1 << 30);
     let cigar_result;
     let mut tries = 0_i32;
+    // Hoist query_slice — bwa_gen_cigar2 does an in-place reverse + restore, so the buffer
+    // is unchanged across retries. Saves the per-iter to_vec().
+    let qb_us = usize::try_from(qb).expect("qb");
+    let qe_us = usize::try_from(qe).expect("qe");
+    let mut query_slice: Vec<u8> = query_.as_bytes()[qb_us..qe_us]
+        .iter()
+        .map(|&c| NT4_LUT[c as usize])
+        .collect();
     loop {
         w2 = w2.min(opt.w << 2);
         let mut n_cigar = 0_i32;
-        let mut query_slice = query[usize::try_from(qb).expect("qb")..usize::try_from(qe).expect("qe")].to_vec();
         let next_cigar_result = bwa_gen_cigar2(
             &opt.mat,
             opt.o_del,
@@ -2633,11 +3061,13 @@ pub fn mem_reg2aln(
         let clip5 = if is_rev != 0 { l_query - qe } else { qb };
         let clip3 = if is_rev != 0 { qb } else { l_query - qe };
         if clip5 != 0 {
-            a.cigar.insert(0, (u32::try_from(clip5).expect("clip5") << 4) | 3);
+            a.cigar
+                .insert(0, (u32::try_from(clip5).expect("clip5") << 4) | 3);
             a.n_cigar += 1;
         }
         if clip3 != 0 {
-            a.cigar.push((u32::try_from(clip3).expect("clip3") << 4) | 3);
+            a.cigar
+                .push((u32::try_from(clip3).expect("clip3") << 4) | 3);
             a.n_cigar += 1;
         }
     }
@@ -2653,6 +3083,7 @@ pub fn mem_reg2aln(
 }
 
 #[doc = "Original function: infer_bw:1811"]
+#[inline]
 pub fn infer_bw(l1: i32, l2: i32, score: i32, a: i32, q: i32, r: i32) -> i32 {
     if l1 == l2 && l1 * a - score < (q + r - a) << 1 {
         return 0;
@@ -2665,9 +3096,13 @@ pub fn infer_bw(l1: i32, l2: i32, score: i32, a: i32, q: i32, r: i32) -> i32 {
 }
 
 #[doc = "Original function: get_rlen:1820"]
+#[inline]
 pub fn get_rlen(n_cigar: i32, cigar: &[u32]) -> i32 {
     let mut l = 0_i32;
-    for &op in cigar.iter().take(usize::try_from(n_cigar).expect("n_cigar")) {
+    for &op in cigar
+        .iter()
+        .take(usize::try_from(n_cigar).expect("n_cigar"))
+    {
         let code = op & 0xf;
         if code == 0 || code == 2 {
             l += i32::try_from(op >> 4).expect("op len");
@@ -2688,6 +3123,7 @@ pub fn mm_realloc<T: Copy + Default>(ptr: &[T], csize: i64, nsize: i64, _dsize: 
 }
 
 #[doc = "Original function: bns_get_seq_v2:1851"]
+#[inline]
 pub fn bns_get_seq_v2<'a>(
     l_pac: i64,
     _pac: &[u8],
@@ -2720,6 +3156,7 @@ pub fn bns_get_seq_v2<'a>(
 }
 
 #[doc = "Original function: bns_fetch_seq_v2:1890"]
+#[inline]
 pub fn bns_fetch_seq_v2<'a>(
     bns: &bntseq_t,
     pac: &[u8],
@@ -2737,8 +3174,9 @@ pub fn bns_fetch_seq_v2<'a>(
 
     let mut is_rev = 0;
     *rid = crate::generated::bntseq_cpp::bns_pos2rid(bns, bns_depos(bns, mid, &mut is_rev));
-    let mut far_beg = bns.anns[usize::try_from(*rid).expect("rid")].offset;
-    let mut far_end = far_beg + i64::from(bns.anns[usize::try_from(*rid).expect("rid")].len);
+    let ann = &bns.anns[usize::try_from(*rid).expect("rid")];
+    let mut far_beg = ann.offset;
+    let mut far_end = far_beg + i64::from(ann.len);
     if is_rev != 0 {
         let tmp = far_beg;
         far_beg = (bns.l_pac << 1) - far_end;
@@ -2776,11 +3214,15 @@ pub fn sortPairsLenExt(
     hist[..=MAX_SEQ_LEN8 + MAX_SEQ_LEN16].fill(0);
     let (hist8, tail) = hist.split_at_mut(MAX_SEQ_LEN8);
     let (hist16, hist3) = tail.split_at_mut(MAX_SEQ_LEN16);
+    #[cfg(debug_assertions)]
     let mut arr = vec![0_i32; count];
 
     for sp in pairArray.iter().take(count).copied() {
         let minval = sp.h0 + sp.len1.min(sp.len2) * score_a;
-        if sp.len1 < MAX_SEQ_LEN8 as i32 && sp.len2 < MAX_SEQ_LEN8 as i32 && minval < MAX_SEQ_LEN8 as i32 {
+        if sp.len1 < MAX_SEQ_LEN8 as i32
+            && sp.len2 < MAX_SEQ_LEN8 as i32
+            && minval < MAX_SEQ_LEN8 as i32
+        {
             hist8[usize::try_from(minval).expect("minval 8")] += 1;
         } else if sp.len1 < MAX_SEQ_LEN16 as i32
             && sp.len2 < MAX_SEQ_LEN16 as i32
@@ -2805,30 +3247,44 @@ pub fn sortPairsLenExt(
     }
     hist3[0] = cumul_sum;
 
-    for (i, sp) in pairArray.iter().take(count).copied().enumerate() {
+    for (_i, sp) in pairArray.iter().take(count).copied().enumerate() {
         let minval = sp.h0 + sp.len1.min(sp.len2) * score_a;
-        if sp.len1 < MAX_SEQ_LEN8 as i32 && sp.len2 < MAX_SEQ_LEN8 as i32 && minval < MAX_SEQ_LEN8 as i32 {
-            let pos = usize::try_from(hist8[usize::try_from(minval).expect("minval 8")]).expect("pos");
+        if sp.len1 < MAX_SEQ_LEN8 as i32
+            && sp.len2 < MAX_SEQ_LEN8 as i32
+            && minval < MAX_SEQ_LEN8 as i32
+        {
+            let pos =
+                usize::try_from(hist8[usize::try_from(minval).expect("minval 8")]).expect("pos");
             tempArray[pos] = sp;
             hist8[usize::try_from(minval).expect("minval 8")] += 1;
             *numPairs128 += 1;
-            assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 128 slot");
-            arr[pos] = 1;
+            #[cfg(debug_assertions)]
+            {
+                assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 128 slot");
+                arr[pos] = 1;
+            }
         } else if sp.len1 < MAX_SEQ_LEN16 as i32
             && sp.len2 < MAX_SEQ_LEN16 as i32
             && minval < MAX_SEQ_LEN16 as i32
         {
-            let pos = usize::try_from(hist16[usize::try_from(minval).expect("minval 16")]).expect("pos");
+            let pos =
+                usize::try_from(hist16[usize::try_from(minval).expect("minval 16")]).expect("pos");
             tempArray[pos] = sp;
             hist16[usize::try_from(minval).expect("minval 16")] += 1;
             *numPairs16 += 1;
-            assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 16 slot");
-            arr[pos] = i32::try_from(i + 1).expect("arr marker");
+            #[cfg(debug_assertions)]
+            {
+                assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 16 slot");
+                arr[pos] = i32::try_from(_i + 1).expect("arr marker");
+            }
         } else {
             let pos = usize::try_from(hist3[0]).expect("pos");
             tempArray[pos] = sp;
             hist3[0] += 1;
-            arr[pos] = i32::try_from(i + 1).expect("arr marker");
+            #[cfg(debug_assertions)]
+            {
+                arr[pos] = i32::try_from(_i + 1).expect("arr marker");
+            }
             *numPairs1 += 1;
         }
     }
@@ -2837,7 +3293,13 @@ pub fn sortPairsLenExt(
 }
 
 #[doc = "Original function: sortPairsLen:2025"]
-pub fn sortPairsLen(pairArray: &mut [SeqPair], count: i32, tempArray: &mut [SeqPair], hist: &mut [i32]) {
+#[inline]
+pub fn sortPairsLen(
+    pairArray: &mut [SeqPair],
+    count: i32,
+    tempArray: &mut [SeqPair],
+    hist: &mut [i32],
+) {
     let count = usize::try_from(count).expect("count");
     assert!(pairArray.len() >= count);
     assert!(tempArray.len() >= count);
@@ -2863,6 +3325,31 @@ pub fn sortPairsLen(pairArray: &mut [SeqPair], count: i32, tempArray: &mut [SeqP
     pairArray[..count].copy_from_slice(&tempArray[..count]);
 }
 
+#[derive(Default)]
+struct Chain2alnScratch {
+    left_pairs: Vec<SeqPair>,
+    right_pairs: Vec<SeqPair>,
+    left_ref_buf: Vec<u8>,
+    right_ref_buf: Vec<u8>,
+    left_qer_buf: Vec<u8>,
+    right_qer_buf: Vec<u8>,
+    hist: Vec<i32>,
+    temp_pairs: Vec<SeqPair>,
+    lim: Vec<i32>,
+    sorted_seed_indices: Vec<Vec<Vec<u32>>>,
+    work_pairs: Vec<SeqPair>,
+}
+
+thread_local! {
+    static CHAIN2ALN_SCRATCH: std::cell::RefCell<Chain2alnScratch> =
+        std::cell::RefCell::new(Chain2alnScratch::default());
+    static MEM_COLLECT_QUERY_CUM_LEN: std::cell::RefCell<Vec<i32>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static MEM_CHAIN_SEEDS_SA_COORD: std::cell::RefCell<Vec<i64>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static USE_CURRENT_RAYON_POOL: Cell<bool> = const { Cell::new(false) };
+}
+
 #[doc = "Original function: mem_chain2aln_across_reads_V2:2069"]
 pub fn mem_chain2aln_across_reads_V2(
     opt: &mem_opt_t,
@@ -2877,23 +3364,51 @@ pub fn mem_chain2aln_across_reads_V2(
     _tid: i32,
 ) {
     let l_pac = bns.l_pac;
-    let mut left_pairs = Vec::<SeqPair>::new();
-    let mut right_pairs = Vec::<SeqPair>::new();
-    let mut left_ref_buf = Vec::<u8>::new();
-    let mut right_ref_buf = Vec::<u8>::new();
-    let mut left_qer_buf = Vec::<u8>::new();
-    let mut right_qer_buf = Vec::<u8>::new();
-    let mut sorted_seed_indices: Vec<Vec<Vec<u32>>> = vec![Vec::new(); usize::try_from(nseq).expect("nseq")];
+    // Take chain2aln scratch out of thread-local; restored at function end. Reuses capacity
+    // across the ~11 chain2aln calls per program — these buffers grow to ~600KB each per call.
+    let scratch = CHAIN2ALN_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let Chain2alnScratch {
+        mut left_pairs,
+        mut right_pairs,
+        mut left_ref_buf,
+        mut right_ref_buf,
+        mut left_qer_buf,
+        mut right_qer_buf,
+        mut hist,
+        mut temp_pairs,
+        mut lim,
+        mut sorted_seed_indices,
+        mut work_pairs,
+    } = scratch;
+    left_pairs.clear();
+    right_pairs.clear();
+    left_ref_buf.clear();
+    right_ref_buf.clear();
+    left_qer_buf.clear();
+    right_qer_buf.clear();
+    let nseq_usize = usize::try_from(nseq).expect("nseq");
+    sorted_seed_indices.resize_with(nseq_usize, Vec::new);
+    for per_read in sorted_seed_indices.iter_mut().take(nseq_usize) {
+        per_read.clear();
+    }
 
-    for l in 0..usize::try_from(nseq).expect("nseq") {
-        let query = nt4_cow(&seq_[l]).into_owned();
+    for l in 0..nseq_usize {
+        // Cow::Borrowed in production (seq_nt4 pre-populated by worker_bwt).
+        let query_cow = nt4_cow(&seq_[l]);
+        let query: &[u8] = &query_cow;
         let l_query = seq_[l].l_seq;
         let trace_this = debug_trace_read(seq_[l].name.as_deref());
         let chn = &mut chain_ar[l];
         let av = &mut av_v[l];
         av.n = 0;
-        av.m = chn.a.iter().map(|c| usize::try_from(c.n).expect("chain n")).sum();
-        av.a = vec![mem_alnreg_t::default(); av.m];
+        av.m = chn
+            .a
+            .iter()
+            .map(|c| usize::try_from(c.n).expect("chain n"))
+            .sum();
+        // Reuse the previous Vec's capacity instead of dropping + reallocating per read.
+        av.a.clear();
+        av.a.resize(av.m, mem_alnreg_t::default());
         sorted_seed_indices[l].clear();
 
         for (j, c) in chn.a.iter_mut().enumerate().take(chn.n) {
@@ -2904,18 +3419,24 @@ pub fn mem_chain2aln_across_reads_V2(
 
             let mut rmax0 = l_pac << 1;
             let mut rmax1 = 0_i64;
-            let mut seed_order: Vec<u32> = (0..u32::try_from(c.n).expect("c.n")).collect();
+            sorted_seed_indices[l].push(Vec::new());
+            let seed_order = sorted_seed_indices[l].last_mut().expect("just pushed");
+            seed_order.clear();
+            seed_order.extend(0..u32::try_from(c.n).expect("c.n"));
             seed_order.sort_by_key(|&idx| {
-                let score = u32::try_from(c.seeds[usize::try_from(idx).expect("idx")].score).expect("seed score");
+                let score = u32::try_from(c.seeds[usize::try_from(idx).expect("idx")].score)
+                    .expect("seed score");
                 (u64::from(score) << 32) | u64::from(idx)
             });
-            sorted_seed_indices[l].push(seed_order.clone());
+            let seed_order: &Vec<u32> = seed_order;
 
             for t in c.seeds.iter().take(usize::try_from(c.n).expect("c.n")) {
                 let b = t.rbeg - i64::from(t.qbeg + cal_max_gap(opt, t.qbeg));
                 let e = t.rbeg
                     + i64::from(t.len)
-                    + i64::from((l_query - t.qbeg - t.len) + cal_max_gap(opt, l_query - t.qbeg - t.len));
+                    + i64::from(
+                        (l_query - t.qbeg - t.len) + cal_max_gap(opt, l_query - t.qbeg - t.len),
+                    );
                 rmax0 = rmax0.min(b);
                 rmax1 = rmax1.max(e);
             }
@@ -2990,13 +3511,10 @@ pub fn mem_chain2aln_across_reads_V2(
                         len1: i32::try_from(s.rbeg - fetch_beg).expect("left ref len"),
                         ..Default::default()
                     };
-                    for i in 0..usize::try_from(s.qbeg).expect("qbeg") {
-                        left_qer_buf.push(query[usize::try_from(s.qbeg).expect("qbeg") - 1 - i]);
-                    }
+                    let qbeg_us = usize::try_from(s.qbeg).expect("qbeg");
+                    left_qer_buf.extend(query[..qbeg_us].iter().rev().copied());
                     let left_len = usize::try_from(sp.len1).expect("left len1");
-                    for i in 0..left_len {
-                        left_ref_buf.push(rseq[left_len - 1 - i]);
-                    }
+                    left_ref_buf.extend(rseq[..left_len].iter().rev().copied());
                     left_pairs.push(sp);
                     a.qb = s.qbeg;
                     a.rb = s.rbeg;
@@ -3015,17 +3533,17 @@ pub fn mem_chain2aln_across_reads_V2(
                         seqid: i32::try_from(l).expect("l"),
                         regid: i32::try_from(aln_idx).expect("aln_idx"),
                         len2: l_query - qe,
-                        len1: i32::try_from(fetch_end - fetch_beg).expect("r span") - i32::try_from(re).expect("re i32"),
+                        len1: i32::try_from(fetch_end - fetch_beg).expect("r span")
+                            - i32::try_from(re).expect("re i32"),
                         idq: i32::try_from(right_qer_buf.len()).expect("right q offset"),
                         idr: i32::try_from(right_ref_buf.len()).expect("right r offset"),
                         ..Default::default()
                     };
-                    for i in 0..usize::try_from(sp.len2).expect("sp.len2") {
-                        right_qer_buf.push(query[usize::try_from(qe).expect("qe") + i]);
-                    }
-                    for i in 0..usize::try_from(sp.len1).expect("sp.len1") {
-                        right_ref_buf.push(rseq[re + i]);
-                    }
+                    let qe_us = usize::try_from(qe).expect("qe");
+                    let len2_us = usize::try_from(sp.len2).expect("sp.len2");
+                    right_qer_buf.extend_from_slice(&query[qe_us..qe_us + len2_us]);
+                    let len1_us = usize::try_from(sp.len1).expect("sp.len1");
+                    right_ref_buf.extend_from_slice(&rseq[re..re + len1_us]);
                     right_pairs.push(sp);
                     a.qe = qe;
                     a.re = fetch_beg + i64::try_from(re).expect("re i64");
@@ -3052,14 +3570,34 @@ pub fn mem_chain2aln_across_reads_V2(
         }
     }
 
-    let mut hist = vec![0_i32; MAX_SEQ_LEN8 + MAX_SEQ_LEN16 + 1];
+    hist.clear();
+    hist.resize(MAX_SEQ_LEN8 + MAX_SEQ_LEN16 + 1, 0);
     let max_pairs = left_pairs.len().max(right_pairs.len()).max(1);
-    let mut temp_pairs = vec![SeqPair::default(); max_pairs];
+    temp_pairs.clear();
+    temp_pairs.resize(max_pairs, SeqPair::default());
     let bswLeft = BandedPairWiseSW::ctor(
-        opt.o_del, opt.e_del, opt.o_ins, opt.e_ins, opt.zdrop, opt.pen_clip5, &opt.mat, opt.a, opt.b, 1,
+        opt.o_del,
+        opt.e_del,
+        opt.o_ins,
+        opt.e_ins,
+        opt.zdrop,
+        opt.pen_clip5,
+        &opt.mat,
+        opt.a,
+        opt.b,
+        1,
     );
     let bswRight = BandedPairWiseSW::ctor(
-        opt.o_del, opt.e_del, opt.o_ins, opt.e_ins, opt.zdrop, opt.pen_clip3, &opt.mat, opt.a, opt.b, 1,
+        opt.o_del,
+        opt.e_del,
+        opt.o_ins,
+        opt.e_ins,
+        opt.zdrop,
+        opt.pen_clip3,
+        &opt.mat,
+        opt.a,
+        opt.b,
+        1,
     );
 
     if !left_pairs.is_empty() {
@@ -3077,15 +3615,28 @@ pub fn mem_chain2aln_across_reads_V2(
             &mut num1,
             opt.a,
         );
-        let pair_ar_offset = usize::try_from(num128 + num16).expect("offset");
-        let mut nump = usize::try_from(num1).expect("num1");
-        let mut work = left_pairs.clone();
+        // Bucket scalar (num1): pairs at left_pairs[num128 + num16 ..]. Clone only that slice
+        // (was: full left_pairs.clone() — wasted memory by carrying the unused larger-pair prefix).
+        let scalar_off = usize::try_from(num128 + num16).expect("offset");
+        let scalar_len = usize::try_from(num1).expect("num1");
+        work_pairs.clear();
+        work_pairs.extend_from_slice(&left_pairs[scalar_off..scalar_off + scalar_len]);
+        let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            bswLeft.scalarBandedSWAWrapper(&mut work[pair_ar_offset..pair_ar_offset + nump], &left_ref_buf, &left_qer_buf, i32::try_from(nump).expect("nump"), 1, w);
-            let mut next = Vec::new();
-            for sp in work[pair_ar_offset..pair_ar_offset + nump].iter().copied() {
-                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a[usize::try_from(sp.regid).expect("regid")];
+            bswLeft.scalarBandedSWAWrapper(
+                &mut work_pairs[..nump],
+                &left_ref_buf,
+                &left_qer_buf,
+                i32::try_from(nump).expect("nump"),
+                1,
+                w,
+            );
+            let mut keep = 0_usize;
+            for idx in 0..nump {
+                let sp = work_pairs[idx];
+                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a
+                    [usize::try_from(sp.regid).expect("regid")];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -3101,7 +3652,11 @@ pub fn mem_chain2aln_across_reads_V2(
                     a.w = a.w.max(w);
                     let chain = &chain_ar[usize::try_from(sp.seqid).expect("seqid")].a[a.c];
                     recompute_seedcov_for_aln(chain, a);
-                    if debug_trace_read(seq_[usize::try_from(sp.seqid).expect("seqid")].name.as_deref()) {
+                    if debug_trace_read(
+                        seq_[usize::try_from(sp.seqid).expect("seqid")]
+                            .name
+                            .as_deref(),
+                    ) {
                         eprintln!(
                             "[trace::chain2aln:left_done] read={} aln={} score={} qle={} tle={} gtle={} gscore={} qb={} rb={} qe={} re={}",
                             seq_[usize::try_from(sp.seqid).expect("seqid")].name.as_deref().unwrap_or(""),
@@ -3118,27 +3673,43 @@ pub fn mem_chain2aln_across_reads_V2(
                         );
                     }
                 } else {
-                    next.push(sp);
+                    work_pairs[keep] = sp;
+                    keep += 1;
                 }
             }
-            work.truncate(pair_ar_offset);
-            work.extend(next);
-            nump = work.len().saturating_sub(pair_ar_offset);
+            nump = keep;
             if nump == 0 {
                 break;
             }
         }
 
-        let pair_ar_offset = usize::try_from(num128).expect("offset16");
-        let mut nump = usize::try_from(num16).expect("num16");
-        let mut work = left_pairs.clone();
+        // Bucket i16 (num16): pairs at left_pairs[num128 .. num128 + num16].
+        let i16_off = usize::try_from(num128).expect("offset16");
+        let i16_len = usize::try_from(num16).expect("num16");
+        work_pairs.clear();
+        work_pairs.extend_from_slice(&left_pairs[i16_off..i16_off + i16_len]);
+        let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            sortPairsLen(&mut work[pair_ar_offset..pair_ar_offset + nump], i32::try_from(nump).expect("nump"), &mut temp_pairs[..nump], &mut hist);
-            bswLeft.getScores16(&mut work[pair_ar_offset..pair_ar_offset + nump], &left_ref_buf, &left_qer_buf, i32::try_from(nump).expect("nump"), 1, w);
-            let mut next = Vec::new();
-            for sp in work[pair_ar_offset..pair_ar_offset + nump].iter().copied() {
-                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a[usize::try_from(sp.regid).expect("regid")];
+            sortPairsLen(
+                &mut work_pairs[..nump],
+                i32::try_from(nump).expect("nump"),
+                &mut temp_pairs[..nump],
+                &mut hist,
+            );
+            bswLeft.getScores16(
+                &mut work_pairs[..nump],
+                &left_ref_buf,
+                &left_qer_buf,
+                i32::try_from(nump).expect("nump"),
+                1,
+                w,
+            );
+            let mut keep = 0_usize;
+            for idx in 0..nump {
+                let sp = work_pairs[idx];
+                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a
+                    [usize::try_from(sp.regid).expect("regid")];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -3155,26 +3726,42 @@ pub fn mem_chain2aln_across_reads_V2(
                     let chain = &chain_ar[usize::try_from(sp.seqid).expect("seqid")].a[a.c];
                     recompute_seedcov_for_aln(chain, a);
                 } else {
-                    next.push(sp);
+                    work_pairs[keep] = sp;
+                    keep += 1;
                 }
             }
-            work.truncate(pair_ar_offset);
-            work.extend(next);
-            nump = work.len().saturating_sub(pair_ar_offset);
+            nump = keep;
             if nump == 0 {
                 break;
             }
         }
 
-        let mut nump = usize::try_from(num128).expect("num128");
-        let mut work = left_pairs.clone();
+        // Bucket u8 (num128): pairs at left_pairs[0 .. num128].
+        let u8_len = usize::try_from(num128).expect("num128");
+        work_pairs.clear();
+        work_pairs.extend_from_slice(&left_pairs[..u8_len]);
+        let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            sortPairsLen(&mut work[..nump], i32::try_from(nump).expect("nump"), &mut temp_pairs[..nump], &mut hist);
-            bswLeft.getScores8(&mut work[..nump], &left_ref_buf, &left_qer_buf, i32::try_from(nump).expect("nump"), 1, w);
-            let mut next = Vec::new();
-            for sp in work[..nump].iter().copied() {
-                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a[usize::try_from(sp.regid).expect("regid")];
+            sortPairsLen(
+                &mut work_pairs[..nump],
+                i32::try_from(nump).expect("nump"),
+                &mut temp_pairs[..nump],
+                &mut hist,
+            );
+            bswLeft.getScores8(
+                &mut work_pairs[..nump],
+                &left_ref_buf,
+                &left_qer_buf,
+                i32::try_from(nump).expect("nump"),
+                1,
+                w,
+            );
+            let mut keep = 0_usize;
+            for idx in 0..nump {
+                let sp = work_pairs[idx];
+                let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a
+                    [usize::try_from(sp.regid).expect("regid")];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -3191,11 +3778,11 @@ pub fn mem_chain2aln_across_reads_V2(
                     let chain = &chain_ar[usize::try_from(sp.seqid).expect("seqid")].a[a.c];
                     recompute_seedcov_for_aln(chain, a);
                 } else {
-                    next.push(sp);
+                    work_pairs[keep] = sp;
+                    keep += 1;
                 }
             }
-            work = next;
-            nump = work.len();
+            nump = keep;
             if nump == 0 {
                 break;
             }
@@ -3203,7 +3790,8 @@ pub fn mem_chain2aln_across_reads_V2(
     }
 
     for sp in &mut right_pairs {
-        let a = &av_v[usize::try_from(sp.seqid).expect("seqid")].a[usize::try_from(sp.regid).expect("regid")];
+        let a = &av_v[usize::try_from(sp.seqid).expect("seqid")].a
+            [usize::try_from(sp.regid).expect("regid")];
         sp.h0 = a.score;
     }
     if !right_pairs.is_empty() {
@@ -3222,35 +3810,75 @@ pub fn mem_chain2aln_across_reads_V2(
             opt.a,
         );
 
-        let mut process_right_bucket = |offset: usize, initial: usize, scalar: bool| {
-            let mut work = right_pairs[offset..offset + initial].to_vec();
-            let mut nump = work.len();
+        let mut process_right_bucket = |offset: usize, initial: usize, dispatch: u8| {
+            // dispatch: 0 = scalar (num1 bucket), 1 = i16 SIMD (getScores16), 2 = u8 SIMD (getScores8)
+            work_pairs.clear();
+            work_pairs.extend_from_slice(&right_pairs[offset..offset + initial]);
+            let mut nump = work_pairs.len();
             for i in 0..MAX_BAND_TRY {
                 let w = opt.w << i;
-                if !scalar {
-                    sortPairsLen(&mut work, i32::try_from(nump).expect("nump"), &mut temp_pairs[..nump], &mut hist);
+                if dispatch != 0 {
+                    sortPairsLen(
+                        &mut work_pairs[..nump],
+                        i32::try_from(nump).expect("nump"),
+                        &mut temp_pairs[..nump],
+                        &mut hist,
+                    );
                 }
-                bswRight.scalarBandedSWAWrapper(&mut work, &right_ref_buf, &right_qer_buf, i32::try_from(nump).expect("nump"), 1, w);
-                let mut next = Vec::new();
-                for sp in work.iter().copied() {
-                    let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a[usize::try_from(sp.regid).expect("regid")];
+                match dispatch {
+                    0 => bswRight.scalarBandedSWAWrapper(
+                        &mut work_pairs[..nump],
+                        &right_ref_buf,
+                        &right_qer_buf,
+                        i32::try_from(nump).expect("nump"),
+                        1,
+                        w,
+                    ),
+                    1 => bswRight.getScores16(
+                        &mut work_pairs[..nump],
+                        &right_ref_buf,
+                        &right_qer_buf,
+                        i32::try_from(nump).expect("nump"),
+                        1,
+                        w,
+                    ),
+                    2 => bswRight.getScores8(
+                        &mut work_pairs[..nump],
+                        &right_ref_buf,
+                        &right_qer_buf,
+                        i32::try_from(nump).expect("nump"),
+                        1,
+                        w,
+                    ),
+                    _ => unreachable!(),
+                }
+                let mut keep = 0_usize;
+                for idx in 0..nump {
+                    let sp = work_pairs[idx];
+                    let a = &mut av_v[usize::try_from(sp.seqid).expect("seqid")].a
+                        [usize::try_from(sp.regid).expect("regid")];
                     let prev = a.score;
                     a.score = sp.score;
-                    if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
-                    if sp.gscore <= 0 || sp.gscore <= a.score - opt.pen_clip3 {
-                        a.qe += sp.qle;
-                        a.re += i64::from(sp.tle);
-                        a.truesc += a.score - sp.h0;
-                    } else {
+                    if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY
+                    {
+                        if sp.gscore <= 0 || sp.gscore <= a.score - opt.pen_clip3 {
+                            a.qe += sp.qle;
+                            a.re += i64::from(sp.tle);
+                            a.truesc += a.score - sp.h0;
+                        } else {
                             a.qe = seq_[usize::try_from(sp.seqid).expect("seqid")].l_seq;
                             a.re += i64::from(sp.gtle);
                             a.truesc += sp.gscore - sp.h0;
-                    }
-                    a.w = a.w.max(w);
-                    let chain = &chain_ar[usize::try_from(sp.seqid).expect("seqid")].a[a.c];
-                    recompute_seedcov_for_aln(chain, a);
-                    if debug_trace_read(seq_[usize::try_from(sp.seqid).expect("seqid")].name.as_deref()) {
-                        eprintln!(
+                        }
+                        a.w = a.w.max(w);
+                        let chain = &chain_ar[usize::try_from(sp.seqid).expect("seqid")].a[a.c];
+                        recompute_seedcov_for_aln(chain, a);
+                        if debug_trace_read(
+                            seq_[usize::try_from(sp.seqid).expect("seqid")]
+                                .name
+                                .as_deref(),
+                        ) {
+                            eprintln!(
                             "[trace::chain2aln:right_done] read={} aln={} score={} h0={} qle={} tle={} gtle={} gscore={} qb={} rb={} qe={} re={}",
                             seq_[usize::try_from(sp.seqid).expect("seqid")].name.as_deref().unwrap_or(""),
                             sp.regid,
@@ -3265,26 +3893,34 @@ pub fn mem_chain2aln_across_reads_V2(
                             a.qe,
                             a.re
                         );
+                        }
+                    } else {
+                        work_pairs[keep] = sp;
+                        keep += 1;
                     }
-                } else {
-                    next.push(sp);
                 }
-                }
-                work = next;
-                nump = work.len();
+                nump = keep;
                 if nump == 0 {
                     break;
                 }
             }
         };
 
-        process_right_bucket(usize::try_from(num128 + num16).expect("scalar right offset"), usize::try_from(num1).expect("num1"), true);
-        process_right_bucket(usize::try_from(num128).expect("16 right offset"), usize::try_from(num16).expect("num16"), false);
-        process_right_bucket(0, usize::try_from(num128).expect("num128"), false);
+        process_right_bucket(
+            usize::try_from(num128 + num16).expect("scalar right offset"),
+            usize::try_from(num1).expect("num1"),
+            0,
+        );
+        process_right_bucket(
+            usize::try_from(num128).expect("16 right offset"),
+            usize::try_from(num16).expect("num16"),
+            1,
+        );
+        process_right_bucket(0, usize::try_from(num128).expect("num128"), 2);
     }
 
-    let nseq_usize = usize::try_from(nseq).expect("nseq");
-    let mut lim = vec![0_i32; nseq_usize];
+    lim.clear();
+    lim.resize(nseq_usize, 0);
     for l in 0..nseq_usize {
         let l_query = seq_[l].l_seq;
         let chn = &chain_ar[l];
@@ -3398,14 +4034,31 @@ pub fn mem_chain2aln_across_reads_V2(
             }
         }
     }
+
+    // Restore the scratch for the next chain2aln call's reuse.
+    CHAIN2ALN_SCRATCH.with(|c| {
+        *c.borrow_mut() = Chain2alnScratch {
+            left_pairs,
+            right_pairs,
+            left_ref_buf,
+            right_ref_buf,
+            left_qer_buf,
+            right_qer_buf,
+            hist,
+            temp_pairs,
+            lim,
+            sorted_seed_indices,
+            work_pairs,
+        };
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::generated::bntseq_cpp::bns_fasta2bntseq;
-    use crate::generated::bwa_cpp::bseq_read_orig;
     use crate::generated::bntseq_h::{bntann1_t, bntseq_t};
+    use crate::generated::bwa_cpp::bseq_read_orig;
     use crate::generated::bwa_h::bseq1_t;
     use crate::generated::fastmap_cpp::memoryAlloc;
     use crate::generated::fastmap_h::ktp_aux_t;
@@ -3450,7 +4103,10 @@ mod tests {
         let prefix = ".tmp/real_bench/ecoli_rel606";
         let r1 = "external/tutorial_bwa_small/SRR2584863_1.trim.sub.fastq";
         let r2 = "external/tutorial_bwa_small/SRR2584863_2.trim.sub.fastq";
-        assert!(Path::new(&format!("{prefix}.bwt.2bit.64")).exists(), "missing real-fixture index at {prefix}.bwt.2bit.64");
+        assert!(
+            Path::new(&format!("{prefix}.bwt.2bit.64")).exists(),
+            "missing real-fixture index at {prefix}.bwt.2bit.64"
+        );
         assert!(Path::new(r1).exists(), "missing real-fixture reads at {r1}");
         assert!(Path::new(r2).exists(), "missing real-fixture reads at {r2}");
 
@@ -3470,8 +4126,14 @@ mod tests {
         opt.flag |= MEM_F_PE;
         opt.n_threads = n_threads;
 
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, n, n_threads);
         worker.opt = Some(Box::new(opt.clone()));
         worker.n_processed = 0;
@@ -3494,7 +4156,10 @@ mod tests {
         let prefix = ".tmp/real_bench/ecoli_rel606";
         let r1 = "external/tutorial_bwa_small/SRR2584863_1.trim.sub.fastq";
         let r2 = "external/tutorial_bwa_small/SRR2584863_2.trim.sub.fastq";
-        assert!(Path::new(&format!("{prefix}.bwt.2bit.64")).exists(), "missing real-fixture index at {prefix}.bwt.2bit.64");
+        assert!(
+            Path::new(&format!("{prefix}.bwt.2bit.64")).exists(),
+            "missing real-fixture index at {prefix}.bwt.2bit.64"
+        );
         assert!(Path::new(r1).exists(), "missing real-fixture reads at {r1}");
         assert!(Path::new(r2).exists(), "missing real-fixture reads at {r2}");
 
@@ -3507,10 +4172,7 @@ mod tests {
             let mut n = 0_i32;
             let seqs = bseq_read_orig(1 << 20, &mut n, &mut ks1, Some(&mut ks2), &mut total_bases);
             assert!(n > 0, "target {target} not found in fixture");
-            if let Some(idx) = seqs
-                .iter()
-                .position(|s| s.name.as_deref() == Some(target))
-            {
+            if let Some(idx) = seqs.iter().position(|s| s.name.as_deref() == Some(target)) {
                 let pair_start = idx & !1;
                 break vec![seqs[pair_start].clone(), seqs[pair_start + 1].clone()];
             }
@@ -3550,8 +4212,14 @@ mod tests {
             assert_eq!(pes1[i].low, pes2[i].low, "orientation {i} low");
             assert_eq!(pes1[i].high, pes2[i].high, "orientation {i} high");
             assert_eq!(pes1[i].failed, pes2[i].failed, "orientation {i} failed");
-            assert!((pes1[i].avg - pes2[i].avg).abs() < 1e-9, "orientation {i} avg");
-            assert!((pes1[i].std - pes2[i].std).abs() < 1e-9, "orientation {i} std");
+            assert!(
+                (pes1[i].avg - pes2[i].avg).abs() < 1e-9,
+                "orientation {i} avg"
+            );
+            assert!(
+                (pes1[i].std - pes2[i].std).abs() < 1e-9,
+                "orientation {i} std"
+            );
         }
     }
 
@@ -3559,8 +4227,14 @@ mod tests {
     #[ignore]
     fn real_fixture_106000_keeps_secondary_after_kernel2() {
         let (seqs, fmi, opt) = load_real_fixture_pair("SRR2584863.106000");
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
@@ -3577,14 +4251,20 @@ mod tests {
 
         let regs = &worker.regs[0].a[..worker.regs[0].n];
         assert!(
-            regs.iter().any(|r| r.score == 150 && r.qb == 0 && r.qe == 150),
+            regs.iter()
+                .any(|r| r.score == 150 && r.qb == 0 && r.qe == 150),
             "missing primary in {:?}",
-            regs.iter().map(|r| (r.score, r.qb, r.qe, r.rb, r.re)).collect::<Vec<_>>()
+            regs.iter()
+                .map(|r| (r.score, r.qb, r.qe, r.rb, r.re))
+                .collect::<Vec<_>>()
         );
         assert!(
-            regs.iter().any(|r| r.score == 21 && r.qb == 120 && r.qe == 141),
+            regs.iter()
+                .any(|r| r.score == 21 && r.qb == 120 && r.qe == 141),
             "missing expected secondary in {:?}",
-            regs.iter().map(|r| (r.score, r.qb, r.qe, r.rb, r.re)).collect::<Vec<_>>()
+            regs.iter()
+                .map(|r| (r.score, r.qb, r.qe, r.rb, r.re))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3592,8 +4272,14 @@ mod tests {
     #[ignore]
     fn real_fixture_207026_kernel2_scores_match_expected_shape() {
         let (seqs, fmi, opt) = load_real_fixture_pair("SRR2584863.207026");
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
@@ -3615,7 +4301,9 @@ mod tests {
         assert!(
             !scores.contains(&126),
             "unexpected 126 alternative survived kernel2: {:?}",
-            regs.iter().map(|r| (r.score, r.qb, r.qe, r.rb, r.re, r.seedcov)).collect::<Vec<_>>()
+            regs.iter()
+                .map(|r| (r.score, r.qb, r.qe, r.rb, r.re, r.seedcov))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3623,8 +4311,14 @@ mod tests {
     #[ignore]
     fn real_fixture_207026_patch_reg_for_126_vs_150() {
         let (seqs, fmi, opt) = load_real_fixture_pair("SRR2584863.207026");
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
@@ -3639,8 +4333,22 @@ mod tests {
             )
         };
         let regs = vec![
-            mem_alnreg_t { score: 126, qb: 0, qe: 150, rb: 3_319_983, re: 3_320_134, ..Default::default() },
-            mem_alnreg_t { score: 150, qb: 0, qe: 150, rb: 3_320_075, re: 3_320_225, ..Default::default() },
+            mem_alnreg_t {
+                score: 126,
+                qb: 0,
+                qe: 150,
+                rb: 3_319_983,
+                re: 3_320_134,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 150,
+                qb: 0,
+                qe: 150,
+                rb: 3_320_075,
+                re: 3_320_225,
+                ..Default::default()
+            },
         ];
         let query_text = worker.seqs[0].seq.as_deref().expect("seq");
         let mut query = seq_to_nt4(query_text);
@@ -3655,15 +4363,24 @@ mod tests {
             &mut w,
         );
         eprintln!("patch_score={score} w={w}");
-        assert!(score <= 0, "unexpectedly patchable in Rust with score={score} w={w}");
+        assert!(
+            score <= 0,
+            "unexpectedly patchable in Rust with score={score} w={w}"
+        );
     }
 
     #[test]
     #[ignore]
     fn real_fixture_207026_chain_shape_after_worker_bwt() {
         let (seqs, fmi, opt) = load_real_fixture_pair("SRR2584863.207026");
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
@@ -3737,7 +4454,11 @@ mod tests {
         );
         eprintln!(
             "after_chain_seeds={:?}",
-            chain_ar[0].a.iter().map(|c| (c.pos, c.w, c.n)).collect::<Vec<_>>()
+            chain_ar[0]
+                .a
+                .iter()
+                .map(|c| (c.pos, c.w, c.n))
+                .collect::<Vec<_>>()
         );
 
         chain_ar[0].n = usize::try_from(mem_chain_flt(
@@ -3805,8 +4526,12 @@ mod tests {
     fn smem_aux_init_allocates_batch_size_empty_vectors() {
         let aux = smem_aux_init();
         assert_eq!(aux.len(), BATCH_SIZE);
-        assert!(aux.iter().all(|x| x.mem.a.is_empty() && x.mem1.a.is_empty()));
-        assert!(aux.iter().all(|x| x.tmpv[0].a.is_empty() && x.tmpv[1].a.is_empty()));
+        assert!(aux
+            .iter()
+            .all(|x| x.mem.a.is_empty() && x.mem1.a.is_empty()));
+        assert!(aux
+            .iter()
+            .all(|x| x.tmpv[0].a.is_empty() && x.tmpv[1].a.is_empty()));
     }
 
     #[test]
@@ -3838,25 +4563,59 @@ mod tests {
     #[test]
     fn sort_alnreg_re_orders_by_reference_end() {
         let mut regs = vec![
-            mem_alnreg_t { re: 30, ..Default::default() },
-            mem_alnreg_t { re: 10, ..Default::default() },
-            mem_alnreg_t { re: 20, ..Default::default() },
+            mem_alnreg_t {
+                re: 30,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                re: 10,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                re: 20,
+                ..Default::default()
+            },
         ];
         sort_alnreg_re(regs.len() as i32, &mut regs);
-        assert_eq!(regs.iter().map(|x| x.re).collect::<Vec<_>>(), vec![10, 20, 30]);
+        assert_eq!(
+            regs.iter().map(|x| x.re).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
     }
 
     #[test]
     fn sort_alnreg_score_orders_by_score_then_rb_then_qb() {
         let mut regs = vec![
-            mem_alnreg_t { score: 20, rb: 50, qb: 10, ..Default::default() },
-            mem_alnreg_t { score: 30, rb: 40, qb: 20, ..Default::default() },
-            mem_alnreg_t { score: 30, rb: 40, qb: 10, ..Default::default() },
-            mem_alnreg_t { score: 30, rb: 30, qb: 30, ..Default::default() },
+            mem_alnreg_t {
+                score: 20,
+                rb: 50,
+                qb: 10,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 30,
+                rb: 40,
+                qb: 20,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 30,
+                rb: 40,
+                qb: 10,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 30,
+                rb: 30,
+                qb: 30,
+                ..Default::default()
+            },
         ];
         sort_alnreg_score(regs.len() as i32, &mut regs);
         assert_eq!(
-            regs.iter().map(|x| (x.score, x.rb, x.qb)).collect::<Vec<_>>(),
+            regs.iter()
+                .map(|x| (x.score, x.rb, x.qb))
+                .collect::<Vec<_>>(),
             vec![(30, 30, 30), (30, 40, 10), (30, 40, 20), (20, 50, 10)]
         );
     }
@@ -3866,15 +4625,48 @@ mod tests {
         let opt = mem_opt_init();
         let bns = bntseq_t {
             l_pac: 8,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 8, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 8,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&[0, 1, 2, 3, 0, 1, 2, 3]);
         let mut query = vec![0_u8, 1, 2, 3];
-        let a = mem_alnreg_t { rid: 0, rb: 2, re: 4, qb: 0, qe: 2, score: 2, w: 0, ..Default::default() };
-        let b = mem_alnreg_t { rid: 0, rb: 9, re: 11, qb: 2, qe: 4, score: 2, w: 0, ..Default::default() };
+        let a = mem_alnreg_t {
+            rid: 0,
+            rb: 2,
+            re: 4,
+            qb: 0,
+            qe: 2,
+            score: 2,
+            w: 0,
+            ..Default::default()
+        };
+        let b = mem_alnreg_t {
+            rid: 0,
+            rb: 9,
+            re: 11,
+            qb: 2,
+            qe: 4,
+            score: 2,
+            w: 0,
+            ..Default::default()
+        };
         let mut w = -1;
-        assert_eq!(mem_patch_reg(&opt, Some(&bns), Some(&pac), Some(&mut query), &a, &b, &mut w), 0);
+        assert_eq!(
+            mem_patch_reg(
+                &opt,
+                Some(&bns),
+                Some(&pac),
+                Some(&mut query),
+                &a,
+                &b,
+                &mut w
+            ),
+            0
+        );
         assert_eq!(w, -1);
     }
 
@@ -3884,15 +4676,45 @@ mod tests {
         opt.w = 20;
         let bns = bntseq_t {
             l_pac: 8,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 8, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 8,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&[0, 1, 2, 3, 0, 1, 2, 3]);
         let mut query = vec![0_u8, 1, 2, 3];
-        let a = mem_alnreg_t { rid: 0, rb: 0, re: 2, qb: 0, qe: 2, score: 2, w: 0, ..Default::default() };
-        let b = mem_alnreg_t { rid: 0, rb: 2, re: 4, qb: 2, qe: 4, score: 2, w: 0, ..Default::default() };
+        let a = mem_alnreg_t {
+            rid: 0,
+            rb: 0,
+            re: 2,
+            qb: 0,
+            qe: 2,
+            score: 2,
+            w: 0,
+            ..Default::default()
+        };
+        let b = mem_alnreg_t {
+            rid: 0,
+            rb: 2,
+            re: 4,
+            qb: 2,
+            qe: 4,
+            score: 2,
+            w: 0,
+            ..Default::default()
+        };
         let mut w = -1;
-        let score = mem_patch_reg(&opt, Some(&bns), Some(&pac), Some(&mut query), &a, &b, &mut w);
+        let score = mem_patch_reg(
+            &opt,
+            Some(&bns),
+            Some(&pac),
+            Some(&mut query),
+            &a,
+            &b,
+            &mut w,
+        );
         assert_eq!(score, 4);
         assert_eq!(w, 0);
         assert_eq!(query, vec![0, 1, 2, 3]);
@@ -3903,8 +4725,24 @@ mod tests {
         let mut opt = mem_opt_init();
         opt.mask_level_redun = 0.90;
         let mut regs = vec![
-            mem_alnreg_t { rid: 0, rb: 0, re: 10, qb: 0, qe: 10, score: 20, ..Default::default() },
-            mem_alnreg_t { rid: 0, rb: 1, re: 9, qb: 1, qe: 9, score: 10, ..Default::default() },
+            mem_alnreg_t {
+                rid: 0,
+                rb: 0,
+                re: 10,
+                qb: 0,
+                qe: 10,
+                score: 20,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                rid: 0,
+                rb: 1,
+                re: 9,
+                qb: 1,
+                qe: 9,
+                score: 10,
+                ..Default::default()
+            },
         ];
         let n = mem_dedup_patch(&opt, None, None, None, regs.len() as i32, &mut regs);
         assert_eq!(n, 1);
@@ -3920,7 +4758,11 @@ mod tests {
         opt.w = 20;
         let bns = bntseq_t {
             l_pac: 8,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 8, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 8,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&[0, 1, 2, 3, 0, 1, 2, 3]);
@@ -3951,7 +4793,14 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let n = mem_dedup_patch(&opt, Some(&bns), Some(&pac), Some(&mut query), regs.len() as i32, &mut regs);
+        let n = mem_dedup_patch(
+            &opt,
+            Some(&bns),
+            Some(&pac),
+            Some(&mut query),
+            regs.len() as i32,
+            &mut regs,
+        );
         assert_eq!(n, 1);
         assert_eq!(regs.len(), 1);
         assert_eq!(regs[0].rb, 0);
@@ -3968,9 +4817,33 @@ mod tests {
     fn mem_sort_dedup_patch_sorts_and_drops_identical_hits() {
         let opt = mem_opt_init();
         let mut regs = vec![
-            mem_alnreg_t { rid: 0, rb: 20, re: 30, qb: 5, qe: 15, score: 7, ..Default::default() },
-            mem_alnreg_t { rid: 0, rb: 10, re: 20, qb: 0, qe: 10, score: 7, ..Default::default() },
-            mem_alnreg_t { rid: 0, rb: 10, re: 18, qb: 0, qe: 8, score: 7, ..Default::default() },
+            mem_alnreg_t {
+                rid: 0,
+                rb: 20,
+                re: 30,
+                qb: 5,
+                qe: 15,
+                score: 7,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                rid: 0,
+                rb: 10,
+                re: 20,
+                qb: 0,
+                qe: 10,
+                score: 7,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                rid: 0,
+                rb: 10,
+                re: 18,
+                qb: 0,
+                qe: 8,
+                score: 7,
+                ..Default::default()
+            },
         ];
         let n = mem_sort_dedup_patch(&opt, None, None, None, regs.len() as i32, &mut regs);
         assert_eq!(n, 2);
@@ -4031,13 +4904,22 @@ mod tests {
         assert_eq!(regs[1].qe, 141);
     }
 
-
     #[test]
     fn test_and_merge_accepts_contained_seed_without_growing_chain() {
         let opt = mem_opt_init();
-        let first = mem_seed_t { rbeg: 100, qbeg: 10, len: 20, ..Default::default() };
+        let first = mem_seed_t {
+            rbeg: 100,
+            qbeg: 10,
+            len: 20,
+            ..Default::default()
+        };
         let mut chain = single_seed_chain(first, 3);
-        let contained = mem_seed_t { rbeg: 105, qbeg: 12, len: 5, ..Default::default() };
+        let contained = mem_seed_t {
+            rbeg: 105,
+            qbeg: 12,
+            len: 5,
+            ..Default::default()
+        };
         assert_eq!(test_and_merge(&opt, 1000, &mut chain, &contained, 3, 0), 1);
         assert_eq!(chain.n, 1);
         assert_eq!(chain.seeds.len(), 1);
@@ -4046,9 +4928,19 @@ mod tests {
     #[test]
     fn test_and_merge_rejects_seed_on_different_strand() {
         let opt = mem_opt_init();
-        let first = mem_seed_t { rbeg: 100, qbeg: 10, len: 20, ..Default::default() };
+        let first = mem_seed_t {
+            rbeg: 100,
+            qbeg: 10,
+            len: 20,
+            ..Default::default()
+        };
         let mut chain = single_seed_chain(first, 1);
-        let seed = mem_seed_t { rbeg: 1200, qbeg: 35, len: 10, ..Default::default() };
+        let seed = mem_seed_t {
+            rbeg: 1200,
+            qbeg: 35,
+            len: 10,
+            ..Default::default()
+        };
         assert_eq!(test_and_merge(&opt, 1000, &mut chain, &seed, 1, 0), 0);
         assert_eq!(chain.n, 1);
     }
@@ -4058,9 +4950,19 @@ mod tests {
         let mut opt = mem_opt_init();
         opt.w = 10;
         opt.max_chain_gap = 100;
-        let first = mem_seed_t { rbeg: 100, qbeg: 10, len: 20, ..Default::default() };
+        let first = mem_seed_t {
+            rbeg: 100,
+            qbeg: 10,
+            len: 20,
+            ..Default::default()
+        };
         let mut chain = single_seed_chain(first, 2);
-        let next = mem_seed_t { rbeg: 130, qbeg: 40, len: 10, ..Default::default() };
+        let next = mem_seed_t {
+            rbeg: 130,
+            qbeg: 40,
+            len: 10,
+            ..Default::default()
+        };
         assert_eq!(test_and_merge(&opt, 1000, &mut chain, &next, 2, 0), 1);
         assert_eq!(chain.n, 2);
         assert_eq!(chain.m, 2);
@@ -4072,12 +4974,21 @@ mod tests {
         let opt = mem_opt_init();
         let bns = bntseq_t {
             l_pac: 300,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 300, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 300,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&vec![0_u8; 300]);
         let query = vec![0_u8; 250];
-        let long_seed = mem_seed_t { rbeg: 10, qbeg: 10, len: 200, ..Default::default() };
+        let long_seed = mem_seed_t {
+            rbeg: 10,
+            qbeg: 10,
+            len: 200,
+            ..Default::default()
+        };
         assert_eq!(mem_seed_sw(&opt, &bns, &pac, 250, &query, &long_seed), -1);
     }
 
@@ -4087,13 +4998,32 @@ mod tests {
         let ref_seq = [0_u8, 1, 2, 3, 0, 1, 2, 3];
         let bns = bntseq_t {
             l_pac: 8,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 8, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 8,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&ref_seq);
         let query = vec![3_u8, 3, 0, 1, 2, 3, 0];
-        let seed = mem_seed_t { rbeg: 2, qbeg: 2, len: 2, ..Default::default() };
-        assert_eq!(mem_seed_sw(&opt, &bns, &pac, i32::try_from(query.len()).expect("qlen"), &query, &seed), 5);
+        let seed = mem_seed_t {
+            rbeg: 2,
+            qbeg: 2,
+            len: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            mem_seed_sw(
+                &opt,
+                &bns,
+                &pac,
+                i32::try_from(query.len()).expect("qlen"),
+                &query,
+                &seed
+            ),
+            5
+        );
     }
 
     #[test]
@@ -4101,9 +5031,24 @@ mod tests {
         let chain = mem_chain_t {
             n: 3,
             seeds: vec![
-                mem_seed_t { qbeg: 0, rbeg: 10, len: 5, ..Default::default() },
-                mem_seed_t { qbeg: 3, rbeg: 20, len: 5, ..Default::default() },
-                mem_seed_t { qbeg: 10, rbeg: 23, len: 4, ..Default::default() },
+                mem_seed_t {
+                    qbeg: 0,
+                    rbeg: 10,
+                    len: 5,
+                    ..Default::default()
+                },
+                mem_seed_t {
+                    qbeg: 3,
+                    rbeg: 20,
+                    len: 5,
+                    ..Default::default()
+                },
+                mem_seed_t {
+                    qbeg: 10,
+                    rbeg: 23,
+                    len: 4,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -4114,16 +5059,30 @@ mod tests {
     fn mem_print_chain_formats_seed_coordinates() {
         let bns = bntseq_t {
             l_pac: 100,
-            anns: vec![bntann1_t { name: "chr1".into(), offset: 10, len: 90, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                offset: 10,
+                len: 90,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let chain = mem_chain_t {
             rid: 0,
             n: 1,
-            seeds: vec![mem_seed_t { score: 7, len: 5, qbeg: 3, rbeg: 20, ..Default::default() }],
+            seeds: vec![mem_seed_t {
+                score: 7,
+                len: 5,
+                qbeg: 3,
+                rbeg: 20,
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        assert_eq!(mem_print_chain(&bns, &[chain]), "* Found CHAIN(0): n=1; weight=5\t7;5;3,20(chr1:+11)\n");
+        assert_eq!(
+            mem_print_chain(&bns, &[chain]),
+            "* Found CHAIN(0): n=1; weight=5\t7;5;3,20(chr1:+11)\n"
+        );
     }
 
     #[test]
@@ -4132,14 +5091,16 @@ mod tests {
         opt.min_chain_weight = 1;
         let bns = bntseq_t {
             l_pac: 32,
-            anns: vec![bntann1_t { name: "chr1".into(), len: 32, ..Default::default() }],
+            anns: vec![bntann1_t {
+                name: "chr1".into(),
+                len: 32,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let pac = pack_seq(&[
-            0, 1, 2, 3, 0, 1, 2, 3,
-            0, 1, 2, 3, 0, 1, 2, 3,
-            0, 1, 2, 3, 0, 1, 2, 3,
-            0, 1, 2, 3, 0, 1, 2, 3,
+            0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0,
+            1, 2, 3,
         ]);
         let seqs = vec![bseq1_t {
             l_seq: 32,
@@ -4150,8 +5111,19 @@ mod tests {
             seqid: 0,
             n: 2,
             seeds: vec![
-                mem_seed_t { rbeg: 2, qbeg: 2, len: 20, ..Default::default() },
-                mem_seed_t { rbeg: 0, qbeg: 0, len: 201, score: 0, ..Default::default() },
+                mem_seed_t {
+                    rbeg: 2,
+                    qbeg: 2,
+                    len: 20,
+                    ..Default::default()
+                },
+                mem_seed_t {
+                    rbeg: 0,
+                    qbeg: 0,
+                    len: 201,
+                    score: 0,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         }];
@@ -4169,13 +5141,23 @@ mod tests {
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t { qbeg: 0, rbeg: 0, len: 5, ..Default::default() }],
+                seeds: vec![mem_seed_t {
+                    qbeg: 0,
+                    rbeg: 0,
+                    len: 5,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t { qbeg: 10, rbeg: 10, len: 12, ..Default::default() }],
+                seeds: vec![mem_seed_t {
+                    qbeg: 10,
+                    rbeg: 10,
+                    len: 12,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         ];
@@ -4198,15 +5180,30 @@ mod tests {
                 seqid: 0,
                 n: 2,
                 seeds: vec![
-                    mem_seed_t { qbeg: 0, rbeg: 0, len: 10, ..Default::default() },
-                    mem_seed_t { qbeg: 10, rbeg: 10, len: 10, ..Default::default() },
+                    mem_seed_t {
+                        qbeg: 0,
+                        rbeg: 0,
+                        len: 10,
+                        ..Default::default()
+                    },
+                    mem_seed_t {
+                        qbeg: 10,
+                        rbeg: 10,
+                        len: 10,
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             },
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t { qbeg: 5, rbeg: 5, len: 10, ..Default::default() }],
+                seeds: vec![mem_seed_t {
+                    qbeg: 5,
+                    rbeg: 5,
+                    len: 10,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         ];
@@ -4262,7 +5259,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        let l_pac = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let l_pac = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
         assert_eq!(l_pac, 12);
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
@@ -4270,8 +5271,16 @@ mod tests {
         fmi.load_index();
 
         let seqs = vec![
-            bseq1_t { l_seq: 6, seq: Some("ACGTAC".into()), ..Default::default() },
-            bseq1_t { l_seq: 4, seq: Some("GTAC".into()), ..Default::default() },
+            bseq1_t {
+                l_seq: 6,
+                seq: Some("ACGTAC".into()),
+                ..Default::default()
+            },
+            bseq1_t {
+                l_seq: 4,
+                seq: Some("GTAC".into()),
+                ..Default::default()
+            },
         ];
         let mut opt = mem_opt_init();
         opt.min_seed_len = 2;
@@ -4302,7 +5311,10 @@ mod tests {
         );
 
         assert!(tot_smem > 0);
-        assert_eq!(usize::try_from(tot_smem).expect("tot_smem"), match_array.len());
+        assert_eq!(
+            usize::try_from(tot_smem).expect("tot_smem"),
+            match_array.len()
+        );
         for window in match_array.windows(2) {
             let a = window[0];
             let b = window[1];
@@ -4325,7 +5337,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
         let bns = crate::generated::bntseq_cpp::bns_restore(prefix.to_str().expect("utf8"));
         let pac = fs::read(prefix.with_extension("pac")).expect("read pac");
 
@@ -4334,8 +5350,16 @@ mod tests {
         fmi.load_index();
 
         let seqs = vec![
-            bseq1_t { l_seq: 6, seq: Some("ACGTAC".into()), ..Default::default() },
-            bseq1_t { l_seq: 4, seq: Some("GTAC".into()), ..Default::default() },
+            bseq1_t {
+                l_seq: 6,
+                seq: Some("ACGTAC".into()),
+                ..Default::default()
+            },
+            bseq1_t {
+                l_seq: 4,
+                seq: Some("GTAC".into()),
+                ..Default::default()
+            },
         ];
         let mut opt = mem_opt_init();
         opt.min_seed_len = 2;
@@ -4384,7 +5408,13 @@ mod tests {
         for chains in &chain_ar {
             for c in &chains.a {
                 assert!(c.n > 0);
-                assert_eq!(usize::try_from(c.n).expect("c.n"), c.seeds.iter().take(usize::try_from(c.n).expect("n")).count());
+                assert_eq!(
+                    usize::try_from(c.n).expect("c.n"),
+                    c.seeds
+                        .iter()
+                        .take(usize::try_from(c.n).expect("n"))
+                        .count()
+                );
                 assert!(c.rid >= 0);
             }
         }
@@ -4404,15 +5434,27 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let seqs = vec![
-            bseq1_t { l_seq: 6, seq: Some("ACGTAC".into()), ..Default::default() },
-            bseq1_t { l_seq: 4, seq: Some("GTAC".into()), ..Default::default() },
+            bseq1_t {
+                l_seq: 6,
+                seq: Some("ACGTAC".into()),
+                ..Default::default()
+            },
+            bseq1_t {
+                l_seq: 4,
+                seq: Some("GTAC".into()),
+                ..Default::default()
+            },
         ];
         let mut opt = mem_opt_init();
         opt.min_seed_len = 2;
@@ -4479,8 +5521,20 @@ mod tests {
             l_pac: 8,
             n_seqs: 2,
             anns: vec![
-                bntann1_t { offset: 0, len: 4, name: "chr1".into(), anno: String::new(), ..Default::default() },
-                bntann1_t { offset: 4, len: 4, name: "chr2".into(), anno: String::new(), ..Default::default() },
+                bntann1_t {
+                    offset: 0,
+                    len: 4,
+                    name: "chr1".into(),
+                    anno: String::new(),
+                    ..Default::default()
+                },
+                bntann1_t {
+                    offset: 4,
+                    len: 4,
+                    name: "chr2".into(),
+                    anno: String::new(),
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -4491,7 +5545,16 @@ mod tests {
         let mut beg = 2_i64;
         let mut end = 7_i64;
         let mut rid = -1;
-        let seq = bns_fetch_seq_v2(&bns, &[], &mut beg, 5, &mut end, &mut rid, &ref_string, None);
+        let seq = bns_fetch_seq_v2(
+            &bns,
+            &[],
+            &mut beg,
+            5,
+            &mut end,
+            &mut rid,
+            &ref_string,
+            None,
+        );
         assert_eq!(rid, 1);
         assert_eq!((beg, end), (4, 7));
         assert_eq!(seq, &[3, 2, 1]);
@@ -4499,7 +5562,16 @@ mod tests {
         let mut beg = 9_i64;
         let mut end = 15_i64;
         let mut rid = -1;
-        let seq = bns_fetch_seq_v2(&bns, &[], &mut beg, 10, &mut end, &mut rid, &ref_string, None);
+        let seq = bns_fetch_seq_v2(
+            &bns,
+            &[],
+            &mut beg,
+            10,
+            &mut end,
+            &mut rid,
+            &ref_string,
+            None,
+        );
         assert_eq!(rid, 1);
         assert_eq!((beg, end), (9, 12));
         assert_eq!(seq, &ref_string[9..12]);
@@ -4508,10 +5580,34 @@ mod tests {
     #[test]
     fn sort_pairs_len_ext_partitions_into_8_16_and_scalar_buckets() {
         let mut pairs = vec![
-            SeqPair { id: 10, len1: 5, len2: 7, h0: 3, ..Default::default() },
-            SeqPair { id: 20, len1: 200, len2: 150, h0: 10, ..Default::default() },
-            SeqPair { id: 30, len1: 40_000, len2: 2, h0: 1, ..Default::default() },
-            SeqPair { id: 11, len1: 5, len2: 6, h0: 2, ..Default::default() },
+            SeqPair {
+                id: 10,
+                len1: 5,
+                len2: 7,
+                h0: 3,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 20,
+                len1: 200,
+                len2: 150,
+                h0: 10,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 30,
+                len1: 40_000,
+                len2: 2,
+                h0: 1,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 11,
+                len1: 5,
+                len2: 6,
+                h0: 2,
+                ..Default::default()
+            },
         ];
         let mut temp = vec![SeqPair::default(); pairs.len()];
         let mut hist = vec![0_i32; MAX_SEQ_LEN8 + MAX_SEQ_LEN16 + 1];
@@ -4520,19 +5616,40 @@ mod tests {
         let mut n1 = 0;
         let count = pairs.len() as i32;
 
-        sortPairsLenExt(&mut pairs, count, &mut temp, &mut hist, &mut n128, &mut n16, &mut n1, 1);
+        sortPairsLenExt(
+            &mut pairs, count, &mut temp, &mut hist, &mut n128, &mut n16, &mut n1, 1,
+        );
 
         assert_eq!((n128, n16, n1), (2, 1, 1));
-        assert_eq!(pairs.iter().map(|p| p.id).collect::<Vec<_>>(), vec![11, 10, 20, 30]);
+        assert_eq!(
+            pairs.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![11, 10, 20, 30]
+        );
     }
 
     #[test]
     fn sort_pairs_len_orders_by_len1_stably() {
         let mut pairs = vec![
-            SeqPair { id: 1, len1: 9, ..Default::default() },
-            SeqPair { id: 2, len1: 3, ..Default::default() },
-            SeqPair { id: 3, len1: 9, ..Default::default() },
-            SeqPair { id: 4, len1: 1, ..Default::default() },
+            SeqPair {
+                id: 1,
+                len1: 9,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 2,
+                len1: 3,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 3,
+                len1: 9,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 4,
+                len1: 1,
+                ..Default::default()
+            },
         ];
         let mut temp = vec![SeqPair::default(); pairs.len()];
         let mut hist = vec![0_i32; MAX_SEQ_LEN16 + 1];
@@ -4540,7 +5657,10 @@ mod tests {
 
         sortPairsLen(&mut pairs, count, &mut temp, &mut hist);
 
-        assert_eq!(pairs.iter().map(|p| (p.len1, p.id)).collect::<Vec<_>>(), vec![(1, 4), (3, 2), (9, 1), (9, 3)]);
+        assert_eq!(
+            pairs.iter().map(|p| (p.len1, p.id)).collect::<Vec<_>>(),
+            vec![(1, 4), (3, 2), (9, 1), (9, 3)]
+        );
     }
 
     #[test]
@@ -4551,19 +5671,40 @@ mod tests {
         let bns = bntseq_t {
             l_pac: 8,
             n_seqs: 1,
-            anns: vec![bntann1_t { offset: 0, len: 8, name: "chr1".into(), anno: String::new(), ..Default::default() }],
+            anns: vec![bntann1_t {
+                offset: 0,
+                len: 8,
+                name: "chr1".into(),
+                anno: String::new(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        let seqs = vec![bseq1_t { l_seq: 5, seq: Some("CGTAC".into()), ..Default::default() }];
+        let seqs = vec![bseq1_t {
+            l_seq: 5,
+            seq: Some("CGTAC".into()),
+            ..Default::default()
+        }];
         let chain = mem_chain_t {
             seqid: 0,
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t { qbeg: 1, rbeg: 2, len: 3, score: 3, ..Default::default() }],
+            seeds: vec![mem_seed_t {
+                qbeg: 1,
+                rbeg: 2,
+                len: 3,
+                score: 3,
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        let mut chain_ar = vec![mem_chain_v { n: 1, m: 1, a: vec![chain], ..Default::default() }];
+        let mut chain_ar = vec![mem_chain_v {
+            n: 1,
+            m: 1,
+            a: vec![chain],
+            ..Default::default()
+        }];
         let mut av_v = vec![mem_alnreg_v::default()];
         let mut mmc = mem_cache::default();
         let opt = mem_opt_init();
@@ -4591,7 +5732,8 @@ mod tests {
     }
 
     #[test]
-    fn mem_chain2aln_across_reads_v2_keeps_distinct_chain_alignment_when_later_chain_has_multiple_seeds() {
+    fn mem_chain2aln_across_reads_v2_keeps_distinct_chain_alignment_when_later_chain_has_multiple_seeds(
+    ) {
         let query = "TGATGGAAGTGATCCGTGATATGGGCGTAGAAAAAACCGTTAGTCTGGCTGGAAGGTGTTTCATCGGTACTGTTCGGTGTAGCCGCATTCTCGACCTTTTATGTGATTGTGGTGTGGATGCCCAAATATGCGATGGCTTTTGCTGGTATG";
         let query_nt4 = seq_to_nt4(query);
 
@@ -4617,7 +5759,7 @@ mod tests {
 
         let seqs = vec![bseq1_t {
             l_seq: i32::try_from(query.len()).expect("query len"),
-            seq: Some(query.to_string()),
+            seq: Some(query.to_string().into()),
             ..Default::default()
         }];
         let chain0 = mem_chain_t {
@@ -4625,7 +5767,13 @@ mod tests {
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t { qbeg: 33, rbeg: 100, len: 117, score: 117, ..Default::default() }],
+            seeds: vec![mem_seed_t {
+                qbeg: 33,
+                rbeg: 100,
+                len: 117,
+                score: 117,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let chain1 = mem_chain_t {
@@ -4634,12 +5782,29 @@ mod tests {
             n: 2,
             m: 2,
             seeds: vec![
-                mem_seed_t { qbeg: 0, rbeg: 200, len: 20, score: 20, ..Default::default() },
-                mem_seed_t { qbeg: 0, rbeg: 200, len: 41, score: 41, ..Default::default() },
+                mem_seed_t {
+                    qbeg: 0,
+                    rbeg: 200,
+                    len: 20,
+                    score: 20,
+                    ..Default::default()
+                },
+                mem_seed_t {
+                    qbeg: 0,
+                    rbeg: 200,
+                    len: 41,
+                    score: 41,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
-        let mut chain_ar = vec![mem_chain_v { n: 2, m: 2, a: vec![chain0, chain1], ..Default::default() }];
+        let mut chain_ar = vec![mem_chain_v {
+            n: 2,
+            m: 2,
+            a: vec![chain0, chain1],
+            ..Default::default()
+        }];
         let mut av_v = vec![mem_alnreg_v::default()];
         let mut mmc = mem_cache::default();
         let opt = mem_opt_init();
@@ -4658,8 +5823,16 @@ mod tests {
         );
 
         let chain_ids: Vec<usize> = av_v[0].a.iter().take(av_v[0].n).map(|aln| aln.c).collect();
-        assert!(chain_ids.contains(&0), "missing chain 0 alignment: {:?}", av_v[0].a);
-        assert!(chain_ids.contains(&1), "missing chain 1 alignment: {:?}", av_v[0].a);
+        assert!(
+            chain_ids.contains(&0),
+            "missing chain 0 alignment: {:?}",
+            av_v[0].a
+        );
+        assert!(
+            chain_ids.contains(&1),
+            "missing chain 1 alignment: {:?}",
+            av_v[0].a
+        );
     }
 
     #[test]
@@ -4672,21 +5845,43 @@ mod tests {
         fmi.base.idx.bns = Some(bntseq_t {
             l_pac: 8,
             n_seqs: 1,
-            anns: vec![bntann1_t { offset: 0, len: 8, is_alt: 1, name: "chr1".into(), anno: String::new(), ..Default::default() }],
+            anns: vec![bntann1_t {
+                offset: 0,
+                len: 8,
+                is_alt: 1,
+                name: "chr1".into(),
+                anno: String::new(),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         fmi.base.idx.pac = vec![];
 
-        let seqs = vec![bseq1_t { l_seq: 5, seq: Some("CGTAC".into()), ..Default::default() }];
+        let seqs = vec![bseq1_t {
+            l_seq: 5,
+            seq: Some("CGTAC".into()),
+            ..Default::default()
+        }];
         let chain = mem_chain_t {
             seqid: 0,
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t { qbeg: 1, rbeg: 2, len: 3, score: 3, ..Default::default() }],
+            seeds: vec![mem_seed_t {
+                qbeg: 1,
+                rbeg: 2,
+                len: 3,
+                score: 3,
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        let mut chain_ar = vec![mem_chain_v { n: 1, m: 1, a: vec![chain], ..Default::default() }];
+        let mut chain_ar = vec![mem_chain_v {
+            n: 1,
+            m: 1,
+            a: vec![chain],
+            ..Default::default()
+        }];
         let mut regs = vec![mem_alnreg_v::default()];
         let mut mmc = mem_cache::default();
         let opt = mem_opt_init();
@@ -4716,16 +5911,34 @@ mod tests {
     fn sort_classify_partitions_byte_and_word_sw_requests() {
         let mut mmc = mem_cache::default();
         mmc.seqPairArrayLeft128.push(vec![
-            SeqPair { id: 1, h0: KSW_XBYTE, ..Default::default() },
-            SeqPair { id: 2, h0: 0, ..Default::default() },
-            SeqPair { id: 3, h0: KSW_XBYTE | 7, ..Default::default() },
+            SeqPair {
+                id: 1,
+                h0: KSW_XBYTE,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 2,
+                h0: 0,
+                ..Default::default()
+            },
+            SeqPair {
+                id: 3,
+                h0: KSW_XBYTE | 7,
+                ..Default::default()
+            },
         ]);
         mmc.seqPairArrayRight128.push(vec![SeqPair::default(); 3]);
 
         let pos8 = sort_classify(&mut mmc, 3, 0);
 
         assert_eq!(pos8, 2);
-        assert_eq!(mmc.seqPairArrayLeft128[0].iter().map(|p| p.id).collect::<Vec<_>>(), vec![1, 3, 2]);
+        assert_eq!(
+            mmc.seqPairArrayLeft128[0]
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 2]
+        );
     }
 
     #[test]
@@ -4739,14 +5952,26 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let seqs = vec![
-            bseq1_t { l_seq: 6, seq: Some("ACGTAC".into()), ..Default::default() },
-            bseq1_t { l_seq: 4, seq: Some("GTAC".into()), ..Default::default() },
+            bseq1_t {
+                l_seq: 6,
+                seq: Some("ACGTAC".into()),
+                ..Default::default()
+            },
+            bseq1_t {
+                l_seq: 4,
+                seq: Some("GTAC".into()),
+                ..Default::default()
+            },
         ];
         let mut opt = mem_opt_init();
         opt.min_seed_len = 2;
@@ -4780,18 +6005,35 @@ mod tests {
         fmi.base.idx.bns = Some(bntseq_t {
             l_pac: 8,
             n_seqs: 1,
-            anns: vec![bntann1_t { offset: 0, len: 8, is_alt: 0, name: "chr1".into(), anno: String::new(), ..Default::default() }],
+            anns: vec![bntann1_t {
+                offset: 0,
+                len: 8,
+                is_alt: 0,
+                name: "chr1".into(),
+                anno: String::new(),
+                ..Default::default()
+            }],
             ..Default::default()
         });
         fmi.base.idx.pac = vec![];
 
-        let seqs = vec![bseq1_t { l_seq: 5, seq: Some("CGTAC".into()), ..Default::default() }];
+        let seqs = vec![bseq1_t {
+            l_seq: 5,
+            seq: Some("CGTAC".into()),
+            ..Default::default()
+        }];
         let chain = mem_chain_t {
             seqid: 0,
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t { qbeg: 1, rbeg: 2, len: 3, score: 3, ..Default::default() }],
+            seeds: vec![mem_seed_t {
+                qbeg: 1,
+                rbeg: 2,
+                len: 3,
+                score: 3,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let opt = mem_opt_init();
@@ -4799,7 +6041,12 @@ mod tests {
             opt: Some(opt),
             seqs,
             regs: vec![mem_alnreg_v::default()],
-            chain_ar: vec![mem_chain_v { n: 1, m: 1, a: vec![chain], ..Default::default() }],
+            chain_ar: vec![mem_chain_v {
+                n: 1,
+                m: 1,
+                a: vec![chain],
+                ..Default::default()
+            }],
             ref_string,
             fmi: Some(fmi),
             ..Default::default()
@@ -4816,9 +6063,24 @@ mod tests {
         let mut opt = mem_opt_init();
         opt.mask_level = 0.5;
         let mut regs = vec![
-            mem_alnreg_t { qb: 0, qe: 10, score: 20, ..Default::default() },
-            mem_alnreg_t { qb: 2, qe: 9, score: 18, ..Default::default() },
-            mem_alnreg_t { qb: 20, qe: 30, score: 15, ..Default::default() },
+            mem_alnreg_t {
+                qb: 0,
+                qe: 10,
+                score: 20,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                qb: 2,
+                qe: 9,
+                score: 18,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                qb: 20,
+                qe: 30,
+                score: 15,
+                ..Default::default()
+            },
         ];
         let mut z = Vec::new();
         mem_mark_primary_se_core(&opt, regs.len() as i32, &mut regs, &mut z);
@@ -4831,9 +6093,27 @@ mod tests {
     fn mem_mark_primary_se_sorts_and_counts_primary_hits() {
         let opt = mem_opt_init();
         let mut regs = vec![
-            mem_alnreg_t { score: 15, qb: 0, qe: 10, is_alt: 0, ..Default::default() },
-            mem_alnreg_t { score: 12, qb: 1, qe: 9, is_alt: 1, ..Default::default() },
-            mem_alnreg_t { score: 14, qb: 20, qe: 30, is_alt: 0, ..Default::default() },
+            mem_alnreg_t {
+                score: 15,
+                qb: 0,
+                qe: 10,
+                is_alt: 0,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 12,
+                qb: 1,
+                qe: 9,
+                is_alt: 1,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 14,
+                qb: 20,
+                qe: 30,
+                is_alt: 0,
+                ..Default::default()
+            },
         ];
         let n_pri = mem_mark_primary_se(&opt, regs.len() as i32, &mut regs, 42);
         assert_eq!(n_pri, 2);
@@ -4847,9 +6127,39 @@ mod tests {
     fn mem_mark_primary_se_uses_cpp_id_plus_index_hash_tiebreak() {
         let opt = mem_opt_init();
         let regs = vec![
-            mem_alnreg_t { score: 150, qb: 0, qe: 150, rb: 2254222, re: 2254372, rid: 0, is_alt: 0, seedcov: 42, ..Default::default() },
-            mem_alnreg_t { score: 29, qb: 0, qe: 29, rb: 2254585, re: 2254614, rid: 0, is_alt: 0, seedcov: 12, ..Default::default() },
-            mem_alnreg_t { score: 29, qb: 0, qe: 29, rb: 2255037, re: 2255066, rid: 0, is_alt: 0, seedcov: 12, ..Default::default() },
+            mem_alnreg_t {
+                score: 150,
+                qb: 0,
+                qe: 150,
+                rb: 2254222,
+                re: 2254372,
+                rid: 0,
+                is_alt: 0,
+                seedcov: 42,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 29,
+                qb: 0,
+                qe: 29,
+                rb: 2254585,
+                re: 2254614,
+                rid: 0,
+                is_alt: 0,
+                seedcov: 12,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 29,
+                qb: 0,
+                qe: 29,
+                rb: 2255037,
+                re: 2255066,
+                rid: 0,
+                is_alt: 0,
+                seedcov: 12,
+                ..Default::default()
+            },
         ];
         let mut regs_a = regs.clone();
         let mut regs_b = vec![regs[0], regs[2], regs[1]];
@@ -4892,9 +6202,28 @@ mod tests {
             n: 3,
             m: 3,
             a: vec![
-                mem_alnreg_t { qb: 30, score: 50, secondary: -1, is_alt: 0, ..Default::default() },
-                mem_alnreg_t { qb: 10, score: 45, secondary: -1, is_alt: 0, ..Default::default() },
-                mem_alnreg_t { qb: 20, score: 40, secondary: 0, secondary_all: 0, is_alt: 0, ..Default::default() },
+                mem_alnreg_t {
+                    qb: 30,
+                    score: 50,
+                    secondary: -1,
+                    is_alt: 0,
+                    ..Default::default()
+                },
+                mem_alnreg_t {
+                    qb: 10,
+                    score: 45,
+                    secondary: -1,
+                    is_alt: 0,
+                    ..Default::default()
+                },
+                mem_alnreg_t {
+                    qb: 20,
+                    score: 40,
+                    secondary: 0,
+                    secondary_all: 0,
+                    is_alt: 0,
+                    ..Default::default()
+                },
             ],
         };
         mem_reorder_primary5(30, &mut regs);
@@ -4905,7 +6234,12 @@ mod tests {
 
     #[test]
     fn get_rlen_counts_match_and_delete_ops_only() {
-        let cigar = vec![(5_u32 << 4) | 0, (3_u32 << 4) | 1, (2_u32 << 4) | 2, (4_u32 << 4) | 4];
+        let cigar = vec![
+            (5_u32 << 4) | 0,
+            (3_u32 << 4) | 1,
+            (2_u32 << 4) | 2,
+            (4_u32 << 4) | 4,
+        ];
         assert_eq!(get_rlen(cigar.len() as i32, &cigar), 7);
     }
 
@@ -4984,7 +6318,10 @@ mod tests {
         assert_eq!(aln.pos, 0);
         assert_eq!(aln.is_rev, 0);
         assert_eq!(aln.n_cigar, 3);
-        assert_eq!(aln.cigar, vec![(1_u32 << 4) | 3, (4_u32 << 4), (1_u32 << 4) | 3]);
+        assert_eq!(
+            aln.cigar,
+            vec![(1_u32 << 4) | 3, (4_u32 << 4), (1_u32 << 4) | 3]
+        );
         assert_eq!(std::str::from_utf8(&aln.md).expect("md utf8"), "4");
         assert_eq!(aln.NM, 0);
         assert_eq!(aln.score, 4);
@@ -5052,13 +6389,25 @@ mod tests {
         let mut out = kstring_t::default();
         let mut opt = (*opt).clone();
         opt.flag |= MEM_F_REF_HDR;
-        mem_aln2sam(&opt, &bns, &mut out, &s, list.len() as i32, &list, 0, Some(&mate));
+        mem_aln2sam(
+            &opt,
+            &bns,
+            &mut out,
+            &s,
+            list.len() as i32,
+            &list,
+            0,
+            Some(&mate),
+        );
         let sam = out.as_str();
         assert!(
             sam.starts_with("read1\t33\tchr1\t3\t60\t4M\t=\t7\t8\tACGT\t!!!!"),
             "{sam}"
         );
-        assert!(sam.contains("\tNM:i:0\tMD:Z:4\tMC:Z:4M\tAS:i:4\tXS:i:1"), "{sam}");
+        assert!(
+            sam.contains("\tNM:i:0\tMD:Z:4\tMC:Z:4M\tAS:i:4\tXS:i:1"),
+            "{sam}"
+        );
         assert!(sam.contains("\tSA:Z:chr1,6,+,4M,20,0;"), "{sam}");
         assert!(sam.contains("\tpa:f:0.500"), "{sam}");
         assert!(sam.contains("\tCO:Z:note"), "{sam}");
@@ -5145,12 +6494,20 @@ mod tests {
             m: 1,
             // secondary_all=-1 matches the value mem_mark_primary_se sets before mem_reg2sam runs;
             // the default 0 would point get_pri_idx at this entry (a self-secondary), which never happens in real flow.
-            a: vec![mem_alnreg_t { score: 5, secondary: -1, secondary_all: -1, ..Default::default() }],
+            a: vec![mem_alnreg_t {
+                score: 5,
+                secondary: -1,
+                secondary_all: -1,
+                ..Default::default()
+            }],
         };
 
         mem_reg2sam(&opt, &bns, &[], &mut s, &mut regs, 0, None);
         let sam = s.sam.as_deref().expect("sam");
-        assert!(sam.starts_with("read3\t4\t*\t0\t0\t*\t*\t0\t0\tACGT\t!!!!"), "{sam}");
+        assert!(
+            sam.starts_with("read3\t4\t*\t0\t0\t*\t*\t0\t0\tACGT\t!!!!"),
+            "{sam}"
+        );
     }
 
     #[test]
@@ -5232,7 +6589,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -5288,7 +6649,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -5338,7 +6703,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -5370,22 +6739,58 @@ mod tests {
         opt.T = 1;
 
         let pes0 = [
-            mem_pestat_t { low: 10, high: 20, failed: 0, avg: 15.0, std: 1.5 },
-            mem_pestat_t { low: 0, high: 0, failed: 1, avg: 0.0, std: 0.0 },
-            mem_pestat_t { low: 0, high: 0, failed: 1, avg: 0.0, std: 0.0 },
-            mem_pestat_t { low: 0, high: 0, failed: 1, avg: 0.0, std: 0.0 },
+            mem_pestat_t {
+                low: 10,
+                high: 20,
+                failed: 0,
+                avg: 15.0,
+                std: 1.5,
+            },
+            mem_pestat_t {
+                low: 0,
+                high: 0,
+                failed: 1,
+                avg: 0.0,
+                std: 0.0,
+            },
+            mem_pestat_t {
+                low: 0,
+                high: 0,
+                failed: 1,
+                avg: 0.0,
+                std: 0.0,
+            },
+            mem_pestat_t {
+                low: 0,
+                high: 0,
+                failed: 1,
+                avg: 0.0,
+                std: 0.0,
+            },
         ];
 
-        let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-        let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            ..Default::default()
+        };
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
         memoryAlloc(&aux, &mut worker, 2, opt.n_threads);
 
         mem_process_seqs(&mut opt, 0, 2, &mut seqs, Some(&pes0), &mut worker);
         assert_eq!(worker.pes[0].low, 10);
         assert_eq!(worker.pes[0].high, 20);
         assert_eq!(worker.pes[0].failed, 0);
-        assert!(seqs[0].sam.as_deref().is_some_and(|sam| sam.contains("read7")));
-        assert!(seqs[1].sam.as_deref().is_some_and(|sam| sam.contains("read7")));
+        assert!(seqs[0]
+            .sam
+            .as_deref()
+            .is_some_and(|sam| sam.contains("read7")));
+        assert!(seqs[1]
+            .sam
+            .as_deref()
+            .is_some_and(|sam| sam.contains("read7")));
 
         fs::remove_dir_all(&dir).expect("cleanup");
     }

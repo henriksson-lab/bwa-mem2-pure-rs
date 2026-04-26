@@ -38,8 +38,14 @@ fn main() {
     fmi.load_index();
 
     let opt = (*mem_opt_init()).clone();
-    let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-    let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+    let aux = ktp_aux_t {
+        opt: Some(Box::new(opt.clone())),
+        ..Default::default()
+    };
+    let mut worker = worker_t {
+        fmi: Some(fmi),
+        ..Default::default()
+    };
     memoryAlloc(&aux, &mut worker, 1, 1);
     worker.opt = Some(Box::new(opt));
     worker.n_processed = 0;
@@ -129,7 +135,13 @@ fn main() {
             "pre_chain[{i}] rid={} pos={} w={} kept={} first={} n={} cseed={} frac_rep={:.6}",
             ch.rid, ch.pos, ch.w, ch.kept, ch.first, ch.n, ch.cseed, ch.frac_rep
         );
-        for (j, s) in ch.seeds.iter().take(usize::try_from(ch.n).unwrap_or(0)).enumerate().take(8) {
+        for (j, s) in ch
+            .seeds
+            .iter()
+            .take(usize::try_from(ch.n).unwrap_or(0))
+            .enumerate()
+            .take(8)
+        {
             println!(
                 "  pre_seed[{j}] rbeg={} qbeg={} len={} score={} rid={}",
                 s.rbeg, s.qbeg, s.len, s.score, ch.rid
@@ -156,12 +168,23 @@ fn main() {
         mem_flt_chained_seeds(opt_ref, bns, pac, &worker.seqs, chn.n as i32, &mut chn.a);
     }
     println!("post_filter chains n={}", post_chain_ar[0].n);
-    for (i, ch) in post_chain_ar[0].a.iter().take(post_chain_ar[0].n).enumerate() {
+    for (i, ch) in post_chain_ar[0]
+        .a
+        .iter()
+        .take(post_chain_ar[0].n)
+        .enumerate()
+    {
         println!(
             "post_chain[{i}] rid={} pos={} w={} kept={} first={} n={} cseed={} frac_rep={:.6}",
             ch.rid, ch.pos, ch.w, ch.kept, ch.first, ch.n, ch.cseed, ch.frac_rep
         );
-        for (j, s) in ch.seeds.iter().take(usize::try_from(ch.n).unwrap_or(0)).enumerate().take(8) {
+        for (j, s) in ch
+            .seeds
+            .iter()
+            .take(usize::try_from(ch.n).unwrap_or(0))
+            .enumerate()
+            .take(8)
+        {
             println!(
                 "  post_seed[{j}] rbeg={} qbeg={} len={} score={} rid={}",
                 s.rbeg, s.qbeg, s.len, s.score, ch.rid
@@ -171,12 +194,23 @@ fn main() {
 
     worker_bwt(&mut worker, 0, 1, 0);
     println!("chains n={}", worker.chain_ar[0].n);
-    for (i, ch) in worker.chain_ar[0].a.iter().take(worker.chain_ar[0].n).enumerate() {
+    for (i, ch) in worker.chain_ar[0]
+        .a
+        .iter()
+        .take(worker.chain_ar[0].n)
+        .enumerate()
+    {
         println!(
             "chain[{i}] rid={} pos={} w={} kept={} first={} n={} cseed={} frac_rep={:.6}",
             ch.rid, ch.pos, ch.w, ch.kept, ch.first, ch.n, ch.cseed, ch.frac_rep
         );
-        for (j, s) in ch.seeds.iter().take(usize::try_from(ch.n).unwrap_or(0)).enumerate().take(8) {
+        for (j, s) in ch
+            .seeds
+            .iter()
+            .take(usize::try_from(ch.n).unwrap_or(0))
+            .enumerate()
+            .take(8)
+        {
             println!(
                 "  seed[{j}] rbeg={} qbeg={} len={} score={} rid={}",
                 s.rbeg, s.qbeg, s.len, s.score, ch.rid

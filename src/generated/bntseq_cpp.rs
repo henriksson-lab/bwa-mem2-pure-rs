@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bntseq.cpp`.
 
@@ -9,29 +14,35 @@ use std::path::Path;
 
 use flate2::read::MultiGzDecoder;
 
-use crate::generated::bntseq_h::{bntamb1_t, bntann1_t};
 use crate::generated::bntseq_h::{bns_depos, bntseq_t};
+use crate::generated::bntseq_h::{bntamb1_t, bntann1_t};
 
 fn parse_i64(text: &str, ctx: &str) -> i64 {
-    text.parse().unwrap_or_else(|_| panic!("parse error reading {ctx}"))
+    text.parse()
+        .unwrap_or_else(|_| panic!("parse error reading {ctx}"))
 }
 
 fn parse_i32(text: &str, ctx: &str) -> i32 {
-    text.parse().unwrap_or_else(|_| panic!("parse error reading {ctx}"))
+    text.parse()
+        .unwrap_or_else(|_| panic!("parse error reading {ctx}"))
 }
 
 fn parse_u32(text: &str, ctx: &str) -> u32 {
-    text.parse().unwrap_or_else(|_| panic!("parse error reading {ctx}"))
+    text.parse()
+        .unwrap_or_else(|_| panic!("parse error reading {ctx}"))
 }
 
 fn next_line(lines: &mut impl Iterator<Item = std::io::Result<String>>, ctx: &str) -> String {
-    lines.next()
+    lines
+        .next()
         .unwrap_or_else(|| panic!("Error reading {ctx} : Unexpected end of file"))
         .unwrap_or_else(|e| panic!("Error reading {ctx} : {e}"))
 }
 
 fn split_header<'a>(line: &'a str, ctx: &str) -> (&'a str, &'a str, &'a str) {
-    let first_end = line.find(char::is_whitespace).unwrap_or_else(|| panic!("parse error reading {ctx}"));
+    let first_end = line
+        .find(char::is_whitespace)
+        .unwrap_or_else(|| panic!("parse error reading {ctx}"));
     let first = &line[..first_end];
     let rest = line[first_end..].trim_start();
     let second_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
@@ -66,6 +77,7 @@ struct SequenceRecord {
     seq: Vec<u8>,
 }
 
+#[inline]
 fn nt4(c: u8) -> u8 {
     match c {
         b'A' | b'a' => 0,
@@ -93,7 +105,11 @@ fn parse_fasta<R: BufRead>(reader: R) -> Vec<SequenceRecord> {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(ToOwned::to_owned);
-            current = Some(SequenceRecord { name, comment, seq: Vec::new() });
+            current = Some(SequenceRecord {
+                name,
+                comment,
+                seq: Vec::new(),
+            });
         } else if !line.is_empty() {
             current
                 .as_mut()
@@ -114,7 +130,8 @@ pub fn bns_dump(bns: &bntseq_t, prefix: &str) {
     let amb_name = format!("{prefix}.amb");
 
     {
-        let fp = File::create(&ann_name).unwrap_or_else(|e| panic!("fail to open file '{ann_name}' : {e}"));
+        let fp = File::create(&ann_name)
+            .unwrap_or_else(|e| panic!("fail to open file '{ann_name}' : {e}"));
         let mut w = BufWriter::new(fp);
         writeln!(w, "{} {} {}", bns.l_pac, bns.n_seqs, bns.seed).expect("write ann header");
         for ann in &bns.anns {
@@ -130,7 +147,8 @@ pub fn bns_dump(bns: &bntseq_t, prefix: &str) {
     }
 
     {
-        let fp = File::create(&amb_name).unwrap_or_else(|e| panic!("fail to open file '{amb_name}' : {e}"));
+        let fp = File::create(&amb_name)
+            .unwrap_or_else(|e| panic!("fail to open file '{amb_name}' : {e}"));
         let mut w = BufWriter::new(fp);
         writeln!(w, "{} {} {}", bns.l_pac, bns.n_seqs, bns.n_holes).expect("write amb header");
         for amb in &bns.ambs {
@@ -211,7 +229,7 @@ pub fn bns_restore_core(ann_filename: &str, amb_filename: &str, pac_filename: &s
 
     bns.fp_pac = Some(
         File::open(pac_filename)
-            .unwrap_or_else(|e| panic!("fail to open file '{pac_filename}' : {e}"))
+            .unwrap_or_else(|e| panic!("fail to open file '{pac_filename}' : {e}")),
     );
     bns
 }
@@ -262,8 +280,13 @@ fn add1(
     bns: &mut bntseq_t,
     pac: &mut Vec<u8>,
     m_pac: &mut i64,
+    rng_state: &mut u64,
 ) {
-    let offset = bns.anns.last().map(|p| p.offset + i64::from(p.len)).unwrap_or(0);
+    let offset = bns
+        .anns
+        .last()
+        .map(|p| p.offset + i64::from(p.len))
+        .unwrap_or(0);
     let ann_index = bns.anns.len();
     bns.anns.push(bntann1_t {
         name: seq.name.clone(),
@@ -276,7 +299,9 @@ fn add1(
     });
 
     let mut lasts = 0_u8;
-    let mut rng_state = bns.seed as u64;
+    // C++ bntseq.cpp:315 calls srand48(bns.seed) ONCE in bns_fasta2bntseq; lrand48() state is then
+    // shared across all add1 calls (one per record). Caller initializes `rng_state` once and
+    // threads it in here so the state persists across records.
     for (i, &base) in seq.seq.iter().enumerate() {
         let mut c = nt4(base);
         if c >= 4 {
@@ -297,8 +322,11 @@ fn add1(
         lasts = base;
 
         if c >= 4 {
-            rng_state = rng_state.wrapping_mul(0x5deece66d).wrapping_add(0xb);
-            c = ((rng_state >> 16) & 3) as u8;
+            // Step LCG mod 2^48, then take bits 17..18 (== `(state >> 17) & 3`) — what
+            // `lrand48() & 3` returns. The mask after multiply trims to 48 bits.
+            *rng_state =
+                rng_state.wrapping_mul(0x5deece66d).wrapping_add(0xb) & 0x0000_FFFF_FFFF_FFFF;
+            c = ((*rng_state >> 17) & 3) as u8;
         }
         if bns.l_pac == *m_pac {
             *m_pac <<= 1;
@@ -322,8 +350,11 @@ pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i
     let mut m_pac = 0x10000_i64;
     let mut pac = vec![0_u8; usize::try_from(m_pac / 4).expect("initial pac size")];
 
+    // Mirror glibc srand48(bns.seed): X = ((seed & 0xFFFFFFFF) << 16) | 0x330e (48-bit state).
+    // C++ bntseq.cpp:315 calls this once before the per-record add1 loop.
+    let mut rng_state: u64 = (((bns.seed as u32) as u64) << 16) | 0x330e_u64;
     for record in &records {
-        add1(record, &mut bns, &mut pac, &mut m_pac);
+        add1(record, &mut bns, &mut pac, &mut m_pac, &mut rng_state);
     }
 
     if for_only == 0 {
@@ -345,7 +376,8 @@ pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i
     let ret = bns.l_pac;
     let pac_name = format!("{prefix}.pac");
     {
-        let fp = File::create(&pac_name).unwrap_or_else(|e| panic!("fail to open file '{pac_name}' : {e}"));
+        let fp = File::create(&pac_name)
+            .unwrap_or_else(|e| panic!("fail to open file '{pac_name}' : {e}"));
         let mut w = BufWriter::new(fp);
         let bytes_to_write = usize::try_from(bns.l_pac >> 2).expect("pac write size")
             + if (bns.l_pac & 3) == 0 { 0 } else { 1 };
@@ -353,7 +385,8 @@ pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i
         if bns.l_pac % 4 == 0 {
             w.write_all(&[0]).expect("write pac pad");
         }
-        w.write_all(&[u8::try_from(bns.l_pac % 4).expect("tail byte")]).expect("write pac tail");
+        w.write_all(&[u8::try_from(bns.l_pac % 4).expect("tail byte")])
+            .expect("write pac tail");
         w.flush().expect("flush pac");
     }
 
@@ -429,7 +462,11 @@ pub fn bns_intv2rid(bns: &bntseq_t, rb: i64, re: i64) -> i32 {
     } else {
         rid_b
     };
-    if rid_b == rid_e { rid_b } else { -1 }
+    if rid_b == rid_e {
+        rid_b
+    } else {
+        -1
+    }
 }
 
 #[doc = "Original function: bns_cnt_ambi:404"]
@@ -462,7 +499,25 @@ pub fn bns_cnt_ambi(bns: &bntseq_t, pos_f: i64, len: i32, ref_id: Option<&mut i3
 }
 
 #[doc = "Original function: bns_get_seq:427"]
-pub fn bns_get_seq(l_pac: i64, pac: &[u8], mut beg: i64, mut end: i64, len: &mut i64) -> Option<Vec<u8>> {
+pub fn bns_get_seq(l_pac: i64, pac: &[u8], beg: i64, end: i64, len: &mut i64) -> Option<Vec<u8>> {
+    let mut seq = Vec::new();
+    if bns_get_seq_into(l_pac, pac, beg, end, len, &mut seq) {
+        Some(seq)
+    } else {
+        None
+    }
+}
+
+/// Variant of `bns_get_seq` that writes into a caller-provided buffer (cleared first).
+/// Returns true if the requested range was valid; false otherwise.
+pub fn bns_get_seq_into(
+    l_pac: i64,
+    pac: &[u8],
+    mut beg: i64,
+    mut end: i64,
+    len: &mut i64,
+    out: &mut Vec<u8>,
+) -> bool {
     if end < beg {
         std::mem::swap(&mut beg, &mut end);
     }
@@ -474,26 +529,21 @@ pub fn bns_get_seq(l_pac: i64, pac: &[u8], mut beg: i64, mut end: i64, len: &mut
     }
     if beg >= l_pac || end <= l_pac {
         *len = end - beg;
-        let mut seq = Vec::with_capacity(usize::try_from(end - beg + 64).expect("seq capacity"));
+        out.clear();
+        out.reserve(usize::try_from(end - beg + 64).expect("seq capacity"));
         if beg >= l_pac {
             let beg_f = (l_pac << 1) - 1 - end;
             let end_f = (l_pac << 1) - 1 - beg;
-            let mut k = end_f;
-            while k > beg_f {
-                seq.push(3 - get_pac(pac, k));
-                k -= 1;
-            }
+            // Walk backward over (beg_f, end_f] complementing each base.
+            out.extend((beg_f + 1..=end_f).rev().map(|k| 3 - get_pac(pac, k)));
         } else {
-            let mut k = beg;
-            while k < end {
-                seq.push(get_pac(pac, k));
-                k += 1;
-            }
+            // Forward walk over [beg, end).
+            out.extend((beg..end).map(|k| get_pac(pac, k)));
         }
-        Some(seq)
+        true
     } else {
         *len = 0;
-        None
+        false
     }
 }
 
@@ -506,6 +556,21 @@ pub fn bns_fetch_seq(
     end: &mut i64,
     rid: &mut i32,
 ) -> Vec<u8> {
+    let mut out = Vec::new();
+    bns_fetch_seq_into(bns, pac, beg, mid, end, rid, &mut out);
+    out
+}
+
+/// Variant of `bns_fetch_seq` that writes into a caller-provided buffer.
+pub fn bns_fetch_seq_into(
+    bns: &bntseq_t,
+    pac: &[u8],
+    beg: &mut i64,
+    mid: i64,
+    end: &mut i64,
+    rid: &mut i32,
+    out: &mut Vec<u8>,
+) {
     if *end < *beg {
         std::mem::swap(end, beg);
     }
@@ -525,10 +590,14 @@ pub fn bns_fetch_seq(
     *end = (*end).min(far_end);
 
     let mut len = 0;
-    let seq = bns_get_seq(bns.l_pac, pac, *beg, *end, &mut len)
-        .unwrap_or_else(|| panic!("[E::bns_fetch_seq] begin={}, mid={}, end={}", *beg, mid, *end));
+    let ok = bns_get_seq_into(bns.l_pac, pac, *beg, *end, &mut len, out);
+    if !ok {
+        panic!(
+            "[E::bns_fetch_seq] begin={}, mid={}, end={}",
+            *beg, mid, *end
+        );
+    }
     assert_eq!(*end - *beg, len);
-    seq
 }
 
 #[cfg(test)]
@@ -538,12 +607,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::generated::bntseq_h::{bntamb1_t, bntann1_t, bntseq_t};
     use super::{
         add1, bns_cnt_ambi, bns_destroy, bns_dump, bns_fasta2bntseq, bns_fetch_seq, bns_get_seq,
         bns_intv2rid, bns_pos2rid, bns_restore, bns_restore_core, bwa_fa2pac, parse_fasta,
         SequenceRecord,
     };
+    use crate::generated::bntseq_h::{bntamb1_t, bntann1_t, bntseq_t};
 
     fn temp_prefix(name: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
@@ -561,22 +630,41 @@ mod tests {
             l_pac: 8,
             n_seqs: 2,
             anns: vec![
-                bntann1_t { offset: 0, len: 4, name: "chr1".into(), ..Default::default() },
-                bntann1_t { offset: 4, len: 4, name: "chr2".into(), ..Default::default() },
+                bntann1_t {
+                    offset: 0,
+                    len: 4,
+                    name: "chr1".into(),
+                    ..Default::default()
+                },
+                bntann1_t {
+                    offset: 4,
+                    len: 4,
+                    name: "chr2".into(),
+                    ..Default::default()
+                },
             ],
             n_holes: 1,
-            ambs: vec![bntamb1_t { offset: 2, len: 3, amb: b'N' }],
+            ambs: vec![bntamb1_t {
+                offset: 2,
+                len: 3,
+                amb: b'N',
+            }],
             ..Default::default()
         }
     }
 
     fn sample_pac() -> Vec<u8> {
-        vec![(0 << 6) | (1 << 4) | (2 << 2) | 3, (1 << 6) | (0 << 4) | (3 << 2) | 2]
+        vec![
+            (0 << 6) | (1 << 4) | (2 << 2) | 3,
+            (1 << 6) | (0 << 4) | (3 << 2) | 2,
+        ]
     }
 
     #[test]
     fn fasta_parser_preserves_name_comment_and_sequence() {
-        let records = parse_fasta(BufReader::new(&b">chr1 comment one\nAC\nTG\n>chr2\nNN\n"[..]));
+        let records = parse_fasta(BufReader::new(
+            &b">chr1 comment one\nAC\nTG\n>chr2\nNN\n"[..],
+        ));
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].name, "chr1");
         assert_eq!(records[0].comment.as_deref(), Some("comment one"));
@@ -652,7 +740,10 @@ mod tests {
 
     #[test]
     fn add1_builds_ann_amb_and_pac() {
-        let mut bns = bntseq_t { seed: 11, ..Default::default() };
+        let mut bns = bntseq_t {
+            seed: 11,
+            ..Default::default()
+        };
         let mut pac = vec![0_u8; 8];
         let mut m_pac = 32_i64;
         let rec = SequenceRecord {
@@ -660,7 +751,8 @@ mod tests {
             comment: Some("comment".into()),
             seq: b"ACNN".to_vec(),
         };
-        add1(&rec, &mut bns, &mut pac, &mut m_pac);
+        let mut rng_state: u64 = (((bns.seed as u32) as u64) << 16) | 0x330e_u64;
+        add1(&rec, &mut bns, &mut pac, &mut m_pac, &mut rng_state);
         assert_eq!(bns.n_seqs, 1);
         assert_eq!(bns.anns[0].name, "chr1");
         assert_eq!(bns.anns[0].anno, "comment");
@@ -682,11 +774,31 @@ mod tests {
             n_seqs: 2,
             seed: 7,
             anns: vec![
-                bntann1_t { gi: 1, name: "chr1".into(), anno: "comment one".into(), offset: 0, len: 5, n_ambs: 0, ..Default::default() },
-                bntann1_t { gi: 2, name: "chr2".into(), anno: String::new(), offset: 5, len: 7, n_ambs: 1, ..Default::default() },
+                bntann1_t {
+                    gi: 1,
+                    name: "chr1".into(),
+                    anno: "comment one".into(),
+                    offset: 0,
+                    len: 5,
+                    n_ambs: 0,
+                    ..Default::default()
+                },
+                bntann1_t {
+                    gi: 2,
+                    name: "chr2".into(),
+                    anno: String::new(),
+                    offset: 5,
+                    len: 7,
+                    n_ambs: 1,
+                    ..Default::default()
+                },
             ],
             n_holes: 1,
-            ambs: vec![bntamb1_t { offset: 9, len: 3, amb: b'N' }],
+            ambs: vec![bntamb1_t {
+                offset: 9,
+                len: 3,
+                amb: b'N',
+            }],
             fp_pac: Some(File::open(&pac_path).expect("open pac")),
         };
         bns_dump(&bns, prefix.to_str().expect("utf8"));
@@ -706,7 +818,11 @@ mod tests {
     fn bns_fasta2bntseq_writes_index_files() {
         let prefix = temp_prefix("fa2pac");
         let fasta = b">chr1 comment one\nACGT\n>chr2\nNN\n";
-        let l_pac = bns_fasta2bntseq(BufReader::new(&fasta[..]), prefix.to_str().expect("utf8"), 1);
+        let l_pac = bns_fasta2bntseq(
+            BufReader::new(&fasta[..]),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
         assert_eq!(l_pac, 6);
         assert!(prefix.with_extension("pac").is_file());
         let restored = bns_restore_core(

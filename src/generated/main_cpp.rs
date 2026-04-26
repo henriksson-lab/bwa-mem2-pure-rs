@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/main.cpp`.
 
@@ -109,7 +114,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);

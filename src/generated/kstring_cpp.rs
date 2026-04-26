@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kstring.cpp`.
 
@@ -61,7 +66,11 @@ mod tests {
 
     #[test]
     fn ksprintf_reuses_remaining_space_when_exactly_enough() {
-        let mut s = kstring_t { l: 2, m: 8, s: vec![0; 8] };
+        let mut s = kstring_t {
+            l: 2,
+            m: 8,
+            s: vec![0; 8],
+        };
         s.s[..2].copy_from_slice(b"ab");
         assert_eq!(ksprintf(&mut s, format_args!("cdefg")), 5);
         assert_eq!(s.as_str(), "abcdefg");

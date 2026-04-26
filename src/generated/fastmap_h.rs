@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/fastmap.h`.
 
@@ -29,4 +34,5 @@ pub struct ktp_aux_t {
 pub struct ktp_data_t {
     pub n_seqs: i32,
     pub seqs: Vec<bseq1_t>,
+    pub sam_lines: Vec<Box<str>>,
 }

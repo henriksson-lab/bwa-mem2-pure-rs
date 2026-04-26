@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/FMI_search.cpp`.
 
@@ -9,6 +14,25 @@ use crate::generated::bwa_h::bseq1_t;
 use crate::generated::fmi_search_h::SMEM;
 use crate::generated::read_index_ele_h::indexEle;
 use crate::generated::read_index_ele_h::BWA_IDX_ALL;
+
+thread_local! {
+    // Reused across all calls to getSMEMsOnePosOneThread on a given Rayon worker.
+    // C++ allocates SMEM prev[max_readlength] on the stack per call (kept tiny because the
+    // compiler bounds maxLen). Rust has no equivalent stack-vec; per-call vec! adds significant
+    // alloc overhead in the seed-finding inner loop. Reuse via thread-local Vec.
+    static SMEM_PREV_SCRATCH: std::cell::RefCell<Vec<SMEM>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    // Reused across getSMEMsAllPosOneThread calls. The original C++ allocates this temporary with
+    // _mm_malloc/_mm_free per call; in Rust that showed up as allocator work in the SMEM hotspot.
+    static SMEM_QUERY_POS_SCRATCH: std::cell::RefCell<Vec<i16>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+
+    // Reused across get_sa_entries_prefetch calls (per-chain in mem_chain_seeds).
+    // Holds (pos_ar, map_ar) for the prefetch-bookkeeping pass.
+    static SA_PREFETCH_SCRATCH: std::cell::RefCell<(Vec<i64>, Vec<usize>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
 
 const DUMMY_CHAR: u8 = 6;
 const CP_BLOCK_SIZE: usize = 64;
@@ -55,14 +79,18 @@ fn read_u32<R: Read>(reader: &mut R) -> u32 {
     u32::from_le_bytes(buf)
 }
 
+#[inline(always)]
 fn countbits_64(x: u64) -> i32 {
     x.count_ones() as i32
 }
 
+#[inline]
 fn decode_bwt_base(cp_occ: &[CP_OCC], sp: i64) -> u8 {
-    let occ_id = usize::try_from(sp >> CP_SHIFT).expect("occ id");
-    let y = CP_BLOCK_SIZE - usize::try_from(sp & CP_MASK as i64).expect("cp y") - 1;
-    let one_hot_bwt_str = &cp_occ[occ_id].one_hot_bwt_str;
+    let occ_id = (sp >> CP_SHIFT) as usize;
+    let y = CP_BLOCK_SIZE - ((sp & CP_MASK as i64) as usize) - 1;
+    debug_assert!(occ_id < cp_occ.len());
+    let one_hot_bwt_str = unsafe { &cp_occ.get_unchecked(occ_id).one_hot_bwt_str };
+    // Branchless: bit b of (one_hot[b] >> y) tells us which base; combine into a result.
     if ((one_hot_bwt_str[0] >> y) & 1) != 0 {
         0
     } else if ((one_hot_bwt_str[1] >> y) & 1) != 0 {
@@ -95,6 +123,7 @@ fn occ(cp_occ: &[CP_OCC], one_hot_mask_array: &[u64], sp: i64, b: u8) -> i64 {
 }
 
 #[doc = "Original function: compare_smem:987"]
+#[inline]
 pub fn compare_smem(a: &SMEM, b: &SMEM) -> i32 {
     if a.rid < b.rid {
         return -1;
@@ -144,7 +173,8 @@ impl FMI_search {
 
     #[doc = "Original function: FMI_search::pac_seq_len:70"]
     pub fn pac_seq_len(&self, fn_pac: &str) -> i64 {
-        let mut fp = File::open(fn_pac).unwrap_or_else(|e| panic!("fail to open file '{fn_pac}' : {e}"));
+        let mut fp =
+            File::open(fn_pac).unwrap_or_else(|e| panic!("fail to open file '{fn_pac}' : {e}"));
         fp.seek(SeekFrom::End(-1)).expect("seek pac tail");
         let pac_len = fp.stream_position().expect("ftell pac") as i64;
         let mut c = [0_u8; 1];
@@ -156,7 +186,8 @@ impl FMI_search {
     pub fn pac2nt(&self, fn_pac: &str, reference_seq: &mut String) {
         let seq_len = self.pac_seq_len(fn_pac);
         assert!(seq_len > 0);
-        let mut fp = File::open(fn_pac).unwrap_or_else(|e| panic!("fail to open file '{fn_pac}' : {e}"));
+        let mut fp =
+            File::open(fn_pac).unwrap_or_else(|e| panic!("fail to open file '{fn_pac}' : {e}"));
         let pac_size = (seq_len >> 2) + if (seq_len & 3) == 0 { 0 } else { 1 };
         let mut buf = vec![0_u8; usize::try_from(pac_size).expect("pac size")];
         fp.read_exact(&mut buf).expect("read pac");
@@ -202,7 +233,9 @@ impl FMI_search {
             .write_all(&ref_seq_len_with_sentinel.to_le_bytes())
             .expect("write ref len");
         for value in count {
-            outstream.write_all(&value.to_le_bytes()).expect("write count");
+            outstream
+                .write_all(&value.to_le_bytes())
+                .expect("write count");
         }
 
         let ref_seq_len_aligned =
@@ -223,7 +256,8 @@ impl FMI_search {
             }
         }
 
-        let cp_occ_size = (usize::try_from(ref_seq_len_with_sentinel).expect("cp len") >> CP_SHIFT) + 1;
+        let cp_occ_size =
+            (usize::try_from(ref_seq_len_with_sentinel).expect("cp len") >> CP_SHIFT) + 1;
         let mut cp_occ = vec![CP_OCC::default(); cp_occ_size];
         let mut cp_count = [0_i64; 16];
         for i in 0..usize::try_from(ref_seq_len_with_sentinel).expect("loop len") {
@@ -245,10 +279,14 @@ impl FMI_search {
         }
         for cpo in &cp_occ {
             for value in cpo.cp_count {
-                outstream.write_all(&value.to_le_bytes()).expect("write cp_count");
+                outstream
+                    .write_all(&value.to_le_bytes())
+                    .expect("write cp_count");
             }
             for value in cpo.one_hot_bwt_str {
-                outstream.write_all(&value.to_le_bytes()).expect("write one_hot");
+                outstream
+                    .write_all(&value.to_le_bytes())
+                    .expect("write one_hot");
             }
         }
         self.cp_occ = cp_occ.clone();
@@ -265,10 +303,14 @@ impl FMI_search {
             }
         }
         for value in &sa_ms_byte {
-            outstream.write_all(&value.to_le_bytes()).expect("write sa ms");
+            outstream
+                .write_all(&value.to_le_bytes())
+                .expect("write sa ms");
         }
         for value in &sa_ls_word {
-            outstream.write_all(&value.to_le_bytes()).expect("write sa ls");
+            outstream
+                .write_all(&value.to_le_bytes())
+                .expect("write sa ls");
         }
         outstream
             .write_all(&sentinel_index.to_le_bytes())
@@ -352,9 +394,13 @@ impl FMI_search {
         self.reference_seq_len = read_i64(&mut cpstream);
         assert!(self.reference_seq_len > 0);
         assert!(self.reference_seq_len <= 0x7fff_ffff_ff);
-        eprintln!("* Reference seq len for bi-index = {}", self.reference_seq_len);
+        eprintln!(
+            "* Reference seq len for bi-index = {}",
+            self.reference_seq_len
+        );
 
-        let cp_occ_size = usize::try_from((self.reference_seq_len >> CP_SHIFT) + 1).expect("cp occ size");
+        let cp_occ_size =
+            usize::try_from((self.reference_seq_len >> CP_SHIFT) + 1).expect("cp occ size");
         for slot in &mut self.count {
             *slot = read_i64(&mut cpstream);
         }
@@ -393,7 +439,10 @@ impl FMI_search {
             eprintln!("{i},\t{count}");
         }
         eprintln!();
-        eprintln!("* Reading other elements of the index from files {}", ref_file_name);
+        eprintln!(
+            "* Reading other elements of the index from files {}",
+            ref_file_name
+        );
         self.base.bwa_idx_load_ele(&ref_file_name, BWA_IDX_ALL);
         eprintln!("* Done reading Index!!");
     }
@@ -415,8 +464,52 @@ impl FMI_search {
         num_total_smem: &mut i64,
     ) {
         let mut total = *num_total_smem;
-        let mut prev_array =
-            vec![SMEM::default(); usize::try_from(max_readlength).expect("max_readlength")];
+        SMEM_PREV_SCRATCH.with(|cell| {
+            let mut prev_array = cell.borrow_mut();
+            let need = usize::try_from(max_readlength).expect("max_readlength");
+            if prev_array.len() < need {
+                prev_array.resize(need, SMEM::default());
+            }
+            self.getSMEMsOnePosOneThread_inner(
+                enc_qdb,
+                query_pos_array,
+                min_intv_array,
+                rid_array,
+                numReads,
+                _batch_size,
+                seq_,
+                query_cum_len_ar,
+                max_readlength,
+                minSeedLen,
+                match_array,
+                num_total_smem,
+                &mut total,
+                &mut prev_array,
+            );
+        });
+        *num_total_smem = total;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn getSMEMsOnePosOneThread_inner(
+        &self,
+        enc_qdb: &[u8],
+        query_pos_array: &mut [i16],
+        min_intv_array: &mut [i32],
+        rid_array: &mut [i32],
+        numReads: i32,
+        _batch_size: i32,
+        seq_: &[bseq1_t],
+        query_cum_len_ar: &[i32],
+        max_readlength: i32,
+        minSeedLen: i32,
+        match_array: &mut Vec<SMEM>,
+        num_total_smem: &mut i64,
+        total: &mut i64,
+        prev_array: &mut [SMEM],
+    ) {
+        let _ = max_readlength;
+        let _ = num_total_smem;
         let limit = usize::min(
             usize::try_from(numReads).expect("numReads"),
             usize::min(
@@ -425,13 +518,15 @@ impl FMI_search {
             ),
         );
 
+        let min_seed_len_u32 = u32::try_from(minSeedLen).expect("minSeedLen");
         for i in 0..limit {
-            let x = i32::from(query_pos_array[i]);
+            let x = usize::try_from(query_pos_array[i]).expect("query_pos");
             let rid = usize::try_from(rid_array[i]).expect("rid");
-            let mut next_x = x + 1;
-            let readlength = seq_[rid].l_seq;
+            let mut next_x = i32::try_from(x + 1).expect("next_x");
+            let readlength = usize::try_from(seq_[rid].l_seq).expect("readlength");
             let offset = usize::try_from(query_cum_len_ar[rid]).expect("offset");
-            let mut a = enc_qdb[offset + usize::try_from(x).expect("x")];
+            let min_intv = i64::from(min_intv_array[i]);
+            let mut a = enc_qdb[offset + x];
 
             if a < 4 {
                 let mut smem = SMEM {
@@ -445,8 +540,8 @@ impl FMI_search {
                 let mut num_prev = 0_usize;
 
                 for j in (x + 1)..readlength {
-                    a = enc_qdb[offset + usize::try_from(j).expect("j")];
-                    next_x = j + 1;
+                    a = enc_qdb[offset + j];
+                    next_x = i32::try_from(j + 1).expect("next_x");
                     if a < 4 {
                         let mut smem_ = smem;
                         smem_.k = smem.l;
@@ -457,11 +552,15 @@ impl FMI_search {
                         new_smem.l = new_smem_.k;
                         new_smem.n = u32::try_from(j).expect("n");
 
-                        let s_neq_mask = if new_smem.s != smem.s { 1_usize } else { 0_usize };
+                        let s_neq_mask = if new_smem.s != smem.s {
+                            1_usize
+                        } else {
+                            0_usize
+                        };
                         prev_array[num_prev] = smem;
                         num_prev += s_neq_mask;
-                        if new_smem.s < i64::from(min_intv_array[i]) {
-                            next_x = j;
+                        if new_smem.s < min_intv {
+                            next_x = i32::try_from(j).expect("next_x");
                             break;
                         }
                         smem = new_smem;
@@ -470,7 +569,7 @@ impl FMI_search {
                     }
                 }
 
-                if smem.s >= i64::from(min_intv_array[i]) {
+                if smem.s >= min_intv {
                     prev_array[num_prev] = smem;
                     num_prev += 1;
                 }
@@ -480,7 +579,7 @@ impl FMI_search {
                 for j in (0..x).rev() {
                     let mut num_curr = 0_usize;
                     let mut curr_s = -1_i64;
-                    a = enc_qdb[offset + usize::try_from(j).expect("j")];
+                    a = enc_qdb[offset + j];
                     if a > 3 {
                         break;
                     }
@@ -491,17 +590,12 @@ impl FMI_search {
                         let mut new_smem = self.backwardExt(smem, a);
                         new_smem.m = u32::try_from(j).expect("m");
 
-                        if (new_smem.s < i64::from(min_intv_array[i]))
-                            && ((i32::try_from(smem.n).expect("n")
-                                - i32::try_from(smem.m).expect("m")
-                                + 1)
-                                >= minSeedLen)
-                        {
+                        if (new_smem.s < min_intv) && (smem.n - smem.m + 1 >= min_seed_len_u32) {
                             match_array.push(smem);
-                            total += 1;
+                            *total += 1;
                             break;
                         }
-                        if (new_smem.s >= i64::from(min_intv_array[i])) && (new_smem.s != curr_s) {
+                        if (new_smem.s >= min_intv) && (new_smem.s != curr_s) {
                             curr_s = new_smem.s;
                             prev_array[num_curr] = new_smem;
                             num_curr += 1;
@@ -515,7 +609,7 @@ impl FMI_search {
                         let smem = prev_array[p];
                         let mut new_smem = self.backwardExt(smem, a);
                         new_smem.m = u32::try_from(j).expect("m");
-                        if (new_smem.s >= i64::from(min_intv_array[i])) && (new_smem.s != curr_s) {
+                        if (new_smem.s >= min_intv) && (new_smem.s != curr_s) {
                             curr_s = new_smem.s;
                             prev_array[num_curr] = new_smem;
                             num_curr += 1;
@@ -531,19 +625,15 @@ impl FMI_search {
 
                 if num_prev != 0 {
                     let smem = prev_array[0];
-                    if (i32::try_from(smem.n).expect("n") - i32::try_from(smem.m).expect("m") + 1)
-                        >= minSeedLen
-                    {
+                    if smem.n - smem.m + 1 >= min_seed_len_u32 {
                         match_array.push(smem);
-                        total += 1;
+                        *total += 1;
                     }
                 }
             }
 
             query_pos_array[i] = i16::try_from(next_x).expect("next_x");
         }
-
-        *num_total_smem = total;
     }
 
     #[doc = "Original function: FMI_search::getSMEMsAllPosOneThread:672"]
@@ -562,42 +652,47 @@ impl FMI_search {
         num_total_smem: &mut i64,
     ) {
         let num_reads = usize::try_from(numReads).expect("numReads");
-        let mut query_pos_array = vec![0_i16; num_reads];
         let mut num_active = numReads;
         *num_total_smem = 0;
 
-        loop {
-            let mut tail = 0_usize;
-            for head in 0..usize::try_from(num_active).expect("num_active") {
-                let readlength =
-                    seq_[usize::try_from(rid_array[head]).expect("rid head")].l_seq;
-                if i32::from(query_pos_array[head]) < readlength {
-                    rid_array[tail] = rid_array[head];
-                    query_pos_array[tail] = query_pos_array[head];
-                    min_intv_array[tail] = min_intv_array[head];
-                    tail += 1;
+        SMEM_QUERY_POS_SCRATCH.with(|cell| {
+            let mut query_pos_array = cell.borrow_mut();
+            query_pos_array.clear();
+            query_pos_array.resize(num_reads, 0);
+
+            loop {
+                let mut tail = 0_usize;
+                for head in 0..usize::try_from(num_active).expect("num_active") {
+                    let readlength =
+                        seq_[usize::try_from(rid_array[head]).expect("rid head")].l_seq;
+                    if i32::from(query_pos_array[head]) < readlength {
+                        rid_array[tail] = rid_array[head];
+                        query_pos_array[tail] = query_pos_array[head];
+                        min_intv_array[tail] = min_intv_array[head];
+                        tail += 1;
+                    }
+                }
+
+                self.getSMEMsOnePosOneThread(
+                    enc_qdb,
+                    &mut query_pos_array[..tail],
+                    &mut min_intv_array[..tail],
+                    &mut rid_array[..tail],
+                    i32::try_from(tail).expect("tail"),
+                    batch_size,
+                    seq_,
+                    query_cum_len_ar,
+                    max_readlength,
+                    minSeedLen,
+                    match_array,
+                    num_total_smem,
+                );
+                num_active = i32::try_from(tail).expect("tail");
+                if num_active <= 0 {
+                    break;
                 }
             }
-
-            self.getSMEMsOnePosOneThread(
-                enc_qdb,
-                &mut query_pos_array[..tail],
-                &mut min_intv_array[..tail],
-                &mut rid_array[..tail],
-                i32::try_from(tail).expect("tail"),
-                batch_size,
-                seq_,
-                query_cum_len_ar,
-                max_readlength,
-                minSeedLen,
-                match_array,
-                num_total_smem,
-            );
-            num_active = i32::try_from(tail).expect("tail");
-            if num_active <= 0 {
-                break;
-            }
-        }
+        });
     }
 
     #[doc = "Original function: FMI_search::bwtSeedStrategyAllPosOneThread:726"]
@@ -614,7 +709,10 @@ impl FMI_search {
         let mut num_total_seed = 0_i64;
         let limit = usize::min(
             usize::try_from(numReads).expect("numReads"),
-            usize::min(seq_.len(), usize::min(max_intv_array.len(), query_cum_len_ar.len())),
+            usize::min(
+                seq_.len(),
+                usize::min(max_intv_array.len(), query_cum_len_ar.len()),
+            ),
         );
 
         for i in 0..limit {
@@ -719,8 +817,7 @@ impl FMI_search {
                         n: u32::try_from(x).expect("n"),
                         ..Default::default()
                     };
-                    let a = enc_qdb
-                        [usize::try_from(i * readlength + x).expect("enc idx")];
+                    let a = enc_qdb[usize::try_from(i * readlength + x).expect("enc idx")];
 
                     if a > 3 {
                         x -= 1;
@@ -793,7 +890,8 @@ impl FMI_search {
                                         >= minSeedLen
                                     {
                                         let target = match_base
-                                            + usize::try_from(num_total_smem[tid]).expect("num_total")
+                                            + usize::try_from(num_total_smem[tid])
+                                                .expect("num_total")
                                             + num_smem;
                                         if match_array.len() <= target {
                                             match_array.resize(target + 1, SMEM::default());
@@ -830,7 +928,8 @@ impl FMI_search {
                         } else {
                             curr_array[curr_base]
                         };
-                        if (i32::try_from(smem.n).expect("n") - i32::try_from(smem.m).expect("m") + 1)
+                        if (i32::try_from(smem.n).expect("n") - i32::try_from(smem.m).expect("m")
+                            + 1)
                             >= minSeedLen
                         {
                             let target = match_base
@@ -872,41 +971,107 @@ impl FMI_search {
     }
 
     #[doc = "Original function: FMI_search::backwardExt:1025"]
+    #[inline(always)]
     pub fn backwardExt(&self, mut smem: SMEM, a: u8) -> SMEM {
-        let mut k = [0_i64; 4];
-        let mut l = [0_i64; 4];
-        let mut s = [0_i64; 4];
-        for b in 0..4_u8 {
-            let sp = smem.k;
-            let ep = smem.k + smem.s;
-            let occ_sp = occ(&self.cp_occ, &self.one_hot_mask_array, sp, b);
-            let occ_ep = occ(&self.cp_occ, &self.one_hot_mask_array, ep, b);
-            k[usize::from(b)] = self.count[usize::from(b)] + occ_sp;
-            s[usize::from(b)] = occ_ep - occ_sp;
-        }
+        // Hoist the per-position lookup that's invariant across the 4 base loop. `entry_sp` /
+        // `entry_ep` and `mask_sp` / `mask_ep` only depend on `sp` / `ep`, not on `b`.
+        let sp = smem.k;
+        let ep = smem.k + smem.s;
+        let occ_id_sp = (sp >> CP_SHIFT) as usize;
+        let y_sp = (sp & CP_MASK as i64) as usize;
+        let occ_id_ep = (ep >> CP_SHIFT) as usize;
+        let y_ep = (ep & CP_MASK as i64) as usize;
+        let (k0, s0, k1, s1, k2, s2, k3, s3) = unsafe {
+            let entry_sp = self.cp_occ.get_unchecked(occ_id_sp);
+            let entry_ep = self.cp_occ.get_unchecked(occ_id_ep);
+            let mask_sp = *self.one_hot_mask_array.get_unchecked(y_sp);
+            let mask_ep = *self.one_hot_mask_array.get_unchecked(y_ep);
+
+            let one_hot_sp0 = *entry_sp.one_hot_bwt_str.get_unchecked(0);
+            let one_hot_ep0 = *entry_ep.one_hot_bwt_str.get_unchecked(0);
+            let occ_sp0 = *entry_sp.cp_count.get_unchecked(0)
+                + i64::from(countbits_64(one_hot_sp0 & mask_sp));
+            let occ_ep0 = *entry_ep.cp_count.get_unchecked(0)
+                + i64::from(countbits_64(one_hot_ep0 & mask_ep));
+
+            let one_hot_sp1 = *entry_sp.one_hot_bwt_str.get_unchecked(1);
+            let one_hot_ep1 = *entry_ep.one_hot_bwt_str.get_unchecked(1);
+            let occ_sp1 = *entry_sp.cp_count.get_unchecked(1)
+                + i64::from(countbits_64(one_hot_sp1 & mask_sp));
+            let occ_ep1 = *entry_ep.cp_count.get_unchecked(1)
+                + i64::from(countbits_64(one_hot_ep1 & mask_ep));
+
+            let one_hot_sp2 = *entry_sp.one_hot_bwt_str.get_unchecked(2);
+            let one_hot_ep2 = *entry_ep.one_hot_bwt_str.get_unchecked(2);
+            let occ_sp2 = *entry_sp.cp_count.get_unchecked(2)
+                + i64::from(countbits_64(one_hot_sp2 & mask_sp));
+            let occ_ep2 = *entry_ep.cp_count.get_unchecked(2)
+                + i64::from(countbits_64(one_hot_ep2 & mask_ep));
+
+            let one_hot_sp3 = *entry_sp.one_hot_bwt_str.get_unchecked(3);
+            let one_hot_ep3 = *entry_ep.one_hot_bwt_str.get_unchecked(3);
+            let occ_sp3 = *entry_sp.cp_count.get_unchecked(3)
+                + i64::from(countbits_64(one_hot_sp3 & mask_sp));
+            let occ_ep3 = *entry_ep.cp_count.get_unchecked(3)
+                + i64::from(countbits_64(one_hot_ep3 & mask_ep));
+
+            (
+                *self.count.get_unchecked(0) + occ_sp0,
+                occ_ep0 - occ_sp0,
+                *self.count.get_unchecked(1) + occ_sp1,
+                occ_ep1 - occ_sp1,
+                *self.count.get_unchecked(2) + occ_sp2,
+                occ_ep2 - occ_sp2,
+                *self.count.get_unchecked(3) + occ_sp3,
+                occ_ep3 - occ_sp3,
+            )
+        };
 
         let mut sentinel_offset = 0_i64;
         if smem.k <= self.sentinel_index && (smem.k + smem.s) > self.sentinel_index {
             sentinel_offset = 1;
         }
-        l[3] = smem.l + sentinel_offset;
-        l[2] = l[3] + s[3];
-        l[1] = l[2] + s[2];
-        l[0] = l[1] + s[1];
+        let l3 = smem.l + sentinel_offset;
+        let l2 = l3 + s3;
+        let l1 = l2 + s2;
+        let l0 = l1 + s1;
 
-        smem.k = k[usize::from(a)];
-        smem.l = l[usize::from(a)];
-        smem.s = s[usize::from(a)];
+        match a {
+            0 => {
+                smem.k = k0;
+                smem.l = l0;
+                smem.s = s0;
+            }
+            1 => {
+                smem.k = k1;
+                smem.l = l1;
+                smem.s = s1;
+            }
+            2 => {
+                smem.k = k2;
+                smem.l = l2;
+                smem.s = s2;
+            }
+            _ => {
+                smem.k = k3;
+                smem.l = l3;
+                smem.s = s3;
+            }
+        }
         smem
     }
 
     #[doc = "Original function: FMI_search::get_sa_entry:1054"]
+    #[inline]
     pub fn get_sa_entry(&self, pos: i64) -> i64 {
-        let pos = usize::try_from(pos).expect("sa position");
-        let mut sa_entry = i64::from(self.sa_ms_byte[pos]);
-        sa_entry <<= 32;
-        sa_entry += i64::from(self.sa_ls_word[pos]);
-        sa_entry
+        // BWT positions are non-negative and bounded by sa_ms_byte.len() == sa_ls_word.len()
+        // by index construction. Caller-side correctness is enforced; skip the runtime checks.
+        debug_assert!(pos >= 0 && (pos as usize) < self.sa_ms_byte.len());
+        debug_assert!((pos as usize) < self.sa_ls_word.len());
+        let pos_us = pos as usize;
+        let ms = unsafe { *self.sa_ms_byte.get_unchecked(pos_us) };
+        let ls = unsafe { *self.sa_ls_word.get_unchecked(pos_us) };
+        (i64::from(ms) << 32) + i64::from(ls)
     }
 
     #[doc = "Original function: FMI_search::get_sa_entries:1062"]
@@ -966,13 +1131,16 @@ impl FMI_search {
     }
 
     #[doc = "Original function: FMI_search::get_sa_entry_compressed:1103"]
+    #[inline]
     pub fn get_sa_entry_compressed(&self, pos: i64, _tid: i32) -> i64 {
         if (pos & SA_COMPX_MASK as i64) == 0 {
-            let mut sa_entry =
-                i64::from(self.sa_ms_byte[usize::try_from(pos >> SA_COMPX).expect("compressed sa idx")]);
-            sa_entry <<= 32;
-            sa_entry += i64::from(self.sa_ls_word[usize::try_from(pos >> SA_COMPX).expect("compressed sa idx")]);
-            return sa_entry;
+            let idx = (pos >> SA_COMPX) as usize;
+            debug_assert!(idx < self.sa_ms_byte.len() && idx < self.sa_ls_word.len());
+            unsafe {
+                let ms = *self.sa_ms_byte.get_unchecked(idx);
+                let ls = *self.sa_ls_word.get_unchecked(idx);
+                return (i64::from(ms) << 32) + i64::from(ls);
+            }
         }
 
         let mut offset = 0_i64;
@@ -990,11 +1158,13 @@ impl FMI_search {
             }
         }
 
-        let compressed_idx = usize::try_from(sp >> SA_COMPX).expect("compressed sa idx");
-        let mut sa_entry = i64::from(self.sa_ms_byte[compressed_idx]);
-        sa_entry <<= 32;
-        sa_entry += i64::from(self.sa_ls_word[compressed_idx]);
-        sa_entry + offset
+        let idx = (sp >> SA_COMPX) as usize;
+        debug_assert!(idx < self.sa_ms_byte.len() && idx < self.sa_ls_word.len());
+        unsafe {
+            let ms = *self.sa_ms_byte.get_unchecked(idx);
+            let ls = *self.sa_ls_word.get_unchecked(idx);
+            (i64::from(ms) << 32) + i64::from(ls) + offset
+        }
     }
 
     #[doc = "Original function: FMI_search::get_sa_entries:1177"]
@@ -1038,12 +1208,16 @@ impl FMI_search {
     }
 
     #[doc = "Original function: FMI_search::call_one_step:1202"]
+    #[inline]
     pub fn call_one_step(&self, pos: i64, sa_entry: &mut i64, offset: &mut i64) -> i64 {
         if (pos & SA_COMPX_MASK as i64) == 0 {
-            *sa_entry =
-                i64::from(self.sa_ms_byte[usize::try_from(pos >> SA_COMPX).expect("compressed sa idx")]);
-            *sa_entry <<= 32;
-            *sa_entry += i64::from(self.sa_ls_word[usize::try_from(pos >> SA_COMPX).expect("compressed sa idx")]);
+            let idx = (pos >> SA_COMPX) as usize;
+            debug_assert!(idx < self.sa_ms_byte.len() && idx < self.sa_ls_word.len());
+            unsafe {
+                let ms = *self.sa_ms_byte.get_unchecked(idx);
+                let ls = *self.sa_ls_word.get_unchecked(idx);
+                *sa_entry = (i64::from(ms) << 32) + i64::from(ls);
+            }
             return 1;
         }
 
@@ -1058,14 +1232,13 @@ impl FMI_search {
         let next_sp = self.count[usize::from(b)] + occ_sp;
         *offset += 1;
         if (next_sp & SA_COMPX_MASK as i64) == 0 {
-            *sa_entry = i64::from(
-                self.sa_ms_byte[usize::try_from(next_sp >> SA_COMPX).expect("compressed sa idx")],
-            );
-            *sa_entry <<= 32;
-            *sa_entry += i64::from(
-                self.sa_ls_word[usize::try_from(next_sp >> SA_COMPX).expect("compressed sa idx")],
-            );
-            *sa_entry += *offset;
+            let idx = (next_sp >> SA_COMPX) as usize;
+            debug_assert!(idx < self.sa_ms_byte.len() && idx < self.sa_ls_word.len());
+            unsafe {
+                let ms = *self.sa_ms_byte.get_unchecked(idx);
+                let ls = *self.sa_ls_word.get_unchecked(idx);
+                *sa_entry = (i64::from(ms) << 32) + i64::from(ls) + *offset;
+            }
             1
         } else {
             *sa_entry = next_sp;
@@ -1084,55 +1257,59 @@ impl FMI_search {
         _tid: i32,
         id_: &mut i64,
     ) {
-        let mut total_coord_count = 0_usize;
-        let mut pos_ar = Vec::new();
-        let mut map_ar = Vec::new();
-        let limit = usize::min(smem_array.len(), usize::try_from(count).expect("count"));
+        SA_PREFETCH_SCRATCH.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            let (pos_ar, map_ar) = &mut *buf;
+            pos_ar.clear();
+            map_ar.clear();
+            let mut total_coord_count = 0_usize;
+            let limit = usize::min(smem_array.len(), usize::try_from(count).expect("count"));
 
-        for smem in &smem_array[..limit] {
-            let mut c = 0_i32;
-            let hi = smem.k + smem.s;
-            let step = if smem.s > i64::from(max_occ) {
-                smem.s / i64::from(max_occ)
-            } else {
-                1
-            };
-            let mut j = smem.k;
-            while j < hi && c < max_occ {
-                pos_ar.push(j);
-                map_ar.push(total_coord_count + usize::try_from(c).expect("coord idx"));
-                j += step;
-                c += 1;
-            }
-            *coord_count_array += i64::from(c);
-            total_coord_count += usize::try_from(c).expect("total coord count");
-        }
-
-        *id_ += i64::try_from(pos_ar.len()).expect("id len");
-        if coord_array.len() < total_coord_count {
-            coord_array.resize(total_coord_count, 0);
-        }
-
-        for (idx, &pos) in pos_ar.iter().enumerate() {
-            let mut working = pos;
-            let mut sp = 0_i64;
-            let mut offset = 0_i64;
-            loop {
-                let quit = self.call_one_step(working, &mut sp, &mut offset);
-                if quit != 0 {
-                    coord_array[map_ar[idx]] = sp;
-                    break;
+            for smem in &smem_array[..limit] {
+                let mut c = 0_i32;
+                let hi = smem.k + smem.s;
+                let step = if smem.s > i64::from(max_occ) {
+                    smem.s / i64::from(max_occ)
+                } else {
+                    1
+                };
+                let mut j = smem.k;
+                while j < hi && c < max_occ {
+                    pos_ar.push(j);
+                    map_ar.push(total_coord_count + usize::try_from(c).expect("coord idx"));
+                    j += step;
+                    c += 1;
                 }
-                working = sp;
+                *coord_count_array += i64::from(c);
+                total_coord_count += usize::try_from(c).expect("total coord count");
             }
-        }
+
+            *id_ += i64::try_from(pos_ar.len()).expect("id len");
+            if coord_array.len() < total_coord_count {
+                coord_array.resize(total_coord_count, 0);
+            }
+
+            for (idx, &pos) in pos_ar.iter().enumerate() {
+                let mut working = pos;
+                let mut sp = 0_i64;
+                let mut offset = 0_i64;
+                loop {
+                    let quit = self.call_one_step(working, &mut sp, &mut offset);
+                    if quit != 0 {
+                        coord_array[map_ar[idx]] = sp;
+                        break;
+                    }
+                    working = sp;
+                }
+            }
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
     use std::fs;
+    use std::io::Cursor;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1145,8 +1322,12 @@ mod tests {
     fn reference_and_sa(prefix: &std::path::Path) -> (String, Vec<i64>) {
         let fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         let mut reference_seq = String::new();
-        fmi.pac2nt(prefix.with_extension("pac").to_str().expect("utf8"), &mut reference_seq);
-        let mut suffixes: Vec<i64> = (0..i64::try_from(reference_seq.len()).expect("len")).collect();
+        fmi.pac2nt(
+            prefix.with_extension("pac").to_str().expect("utf8"),
+            &mut reference_seq,
+        );
+        let mut suffixes: Vec<i64> =
+            (0..i64::try_from(reference_seq.len()).expect("len")).collect();
         suffixes.sort_by(|&a, &b| {
             let sa = &reference_seq.as_bytes()[usize::try_from(a).expect("a")..];
             let sb = &reference_seq.as_bytes()[usize::try_from(b).expect("b")..];
@@ -1207,12 +1388,7 @@ mod tests {
         bwt
     }
 
-    fn explicit_backward_ext(
-        fmi: &FMI_search,
-        bwt: &[u8],
-        smem: SMEM,
-        a: u8,
-    ) -> SMEM {
+    fn explicit_backward_ext(fmi: &FMI_search, bwt: &[u8], smem: SMEM, a: u8) -> SMEM {
         let mut k = [0_i64; 4];
         let mut l = [0_i64; 4];
         let mut s = [0_i64; 4];
@@ -1311,11 +1487,36 @@ mod tests {
 
     #[test]
     fn compare_smem_orders_by_rid_then_m_then_reverse_n() {
-        let a = SMEM { rid: 1, m: 5, n: 10, ..Default::default() };
-        let b = SMEM { rid: 2, m: 1, n: 1, ..Default::default() };
-        let c = SMEM { rid: 1, m: 6, n: 1, ..Default::default() };
-        let d = SMEM { rid: 1, m: 5, n: 8, ..Default::default() };
-        let e = SMEM { rid: 1, m: 5, n: 10, ..Default::default() };
+        let a = SMEM {
+            rid: 1,
+            m: 5,
+            n: 10,
+            ..Default::default()
+        };
+        let b = SMEM {
+            rid: 2,
+            m: 1,
+            n: 1,
+            ..Default::default()
+        };
+        let c = SMEM {
+            rid: 1,
+            m: 6,
+            n: 1,
+            ..Default::default()
+        };
+        let d = SMEM {
+            rid: 1,
+            m: 5,
+            n: 8,
+            ..Default::default()
+        };
+        let e = SMEM {
+            rid: 1,
+            m: 5,
+            n: 10,
+            ..Default::default()
+        };
 
         assert_eq!(super::compare_smem(&a, &b), -1);
         assert_eq!(super::compare_smem(&b, &a), 1);
@@ -1330,20 +1531,72 @@ mod tests {
     fn sort_smems_sorts_each_thread_slice_only() {
         let fmi = FMI_search::default();
         let mut entries = vec![
-            SMEM { rid: 1, m: 8, n: 2, ..Default::default() },
-            SMEM { rid: 0, m: 9, n: 1, ..Default::default() },
-            SMEM { rid: 0, m: 9, n: 3, ..Default::default() },
-            SMEM { rid: 3, m: 4, n: 1, ..Default::default() },
-            SMEM { rid: 2, m: 7, n: 5, ..Default::default() },
-            SMEM { rid: 2, m: 7, n: 8, ..Default::default() },
-            SMEM { rid: 99, m: 99, n: 99, ..Default::default() },
-            SMEM { rid: 88, m: 88, n: 88, ..Default::default() },
+            SMEM {
+                rid: 1,
+                m: 8,
+                n: 2,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 0,
+                m: 9,
+                n: 1,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 0,
+                m: 9,
+                n: 3,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 3,
+                m: 4,
+                n: 1,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 2,
+                m: 7,
+                n: 5,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 2,
+                m: 7,
+                n: 8,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 99,
+                m: 99,
+                n: 99,
+                ..Default::default()
+            },
+            SMEM {
+                rid: 88,
+                m: 88,
+                n: 88,
+                ..Default::default()
+            },
         ];
         let counts = vec![3_i64, 3_i64];
         fmi.sortSMEMs(&mut entries, &counts, 4, 2, 2);
 
-        assert_eq!(&entries[0..3].iter().map(|s| (s.rid, s.m, s.n)).collect::<Vec<_>>(), &vec![(0, 9, 3), (0, 9, 1), (1, 8, 2)]);
-        assert_eq!(&entries[4..7].iter().map(|s| (s.rid, s.m, s.n)).collect::<Vec<_>>(), &vec![(2, 7, 8), (2, 7, 5), (99, 99, 99)]);
+        assert_eq!(
+            &entries[0..3]
+                .iter()
+                .map(|s| (s.rid, s.m, s.n))
+                .collect::<Vec<_>>(),
+            &vec![(0, 9, 3), (0, 9, 1), (1, 8, 2)]
+        );
+        assert_eq!(
+            &entries[4..7]
+                .iter()
+                .map(|s| (s.rid, s.m, s.n))
+                .collect::<Vec<_>>(),
+            &vec![(2, 7, 8), (2, 7, 5), (99, 99, 99)]
+        );
         assert_eq!((entries[3].rid, entries[7].rid), (3, 88));
     }
 
@@ -1358,9 +1611,13 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let mut pac = std::fs::File::create(dir.join("ref.pac")).expect("create pac");
-        pac.write_all(&[(0 << 6) | (1 << 4) | (2 << 2) | 3, 0, 0]).expect("write pac");
+        pac.write_all(&[(0 << 6) | (1 << 4) | (2 << 2) | 3, 0, 0])
+            .expect("write pac");
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
-        assert_eq!(fmi.pac_seq_len(dir.join("ref.pac").to_str().expect("utf8")), 4);
+        assert_eq!(
+            fmi.pac_seq_len(dir.join("ref.pac").to_str().expect("utf8")),
+            4
+        );
         let mut seq = String::new();
         fmi.pac2nt(dir.join("ref.pac").to_str().expect("utf8"), &mut seq);
         assert_eq!(seq, "ACGTACGT");
@@ -1464,7 +1721,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1502,20 +1763,39 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let smems = vec![
-            SMEM { k: 0, s: 5, ..Default::default() },
-            SMEM { k: 6, s: 7, ..Default::default() },
+            SMEM {
+                k: 0,
+                s: 5,
+                ..Default::default()
+            },
+            SMEM {
+                k: 6,
+                s: 7,
+                ..Default::default()
+            },
         ];
 
         let mut direct = Vec::new();
         let mut direct_count = 0_i32;
-        fmi.get_sa_entries__L1177(&smems, &mut direct, &mut direct_count, smems.len() as u32, 3, 0);
+        fmi.get_sa_entries__L1177(
+            &smems,
+            &mut direct,
+            &mut direct_count,
+            smems.len() as u32,
+            3,
+            0,
+        );
 
         let mut prefetched = Vec::new();
         let mut prefetched_count = 0_i64;
@@ -1558,7 +1838,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1584,7 +1868,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1647,7 +1935,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1656,7 +1948,10 @@ mod tests {
         let (reference_seq, sa_bwt) = reference_and_sa(&prefix);
         let bwt = bwt_from_sa(&reference_seq, &sa_bwt);
         let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1];
-        let seqs = vec![bseq1_t { l_seq: 6, ..Default::default() }];
+        let seqs = vec![bseq1_t {
+            l_seq: 6,
+            ..Default::default()
+        }];
         let max_intv = vec![2_i32];
         let query_offsets = vec![0_i32];
 
@@ -1690,14 +1985,21 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1];
-        let seqs = vec![bseq1_t { l_seq: 6, ..Default::default() }];
+        let seqs = vec![bseq1_t {
+            l_seq: 6,
+            ..Default::default()
+        }];
         let query_offsets = vec![0_i32];
         let mut query_pos = vec![0_i16];
         let mut min_intv = vec![2_i32];
@@ -1743,7 +2045,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1751,8 +2057,14 @@ mod tests {
 
         let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1, 3, 3, 0, 0];
         let seqs = vec![
-            bseq1_t { l_seq: 6, ..Default::default() },
-            bseq1_t { l_seq: 4, ..Default::default() },
+            bseq1_t {
+                l_seq: 6,
+                ..Default::default()
+            },
+            bseq1_t {
+                l_seq: 4,
+                ..Default::default()
+            },
         ];
         let query_offsets = vec![0_i32, 6_i32];
 
@@ -1828,17 +2140,18 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let readlength = 6_i32;
-        let enc_qdb = vec![
-            0_u8, 1, 2, 3, 0, 1,
-            3, 3, 0, 0, 0, 0,
-        ];
+        let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1, 3, 3, 0, 0, 0, 0];
         let mut matches = Vec::new();
         let mut totals = Vec::new();
         fmi.getSMEMs(&enc_qdb, 2, 2, readlength, 2, 2, &mut matches, &mut totals);
@@ -1871,28 +2184,50 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let readlength = 6_i32;
-        let enc_qdb = vec![
-            0_u8, 1, 2, 3, 0, 1,
-            3, 3, 0, 0, 0, 0,
-        ];
+        let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1, 3, 3, 0, 0, 0, 0];
 
         let mut matches1 = Vec::new();
         let mut totals1 = Vec::new();
-        fmi.getSMEMs(&enc_qdb, 2, 2, readlength, 2, 1, &mut matches1, &mut totals1);
+        fmi.getSMEMs(
+            &enc_qdb,
+            2,
+            2,
+            readlength,
+            2,
+            1,
+            &mut matches1,
+            &mut totals1,
+        );
         fmi.sortSMEMs(&mut matches1, &totals1, 2, readlength, 1);
-        let total1: usize = totals1.iter().map(|&x| usize::try_from(x).expect("x")).sum();
+        let total1: usize = totals1
+            .iter()
+            .map(|&x| usize::try_from(x).expect("x"))
+            .sum();
         let out1 = matches1[..total1].to_vec();
 
         let mut matches2 = Vec::new();
         let mut totals2 = Vec::new();
-        fmi.getSMEMs(&enc_qdb, 2, 2, readlength, 2, 2, &mut matches2, &mut totals2);
+        fmi.getSMEMs(
+            &enc_qdb,
+            2,
+            2,
+            readlength,
+            2,
+            2,
+            &mut matches2,
+            &mut totals2,
+        );
         fmi.sortSMEMs(&mut matches2, &totals2, 2, readlength, 2);
         let mut out2 = Vec::new();
         for tid in 0..2_usize {
@@ -1922,19 +2257,37 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTAC\n>chr2\nTTAA\n";
-        let _ = bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
         fmi.load_index();
 
         let smems = vec![
-            SMEM { k: 0, s: 2, ..Default::default() },
-            SMEM { k: 2, s: 1, ..Default::default() },
+            SMEM {
+                k: 0,
+                s: 2,
+                ..Default::default()
+            },
+            SMEM {
+                k: 2,
+                s: 1,
+                ..Default::default()
+            },
         ];
         let mut coords = Vec::new();
         let mut coord_counts = Vec::new();
-        fmi.get_sa_entries__L1077(&smems, &mut coords, &mut coord_counts, smems.len() as u32, 3);
+        fmi.get_sa_entries__L1077(
+            &smems,
+            &mut coords,
+            &mut coord_counts,
+            smems.len() as u32,
+            3,
+        );
 
         assert_eq!(coord_counts, vec![2, 1]);
         let expected = vec![

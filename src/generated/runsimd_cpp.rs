@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/runsimd.cpp`.
 
@@ -165,7 +170,10 @@ fn candidate_is_executable(path: &Path) -> bool {
 pub fn test_and_launch(argv: &[String], prefix: &mut String, simd: &str) {
     let prefix_len = prefix.len();
     prefix.push_str(simd);
-    eprintln!("Looking to launch executable \"{}\", simd = {}", prefix, simd);
+    eprintln!(
+        "Looking to launch executable \"{}\", simd = {}",
+        prefix, simd
+    );
     let path = PathBuf::from(prefix.as_str());
     if path.exists() {
         if candidate_is_executable(&path) {
@@ -187,7 +195,9 @@ pub fn test_and_launch(argv: &[String], prefix: &mut String, simd: &str) {
             #[cfg(unix)]
             eprintln!(
                 "(st.st_mode & S_IXUSR) = {}, can not run executable: {}",
-                fs::metadata(&path).map(|m| m.permissions().mode() & 0o100).unwrap_or(0),
+                fs::metadata(&path)
+                    .map(|m| m.permissions().mode() & 0o100)
+                    .unwrap_or(0),
                 prefix
             );
             #[cfg(not(unix))]
@@ -280,7 +290,10 @@ mod tests {
             0
         );
         assert!(buf.ends_with('/'));
-        assert_eq!(base, 1 + i32::try_from(buf.rfind('/').expect("slash")).expect("idx"));
+        assert_eq!(
+            base,
+            1 + i32::try_from(buf.rfind('/').expect("slash")).expect("idx")
+        );
 
         let cwd = env::current_dir().expect("cwd");
         env::set_current_dir(&dir).expect("cd temp");

@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/utils.h`.
 
@@ -36,6 +41,7 @@ pub fn rdtsc__L60(_arg0: crate::support::Opaque) -> crate::support::Opaque {
 }
 
 #[doc = "Original function: hash_64:117"]
+#[inline]
 pub fn hash_64(mut key: u64) -> u64 {
     key = key.wrapping_add(!(key << 32));
     key ^= key >> 22;

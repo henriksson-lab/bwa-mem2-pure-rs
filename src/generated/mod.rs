@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-pub mod fmi_search_cpp;
-pub mod fmi_search_h;
 pub mod bandedswa_cpp;
 pub mod bandedswa_h;
 pub mod bntseq_cpp;
@@ -9,13 +7,15 @@ pub mod bntseq_h;
 pub mod bwa_cpp;
 pub mod bwa_h;
 pub mod bwamem_cpp;
-pub mod bwamem_h;
 pub mod bwamem_extra_cpp;
+pub mod bwamem_h;
 pub mod bwamem_pair_cpp;
 pub mod bwt_h;
 pub mod bwtindex_cpp;
 pub mod fastmap_cpp;
 pub mod fastmap_h;
+pub mod fmi_search_cpp;
+pub mod fmi_search_h;
 pub mod kbtree_h;
 pub mod khash_h;
 pub mod kopen_cpp;

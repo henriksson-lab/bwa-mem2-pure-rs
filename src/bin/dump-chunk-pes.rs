@@ -1,6 +1,6 @@
 use bwa_mem2_rs::generated::bwa_cpp::bseq_read_orig;
-use bwa_mem2_rs::generated::bwamem_cpp::mem_process_seqs;
 use bwa_mem2_rs::generated::bwamem_cpp::mem_opt_init;
+use bwa_mem2_rs::generated::bwamem_cpp::mem_process_seqs;
 use bwa_mem2_rs::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_seed_t, worker_t};
 use bwa_mem2_rs::generated::fastmap_cpp::memoryAlloc;
 use bwa_mem2_rs::generated::fastmap_h::ktp_aux_t;
@@ -27,9 +27,17 @@ fn main() {
     opt.n_threads = threads;
 
     let task_size = opt.chunk_size * i64::from(opt.n_threads);
-    let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), task_size, actual_chunk_size: task_size, ..Default::default() };
+    let aux = ktp_aux_t {
+        opt: Some(Box::new(opt.clone())),
+        task_size,
+        actual_chunk_size: task_size,
+        ..Default::default()
+    };
     let nreads = i32::try_from(task_size / 151 + 10).expect("nreads");
-    let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+    let mut worker = worker_t {
+        fmi: Some(fmi),
+        ..Default::default()
+    };
     memoryAlloc(&aux, &mut worker, nreads, threads);
 
     let mut n_processed = 0_i64;
@@ -37,7 +45,13 @@ fn main() {
     loop {
         let mut n = 0_i32;
         let mut total_bases = 0_i64;
-        let mut seqs = bseq_read_orig(task_size, &mut n, &mut ks1, Some(&mut ks2), &mut total_bases);
+        let mut seqs = bseq_read_orig(
+            task_size,
+            &mut n,
+            &mut ks1,
+            Some(&mut ks2),
+            &mut total_bases,
+        );
         if n == 0 {
             break;
         }

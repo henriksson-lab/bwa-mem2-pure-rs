@@ -1,12 +1,17 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/bwamem_extra.cpp`.
 
 use crate::generated::bntseq_h::bntseq_t;
-use crate::generated::bwt_h::{bwt_t, bwtintv_v};
 use crate::generated::bwamem_cpp::mem_reg2aln;
 use crate::generated::bwamem_h::{mem_alnreg_t, mem_alnreg_v, mem_opt_t};
-use crate::generated::kstring_h::{kputc, kputl, kputsn, kputw, kputs, kstring_t};
+use crate::generated::bwt_h::{bwt_t, bwtintv_v};
+use crate::generated::kstring_h::{kputc, kputl, kputs, kputsn, kputw, kstring_t};
 
 #[doc = "Original struct: __smem_i (bwa-mem2/src/bwamem_extra.cpp)"]
 #[derive(Debug, Default, Clone)]
@@ -35,13 +40,15 @@ pub fn smem_itr_init(bwt: &bwt_t) -> __smem_i {
         max_intv: 0,
         matches: Box::new(bwtintv_v::default()),
         sub: Box::new(bwtintv_v::default()),
-        tmpvec: [Box::new(bwtintv_v::default()), Box::new(bwtintv_v::default())],
+        tmpvec: [
+            Box::new(bwtintv_v::default()),
+            Box::new(bwtintv_v::default()),
+        ],
     }
 }
 
 #[doc = "Original function: smem_itr_destroy:67"]
-pub fn smem_itr_destroy(_itr: __smem_i) {
-}
+pub fn smem_itr_destroy(_itr: __smem_i) {}
 
 #[doc = "Original function: smem_set_query:76"]
 pub fn smem_set_query(itr: &mut __smem_i, len: i32, query: &[u8]) {
@@ -66,9 +73,7 @@ pub fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
     if itr.start >= itr.len || itr.start < 0 {
         return None;
     }
-    while itr.start < itr.len
-        && itr.query[usize::try_from(itr.start).expect("start")] > 3
-    {
+    while itr.start < itr.len && itr.query[usize::try_from(itr.start).expect("start")] > 3 {
         itr.start += 1;
     }
     if itr.start == itr.len {
@@ -78,7 +83,14 @@ pub fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
 }
 
 #[doc = "Original function: mem_align1:107"]
-pub fn mem_align1(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, _arg2: crate::support::Opaque, _arg3: crate::support::Opaque, _arg4: crate::support::Opaque, _arg5: crate::support::Opaque) -> crate::support::Opaque {
+pub fn mem_align1(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+    _arg2: crate::support::Opaque,
+    _arg3: crate::support::Opaque,
+    _arg4: crate::support::Opaque,
+    _arg5: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("mem_align1")
 }
 
@@ -86,7 +98,9 @@ pub fn mem_align1(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque, 
 pub fn get_pri_idx(XA_drop_ratio: f64, a: &[mem_alnreg_t], i: i32) -> i32 {
     let i = usize::try_from(i).expect("i");
     let k = a[i].secondary_all;
-    if k >= 0 && (a[i].score as f64) >= (a[usize::try_from(k).expect("k")].score as f64) * XA_drop_ratio {
+    if k >= 0
+        && (a[i].score as f64) >= (a[usize::try_from(k).expect("k")].score as f64) * XA_drop_ratio
+    {
         k
     } else {
         -1
@@ -133,33 +147,61 @@ pub fn mem_gen_alt(
         }
         let t = mem_reg2aln(opt, bns, pac, l_query, query, Some(&a.a[i]));
         str_.l = 0;
-        kputs(&bns.anns[usize::try_from(t.rid).expect("rid")].name, &mut str_);
+        kputs(
+            &bns.anns[usize::try_from(t.rid).expect("rid")].name,
+            &mut str_,
+        );
         kputc(i32::from(b','), &mut str_);
-        kputc(i32::from(if t.is_rev != 0 { b'-' } else { b'+' }), &mut str_);
+        kputc(
+            i32::from(if t.is_rev != 0 { b'-' } else { b'+' }),
+            &mut str_,
+        );
         kputl(t.pos + 1, &mut str_);
         kputc(i32::from(b','), &mut str_);
-        for &cigar in t.cigar.iter().take(usize::try_from(t.n_cigar).expect("n_cigar")) {
+        for &cigar in t
+            .cigar
+            .iter()
+            .take(usize::try_from(t.n_cigar).expect("n_cigar"))
+        {
             kputw(i32::try_from(cigar >> 4).expect("len"), &mut str_);
-            kputc(i32::from(b"MIDSHN"[usize::try_from(cigar & 0xf).expect("op")]), &mut str_);
+            kputc(
+                i32::from(b"MIDSHN"[usize::try_from(cigar & 0xf).expect("op")]),
+                &mut str_,
+            );
         }
         kputc(i32::from(b','), &mut str_);
         kputw(i32::try_from(t.NM).expect("NM"), &mut str_);
         kputc(i32::from(b';'), &mut str_);
-        kputsn(str_.as_bytes(), i32::try_from(str_.l).expect("str len"), &mut aln[r]);
+        kputsn(
+            str_.as_bytes(),
+            i32::try_from(str_.l).expect("str len"),
+            &mut aln[r],
+        );
     }
 
     aln.into_iter()
-        .map(|s| if s.l == 0 { None } else { Some(s.as_str().to_owned()) })
+        .map(|s| {
+            if s.l == 0 {
+                None
+            } else {
+                let mut bytes = s.s;
+                bytes.truncate(s.l);
+                Some(String::from_utf8(bytes).expect("XA tag contains invalid UTF-8"))
+            }
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{get_pri_idx, mem_gen_alt, smem_config, smem_itr_destroy, smem_itr_init, smem_next, smem_set_query};
-    use crate::generated::bwt_h::bwt_t;
+    use super::{
+        get_pri_idx, mem_gen_alt, smem_config, smem_itr_destroy, smem_itr_init, smem_next,
+        smem_set_query,
+    };
     use crate::generated::bntseq_h::{bntann1_t, bntseq_t};
     use crate::generated::bwamem_cpp::mem_opt_init;
     use crate::generated::bwamem_h::{mem_alnreg_t, mem_alnreg_v};
+    use crate::generated::bwt_h::bwt_t;
 
     fn pack_seq(seq: &[u8]) -> Vec<u8> {
         let mut pac = vec![0_u8; (seq.len() + 3) / 4];
@@ -173,9 +215,20 @@ mod tests {
     #[test]
     fn get_pri_idx_requires_secondary_all_and_drop_ratio_pass() {
         let regs = vec![
-            mem_alnreg_t { score: 10, ..Default::default() },
-            mem_alnreg_t { score: 8, secondary_all: 0, ..Default::default() },
-            mem_alnreg_t { score: 4, secondary_all: 0, ..Default::default() },
+            mem_alnreg_t {
+                score: 10,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 8,
+                secondary_all: 0,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                score: 4,
+                secondary_all: 0,
+                ..Default::default()
+            },
         ];
         assert_eq!(get_pri_idx(0.7, &regs, 1), 0);
         assert_eq!(get_pri_idx(0.7, &regs, 2), -1);

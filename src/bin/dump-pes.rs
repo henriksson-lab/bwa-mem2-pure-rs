@@ -1,6 +1,6 @@
 use bwa_mem2_rs::generated::bwa_cpp::bseq_read_orig;
-use bwa_mem2_rs::generated::bwamem_cpp::mem_process_seqs;
 use bwa_mem2_rs::generated::bwamem_cpp::mem_opt_init;
+use bwa_mem2_rs::generated::bwamem_cpp::mem_process_seqs;
 use bwa_mem2_rs::generated::bwamem_h::worker_t;
 use bwa_mem2_rs::generated::fastmap_cpp::memoryAlloc;
 use bwa_mem2_rs::generated::fastmap_h::ktp_aux_t;
@@ -29,8 +29,14 @@ fn main() {
     opt.flag |= 0x2;
     opt.n_threads = threads;
 
-    let aux = ktp_aux_t { opt: Some(Box::new(opt.clone())), ..Default::default() };
-    let mut worker = worker_t { fmi: Some(fmi), ..Default::default() };
+    let aux = ktp_aux_t {
+        opt: Some(Box::new(opt.clone())),
+        ..Default::default()
+    };
+    let mut worker = worker_t {
+        fmi: Some(fmi),
+        ..Default::default()
+    };
     memoryAlloc(&aux, &mut worker, n, threads);
     mem_process_seqs(&mut opt, 0, n, &mut seqs, None, &mut worker);
 

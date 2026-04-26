@@ -1,15 +1,27 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/ksw.cpp`.
 
 use crate::generated::ksw_h::{_kswq_t, kswr_t, KSW_XBYTE, KSW_XSTART, KSW_XSTOP, KSW_XSUBO};
-
 
 #[doc = "Original struct: eh_t (bwa-mem2/src/ksw.cpp)"]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct eh_t {
     pub h: i32,
     pub e: i32,
+}
+
+// Thread-local scratch for ksw_global2 (z, qp, eh). The z traceback matrix is the
+// largest reuser — typically n_col * tlen ≈ 22KB per call, allocated 100K-150K times
+// over a 50K-read run (per-alignment cigar gen via bwa_gen_cigar2).
+thread_local! {
+    static KSW_GLOBAL_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<i8>, Vec<eh_t>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
 const MINUS_INF: i32 = -0x4000_0000;
@@ -24,6 +36,7 @@ const G_DEFR: kswr_t = kswr_t {
 };
 
 #[doc = "Original function: ksw_qinit:62"]
+#[inline]
 pub fn ksw_qinit(size: i32, qlen: i32, query: &[u8], m: i32, mat: &[i8]) -> _kswq_t {
     let size = if size > 1 { 2 } else { 1 };
     let p = 8 * (3 - size);
@@ -64,7 +77,11 @@ pub fn ksw_u8(
     xtra: i32,
 ) -> kswr_t {
     let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { i32::MAX };
+    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        i32::MAX
+    };
     let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
         &q.query,
         &target[..tlen_usize],
@@ -79,8 +96,16 @@ pub fn ksw_u8(
     if r.score > 255 {
         r.score = 255;
     }
-    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 { xtra & 0xffff } else { 0x10000 };
-    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { 0x10000 };
+    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
+    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
     // C++ ksw.cpp:213 wraps the score2/te2 search in `if (r.score != 255)` — when SW saturates
     // at 255, both stay at -1 (G_DEFR defaults).
     if r.score != 255 && r.score >= minsc {
@@ -116,7 +141,11 @@ pub fn ksw_i16(
     xtra: i32,
 ) -> kswr_t {
     let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { i32::MAX };
+    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        i32::MAX
+    };
     let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
         &q.query,
         &target[..tlen_usize],
@@ -128,8 +157,16 @@ pub fn ksw_i16(
         e_ins,
         endsc_in,
     );
-    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 { xtra & 0xffff } else { 0x10000 };
-    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { 0x10000 };
+    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
+    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
     if r.score >= minsc {
         let radius = (r.score + i32::from(q.max).saturating_sub(1)) / i32::from(q.max.max(1));
         let low = r.te - radius;
@@ -186,7 +223,11 @@ mod ksw_i16_sse2 {
             for i in 0..slen {
                 let mut k = i;
                 while k < nlen {
-                    qp[t] = if k >= qlen { 0 } else { i16::from(ma[usize::from(query[k as usize])]) };
+                    qp[t] = if k >= qlen {
+                        0
+                    } else {
+                        i16::from(ma[usize::from(query[k as usize])])
+                    };
                     t += 1;
                     k += slen;
                 }
@@ -219,8 +260,16 @@ mod ksw_i16_sse2 {
         let (qp, slen) = build_qp(query, m, mat);
         let slen_us = slen as usize;
         let tlen_us = tlen as usize;
-        let minsc = if xtra & KSW_XSUBO != 0 { xtra & 0xffff } else { 0x10000 };
-        let endsc = if xtra & KSW_XSTOP != 0 { xtra & 0xffff } else { 0x10000 };
+        let minsc = if xtra & KSW_XSUBO != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        let endsc = if xtra & KSW_XSTOP != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
 
         let mut h0: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
         let mut h1: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
@@ -244,7 +293,8 @@ mod ksw_i16_sse2 {
                 let s_base = (target[i] as usize) * slen_us;
                 let mut h = _mm_slli_si128::<2>(*h0.get_unchecked(slen_us - 1));
                 for j in 0..slen_us {
-                    let s_v = _mm_loadu_si128(qp.as_ptr().add(s_base * 8 + j * 8) as *const __m128i);
+                    let s_v =
+                        _mm_loadu_si128(qp.as_ptr().add(s_base * 8 + j * 8) as *const __m128i);
                     h = _mm_adds_epi16(h, s_v);
                     let mut e = *e_buf.get_unchecked(j);
                     h = _mm_max_epi16(h, e);
@@ -349,13 +399,28 @@ mod ksw_u8_sse2 {
     use super::{kswr_t, G_DEFR};
     use crate::generated::ksw_h::{KSW_XSTOP, KSW_XSUBO};
     use core::arch::x86_64::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Scratch {
+        qp: Vec<u8>,
+        h0: Vec<__m128i>,
+        h1: Vec<__m128i>,
+        e_buf: Vec<__m128i>,
+        hmax_buf: Vec<__m128i>,
+        peaks: Vec<(i32, i32)>,
+    }
+
+    thread_local! {
+        static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    }
 
     /// Build the C++-style SoA query profile: per-base block of slen __m128i, each holding
     /// `query[stripe + lane*slen]` (or 0 padding) plus a `q_shift` bias so that subtraction
     /// in the SW recurrence works in u8 arithmetic.
     ///
-    /// Returns `(qp, slen, q_shift)`. `qp` length is `m * slen * 16` u8.
-    fn build_qp(query: &[u8], m: i32, mat: &[i8]) -> (Vec<u8>, i32, u8) {
+    /// Returns `(slen, q_shift)`. `qp` length is `m * slen * 16` u8.
+    fn build_qp_into(query: &[u8], m: i32, mat: &[i8], qp: &mut Vec<u8>) -> (i32, u8) {
         let qlen = query.len() as i32;
         let slen = (qlen + 15) / 16; // ceil
         let m_usize = m as usize;
@@ -368,7 +433,8 @@ mod ksw_u8_sse2 {
         }
         let q_shift = (0_i16).wrapping_sub(i16::from(shift_min)) as u8;
         let nlen = slen * 16;
-        let mut qp = vec![0_u8; m_usize * (slen as usize) * 16];
+        qp.clear();
+        qp.resize(m_usize * (slen as usize) * 16, 0);
         let mut t = 0_usize;
         for a in 0..m_usize {
             let ma = &mat[a * m_usize..a * m_usize + m_usize];
@@ -386,7 +452,7 @@ mod ksw_u8_sse2 {
                 }
             }
         }
-        (qp, slen, q_shift)
+        (slen, q_shift)
     }
 
     /// Horizontal max of 16 u8 lanes — returns the max as u32.
@@ -413,24 +479,78 @@ mod ksw_u8_sse2 {
         e_ins: i32,
         xtra: i32,
     ) -> kswr_t {
-        let (qp, slen, q_shift) = build_qp(query, m, mat);
+        SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            run_with_scratch(
+                query,
+                m,
+                mat,
+                q_max,
+                tlen,
+                target,
+                o_del,
+                e_del,
+                o_ins,
+                e_ins,
+                xtra,
+                &mut scratch,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_with_scratch(
+        query: &[u8],
+        m: i32,
+        mat: &[i8],
+        q_max: u8,
+        tlen: i32,
+        target: &[u8],
+        o_del: i32,
+        e_del: i32,
+        o_ins: i32,
+        e_ins: i32,
+        xtra: i32,
+        scratch: &mut Scratch,
+    ) -> kswr_t {
+        let (slen, q_shift) = build_qp_into(query, m, mat, &mut scratch.qp);
         let slen_us = slen as usize;
         let tlen_us = tlen as usize;
 
-        let minsc = if xtra & KSW_XSUBO != 0 { xtra & 0xffff } else { 0x10000 };
-        let endsc = if xtra & KSW_XSTOP != 0 { xtra & 0xffff } else { 0x10000 };
+        let minsc = if xtra & KSW_XSUBO != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        let endsc = if xtra & KSW_XSTOP != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
 
         // Aligned scratch — Vec<__m128i> guarantees 16-byte alignment.
-        let mut h0: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut h1: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut e_buf: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut hmax_buf: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
+        let zero_m = unsafe { _mm_setzero_si128() };
+        scratch.h0.clear();
+        scratch.h0.resize(slen_us, zero_m);
+        scratch.h1.clear();
+        scratch.h1.resize(slen_us, zero_m);
+        scratch.e_buf.clear();
+        scratch.e_buf.resize(slen_us, zero_m);
+        scratch.hmax_buf.clear();
+        scratch.hmax_buf.resize(slen_us, zero_m);
 
         // Track score peaks (b[] in C++): list of (imax, i) where each entry holds the
         // running max within a contiguous run of i values that have imax >= minsc.
-        let mut peaks: Vec<(i32, i32)> = Vec::new();
+        scratch.peaks.clear();
         let mut gmax: u32 = 0;
         let mut te: i32 = -1;
+
+        let qp = scratch.qp.as_slice();
+        let mut h0 = &mut scratch.h0;
+        let mut h1 = &mut scratch.h1;
+        let e_buf = &mut scratch.e_buf;
+        let hmax_buf = &mut scratch.hmax_buf;
+        let peaks = &mut scratch.peaks;
 
         unsafe {
             let oe_del_v = _mm_set1_epi8((o_del + e_del) as i8);
@@ -522,7 +642,11 @@ mod ksw_u8_sse2 {
 
         let mut r = G_DEFR;
         // r.score saturates at 255 if the SW result is >= 255 - shift.
-        r.score = if (gmax + u32::from(q_shift)) < 255 { gmax as i32 } else { 255 };
+        r.score = if (gmax + u32::from(q_shift)) < 255 {
+            gmax as i32
+        } else {
+            255
+        };
         r.te = te;
 
         if r.score != 255 {
@@ -548,11 +672,12 @@ mod ksw_u8_sse2 {
 
             // score2/te2 search using the b[] peaks (matches C++ ksw.cpp:222-228).
             if r.score >= minsc {
-                let radius = (r.score + i32::from(q_max).saturating_sub(1)) / i32::from(q_max.max(1));
+                let radius =
+                    (r.score + i32::from(q_max).saturating_sub(1)) / i32::from(q_max.max(1));
                 let low = r.te - radius;
                 let high = r.te + radius;
                 let mut alt = G_DEFR;
-                for &(imax, te2) in &peaks {
+                for &(imax, te2) in peaks.iter() {
                     if (te2 < low || te2 > high) && imax > alt.score2 {
                         alt.score2 = imax.min(255);
                         alt.te2 = te2;
@@ -571,6 +696,7 @@ mod ksw_u8_sse2 {
 // these variants accept the inputs by reference and avoid two heap allocations per pair lane.
 // `q_max` is the per-pair max score from `mat` (i.e. ksw_qinit's `q->max`), needed for the
 // score2 radius computation. `m` is the alphabet size (5 for DNA + N).
+#[inline]
 pub(crate) fn ksw_u8_slices(
     query: &[u8],
     m: i32,
@@ -587,10 +713,14 @@ pub(crate) fn ksw_u8_slices(
     #[cfg(target_arch = "x86_64")]
     {
         // SSE2 striped Farrar kernel — matches C++ ksw_u8 byte-for-byte.
-        return ksw_u8_sse2::run(query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra);
+        return ksw_u8_sse2::run(
+            query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+        );
     }
     #[cfg(not(target_arch = "x86_64"))]
-    ksw_u8_slices_scalar(query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra)
+    ksw_u8_slices_scalar(
+        query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+    )
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -608,15 +738,35 @@ fn ksw_u8_slices_scalar(
     xtra: i32,
 ) -> kswr_t {
     let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { i32::MAX };
+    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        i32::MAX
+    };
     let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
-        query, &target[..tlen_usize], m, mat, o_del, e_del, o_ins, e_ins, endsc_in,
+        query,
+        &target[..tlen_usize],
+        m,
+        mat,
+        o_del,
+        e_del,
+        o_ins,
+        e_ins,
+        endsc_in,
     );
     if r.score > 255 {
         r.score = 255;
     }
-    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 { xtra & 0xffff } else { 0x10000 };
-    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { 0x10000 };
+    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
+    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
     if r.score != 255 && r.score >= minsc {
         let radius = (r.score + i32::from(q_max).saturating_sub(1)) / i32::from(q_max.max(1));
         let low = r.te - radius;
@@ -638,6 +788,7 @@ fn ksw_u8_slices_scalar(
     r
 }
 
+#[inline]
 pub(crate) fn ksw_i16_slices(
     query: &[u8],
     m: i32,
@@ -653,10 +804,14 @@ pub(crate) fn ksw_i16_slices(
 ) -> kswr_t {
     #[cfg(target_arch = "x86_64")]
     {
-        return ksw_i16_sse2::run(query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra);
+        return ksw_i16_sse2::run(
+            query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+        );
     }
     #[cfg(not(target_arch = "x86_64"))]
-    ksw_i16_slices_scalar(query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra)
+    ksw_i16_slices_scalar(
+        query, m, mat, q_max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+    )
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -674,12 +829,32 @@ fn ksw_i16_slices_scalar(
     xtra: i32,
 ) -> kswr_t {
     let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { i32::MAX };
+    let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        i32::MAX
+    };
     let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
-        query, &target[..tlen_usize], m, mat, o_del, e_del, o_ins, e_ins, endsc_in,
+        query,
+        &target[..tlen_usize],
+        m,
+        mat,
+        o_del,
+        e_del,
+        o_ins,
+        e_ins,
+        endsc_in,
     );
-    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 { xtra & 0xffff } else { 0x10000 };
-    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 { xtra & 0xffff } else { 0x10000 };
+    let minsc = if (xtra & crate::generated::ksw_h::KSW_XSUBO) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
+    let endsc = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
+        xtra & 0xffff
+    } else {
+        0x10000
+    };
     if r.score >= minsc {
         let radius = (r.score + i32::from(q_max).saturating_sub(1)) / i32::from(q_max.max(1));
         let low = r.te - radius;
@@ -743,6 +918,7 @@ fn build_score_peaks(row_maxes: &[i32], minsc: i32) -> Vec<(i32, i32)> {
 }
 
 #[doc = "Original function: revseq:340"]
+#[inline]
 pub fn revseq(l: i32, s: &mut [u8]) {
     let l = usize::try_from(l).expect("revseq length");
     s[..l].reverse();
@@ -813,7 +989,8 @@ fn local_align_affine_with_rows_endsc(
         // SAFETY: qlen+1 elements, j∈1..=qlen, j-1∈0..qlen.
         for j in 1..=qlen {
             unsafe {
-                let score = i32::from(*mat_row.get_unchecked(usize::from(*qslice.get_unchecked(j - 1))));
+                let score =
+                    i32::from(*mat_row.get_unchecked(usize::from(*qslice.get_unchecked(j - 1))));
                 let e_ij = (*hp.get_unchecked(j) - oe_del).max(*ep.get_unchecked(j) - e_del);
                 let f_ij = (*h_curr.get_unchecked(j - 1) - oe_ins).max(f_left - e_ins);
                 let diag = *hp.get_unchecked(j - 1) + score;
@@ -845,7 +1022,6 @@ fn local_align_affine_with_rows_endsc(
     (best, row_maxes)
 }
 
-
 #[doc = "Original function: ksw_align2:347"]
 pub fn ksw_align2(
     qlen: i32,
@@ -863,13 +1039,25 @@ pub fn ksw_align2(
 ) -> kswr_t {
     let size = if (xtra & KSW_XBYTE) != 0 { 1 } else { 2 };
     let owned_q = if qry.is_none() {
-        Some(ksw_qinit(size, qlen, &query[..usize::try_from(qlen).expect("qlen")], m, mat))
+        Some(ksw_qinit(
+            size,
+            qlen,
+            &query[..usize::try_from(qlen).expect("qlen")],
+            m,
+            mat,
+        ))
     } else {
         None
     };
     let q_ref: &_kswq_t = if let Some(qry_slot) = qry {
         if qry_slot.is_none() {
-            *qry_slot = Some(ksw_qinit(size, qlen, &query[..usize::try_from(qlen).expect("qlen")], m, mat));
+            *qry_slot = Some(ksw_qinit(
+                size,
+                qlen,
+                &query[..usize::try_from(qlen).expect("qlen")],
+                m,
+                mat,
+            ));
         }
         qry_slot.as_ref().expect("qry slot initialized")
     } else {
@@ -877,9 +1065,27 @@ pub fn ksw_align2(
     };
 
     let func_result = if q_ref.size == 2 {
-        ksw_i16(q_ref, tlen, &target[..usize::try_from(tlen).expect("tlen")], o_del, e_del, o_ins, e_ins, xtra)
+        ksw_i16(
+            q_ref,
+            tlen,
+            &target[..usize::try_from(tlen).expect("tlen")],
+            o_del,
+            e_del,
+            o_ins,
+            e_ins,
+            xtra,
+        )
     } else {
-        ksw_u8(q_ref, tlen, &target[..usize::try_from(tlen).expect("tlen")], o_del, e_del, o_ins, e_ins, xtra)
+        ksw_u8(
+            q_ref,
+            tlen,
+            &target[..usize::try_from(tlen).expect("tlen")],
+            o_del,
+            e_del,
+            o_ins,
+            e_ins,
+            xtra,
+        )
     };
     let mut r = func_result;
     if (xtra & KSW_XSTART) == 0 || ((xtra & KSW_XSUBO) != 0 && r.score < (xtra & 0xffff)) {
@@ -888,7 +1094,13 @@ pub fn ksw_align2(
 
     revseq(r.qe + 1, query);
     revseq(r.te + 1, target);
-    let q2 = ksw_qinit(size, r.qe + 1, &query[..usize::try_from(r.qe + 1).expect("qe")], m, mat);
+    let q2 = ksw_qinit(
+        size,
+        r.qe + 1,
+        &query[..usize::try_from(r.qe + 1).expect("qe")],
+        m,
+        mat,
+    );
     let rr = if q2.size == 2 {
         ksw_i16(
             &q2,
@@ -936,7 +1148,9 @@ pub fn ksw_align2_orig_bak(
     xtra: i32,
     qry: Option<&mut Option<_kswq_t>>,
 ) -> kswr_t {
-    ksw_align2(qlen, query, tlen, target, m, mat, o_del, e_del, o_ins, e_ins, xtra, qry)
+    ksw_align2(
+        qlen, query, tlen, target, m, mat, o_del, e_del, o_ins, e_ins, xtra, qry,
+    )
 }
 
 #[doc = "Original function: ksw_align:419"]
@@ -952,7 +1166,9 @@ pub fn ksw_align(
     xtra: i32,
     qry: Option<&mut Option<_kswq_t>>,
 ) -> kswr_t {
-    ksw_align2(qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, xtra, qry)
+    ksw_align2(
+        qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, xtra, qry,
+    )
 }
 
 #[doc = "Original function: ksw_extend2:432"]
@@ -1029,7 +1245,8 @@ pub fn ksw_extend2(
         let mut h1;
         let mut row_best = 0_i32;
         let mut row_best_j = -1_i32;
-        let qprof = &qp[usize::from(target[i]) * qlen_usize..usize::from(target[i]) * qlen_usize + qlen_usize];
+        let qprof = &qp
+            [usize::from(target[i]) * qlen_usize..usize::from(target[i]) * qlen_usize + qlen_usize];
 
         let i_i32 = i32::try_from(i).expect("i");
         if beg < i_i32 - w {
@@ -1055,7 +1272,11 @@ pub fn ksw_extend2(
             let mut mm = p.h;
             let mut e = p.e;
             p.h = h1;
-            mm = if mm != 0 { mm + i32::from(qprof[j_usize]) } else { 0 };
+            mm = if mm != 0 {
+                mm + i32::from(qprof[j_usize])
+            } else {
+                0
+            };
             let h = mm.max(e).max(f);
             h1 = h;
             if h >= row_best {
@@ -1158,19 +1379,18 @@ pub fn ksw_extend(
     max_off: Option<&mut i32>,
 ) -> i32 {
     ksw_extend2(
-        qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, w, end_bonus, zdrop, h0, qle, tle, gtle, gscore, max_off,
+        qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, w, end_bonus, zdrop, h0, qle,
+        tle, gtle, gscore, max_off,
     )
 }
 
 #[doc = "Original function: push_cigar:546"]
-pub fn push_cigar(
-    n_cigar: &mut i32,
-    _m_cigar: &mut i32,
-    cigar: &mut Vec<u32>,
-    op: i32,
-    len: i32,
-) {
-    if *n_cigar == 0 || op != i32::try_from(cigar[usize::try_from(*n_cigar - 1).expect("idx")] & 0xf).expect("op") {
+#[inline]
+pub fn push_cigar(n_cigar: &mut i32, _m_cigar: &mut i32, cigar: &mut Vec<u32>, op: i32, len: i32) {
+    if *n_cigar == 0
+        || op
+            != i32::try_from(cigar[usize::try_from(*n_cigar - 1).expect("idx")] & 0xf).expect("op")
+    {
         cigar.push(((u32::try_from(len).expect("len")) << 4) | u32::try_from(op).expect("op"));
         *n_cigar += 1;
     } else {
@@ -1207,137 +1427,152 @@ pub fn ksw_global2(
 
     let n_col = qlen.min(2 * w + 1);
     let n_col_usize = usize::try_from(n_col).expect("n_col");
-    let mut z = if n_cigar_opt.is_some() && cigar_.is_some() {
-        vec![0_u8; n_col_usize * tlen_usize]
-    } else {
-        Vec::new()
-    };
-
-    let mut qp = vec![0_i8; qlen_usize * m_usize];
-    let mut eh = vec![eh_t::default(); qlen_usize + 1];
-
-    let mut idx = 0_usize;
-    for k in 0..m_usize {
-        let p = &mat[k * m_usize..(k + 1) * m_usize];
-        for &q in query.iter().take(qlen_usize) {
-            qp[idx] = p[usize::from(q)];
-            idx += 1;
+    KSW_GLOBAL_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        let (z, qp, eh) = &mut *buf;
+        let need_z = n_cigar_opt.is_some() && cigar_.is_some();
+        if need_z {
+            let z_len = n_col_usize * tlen_usize;
+            z.clear();
+            z.resize(z_len, 0);
+        } else {
+            z.clear();
         }
-    }
+        qp.clear();
+        qp.resize(qlen_usize * m_usize, 0);
+        eh.clear();
+        eh.resize(qlen_usize + 1, eh_t::default());
 
-    eh[0].h = 0;
-    eh[0].e = MINUS_INF;
-    let mut j = 1_i32;
-    while j <= qlen && j <= w {
-        let ju = usize::try_from(j).expect("j");
-        eh[ju].h = -(o_ins + e_ins * j);
-        eh[ju].e = MINUS_INF;
-        j += 1;
-    }
-    while j <= qlen {
-        let ju = usize::try_from(j).expect("j");
-        eh[ju].h = MINUS_INF;
-        eh[ju].e = MINUS_INF;
-        j += 1;
-    }
-
-    for i in 0..tlen {
-        let mut f = MINUS_INF;
-        let beg = if i > w { i - w } else { 0 };
-        let end = if i + w + 1 < qlen { i + w + 1 } else { qlen };
-        let mut h1 = if beg == 0 {
-            -(o_del + e_del * (i + 1))
-        } else {
-            MINUS_INF
-        };
-        let q = &qp[usize::from(target[usize::try_from(i).expect("i")]) * qlen_usize..];
-        if !z.is_empty() {
-            let zi_base = usize::try_from(i).expect("i") * n_col_usize;
-            for j in beg..end {
-                let p = &mut eh[usize::try_from(j).expect("j")];
-                let mut m_score = p.h;
-                let mut e = p.e;
-                p.h = h1;
-                m_score += i32::from(q[usize::try_from(j).expect("j")]);
-                let mut d = if m_score >= e { 0_u8 } else { 1_u8 };
-                let mut h = if m_score >= e { m_score } else { e };
-                d = if h >= f { d } else { 2_u8 };
-                h = if h >= f { h } else { f };
-                h1 = h;
-                let t = m_score - oe_del;
-                e -= e_del;
-                d |= if e > t { 1_u8 << 2 } else { 0 };
-                e = if e > t { e } else { t };
-                p.e = e;
-                let t = m_score - oe_ins;
-                f -= e_ins;
-                d |= if f > t { 2_u8 << 4 } else { 0 };
-                f = if f > t { f } else { t };
-                z[zi_base + usize::try_from(j - beg).expect("zi")] = d;
-            }
-        } else {
-            for j in beg..end {
-                let p = &mut eh[usize::try_from(j).expect("j")];
-                let mut m_score = p.h;
-                let mut e = p.e;
-                p.h = h1;
-                m_score += i32::from(q[usize::try_from(j).expect("j")]);
-                let mut h = if m_score >= e { m_score } else { e };
-                h = if h >= f { h } else { f };
-                h1 = h;
-                let t = m_score - oe_del;
-                e -= e_del;
-                e = if e > t { e } else { t };
-                p.e = e;
-                let t = m_score - oe_ins;
-                f -= e_ins;
-                f = if f > t { f } else { t };
+        let mut idx = 0_usize;
+        for k in 0..m_usize {
+            let p = &mat[k * m_usize..(k + 1) * m_usize];
+            for &q in query.iter().take(qlen_usize) {
+                qp[idx] = p[usize::from(q)];
+                idx += 1;
             }
         }
-        let endu = usize::try_from(end).expect("end");
-        eh[endu].h = h1;
-        eh[endu].e = MINUS_INF;
-    }
 
-    let score = eh[qlen_usize].h;
-    if !z.is_empty() {
-        let mut n_cigar = 0_i32;
-        let mut m_cigar = 0_i32;
-        let mut which = 0_u8;
-        let mut cigar = Vec::new();
-        let mut i = tlen - 1;
-        let mut k = (if i + w + 1 < qlen { i + w + 1 } else { qlen }) - 1;
-        while i >= 0 && k >= 0 {
-            let zi = usize::try_from(i).expect("i") * n_col_usize
-                + usize::try_from(k - if i > w { i - w } else { 0 }).expect("zi");
-            which = (z[zi] >> (which << 1)) & 3;
-            if which == 0 {
-                push_cigar(&mut n_cigar, &mut m_cigar, &mut cigar, 0, 1);
-                i -= 1;
-                k -= 1;
-            } else if which == 1 {
-                push_cigar(&mut n_cigar, &mut m_cigar, &mut cigar, 2, 1);
-                i -= 1;
+        eh[0].h = 0;
+        eh[0].e = MINUS_INF;
+        let mut j = 1_i32;
+        while j <= qlen && j <= w {
+            let ju = usize::try_from(j).expect("j");
+            eh[ju].h = -(o_ins + e_ins * j);
+            eh[ju].e = MINUS_INF;
+            j += 1;
+        }
+        while j <= qlen {
+            let ju = usize::try_from(j).expect("j");
+            eh[ju].h = MINUS_INF;
+            eh[ju].e = MINUS_INF;
+            j += 1;
+        }
+
+        for i in 0..tlen {
+            let mut f = MINUS_INF;
+            let beg = if i > w { i - w } else { 0 };
+            let end = if i + w + 1 < qlen { i + w + 1 } else { qlen };
+            let mut h1 = if beg == 0 {
+                -(o_del + e_del * (i + 1))
             } else {
-                push_cigar(&mut n_cigar, &mut m_cigar, &mut cigar, 1, 1);
-                k -= 1;
+                MINUS_INF
+            };
+            let q = &qp[usize::from(target[usize::try_from(i).expect("i")]) * qlen_usize..];
+            // Inner-DP bounds-check elimination: j ∈ [beg, end) ⊆ [0, qlen), eh has qlen+1 entries
+            // and q has at least qlen entries, so j and j as usize are in range.
+            let beg_us = beg as usize;
+            let end_us = end as usize;
+            if !z.is_empty() {
+                let zi_base = usize::try_from(i).expect("i") * n_col_usize;
+                for j in beg_us..end_us {
+                    unsafe {
+                        let p = eh.get_unchecked_mut(j);
+                        let mut m_score = p.h;
+                        let mut e = p.e;
+                        p.h = h1;
+                        m_score += i32::from(*q.get_unchecked(j));
+                        let mut d = if m_score >= e { 0_u8 } else { 1_u8 };
+                        let mut h = if m_score >= e { m_score } else { e };
+                        d = if h >= f { d } else { 2_u8 };
+                        h = if h >= f { h } else { f };
+                        h1 = h;
+                        let t = m_score - oe_del;
+                        e -= e_del;
+                        d |= if e > t { 1_u8 << 2 } else { 0 };
+                        e = if e > t { e } else { t };
+                        p.e = e;
+                        let t = m_score - oe_ins;
+                        f -= e_ins;
+                        d |= if f > t { 2_u8 << 4 } else { 0 };
+                        f = if f > t { f } else { t };
+                        *z.get_unchecked_mut(zi_base + j - beg_us) = d;
+                    }
+                }
+            } else {
+                for j in beg_us..end_us {
+                    unsafe {
+                        let p = eh.get_unchecked_mut(j);
+                        let mut m_score = p.h;
+                        let mut e = p.e;
+                        p.h = h1;
+                        m_score += i32::from(*q.get_unchecked(j));
+                        let mut h = if m_score >= e { m_score } else { e };
+                        h = if h >= f { h } else { f };
+                        h1 = h;
+                        let t = m_score - oe_del;
+                        e -= e_del;
+                        e = if e > t { e } else { t };
+                        p.e = e;
+                        let t = m_score - oe_ins;
+                        f -= e_ins;
+                        f = if f > t { f } else { t };
+                    }
+                }
+            }
+            let endu = usize::try_from(end).expect("end");
+            eh[endu].h = h1;
+            eh[endu].e = MINUS_INF;
+        }
+
+        let score = eh[qlen_usize].h;
+        if !z.is_empty() {
+            let mut n_cigar = 0_i32;
+            let mut m_cigar = 0_i32;
+            let mut which = 0_u8;
+            // Push directly into the caller's Vec (assumed empty) to avoid a local cigar Vec.
+            let cigar = cigar_.expect("cigar slot required when traceback enabled");
+            cigar.clear();
+            let mut i = tlen - 1;
+            let mut k = (if i + w + 1 < qlen { i + w + 1 } else { qlen }) - 1;
+            while i >= 0 && k >= 0 {
+                let zi = usize::try_from(i).expect("i") * n_col_usize
+                    + usize::try_from(k - if i > w { i - w } else { 0 }).expect("zi");
+                which = (z[zi] >> (which << 1)) & 3;
+                if which == 0 {
+                    push_cigar(&mut n_cigar, &mut m_cigar, cigar, 0, 1);
+                    i -= 1;
+                    k -= 1;
+                } else if which == 1 {
+                    push_cigar(&mut n_cigar, &mut m_cigar, cigar, 2, 1);
+                    i -= 1;
+                } else {
+                    push_cigar(&mut n_cigar, &mut m_cigar, cigar, 1, 1);
+                    k -= 1;
+                }
+            }
+            if i >= 0 {
+                push_cigar(&mut n_cigar, &mut m_cigar, cigar, 2, i + 1);
+            }
+            if k >= 0 {
+                push_cigar(&mut n_cigar, &mut m_cigar, cigar, 1, k + 1);
+            }
+            cigar.reverse();
+            if let Some(n_cigar_slot) = n_cigar_opt {
+                *n_cigar_slot = n_cigar;
             }
         }
-        if i >= 0 {
-            push_cigar(&mut n_cigar, &mut m_cigar, &mut cigar, 2, i + 1);
-        }
-        if k >= 0 {
-            push_cigar(&mut n_cigar, &mut m_cigar, &mut cigar, 1, k + 1);
-        }
-        cigar.reverse();
-        if let Some(n_cigar_slot) = n_cigar_opt {
-            *n_cigar_slot = n_cigar;
-        }
-        if let Some(cigar_slot) = cigar_ {
-            *cigar_slot = cigar;
-        }
-    }
-    score
+        score
+    })
 }
 
 #[doc = "Original function: ksw_global:670"]
@@ -1354,17 +1589,25 @@ pub fn ksw_global(
     n_cigar_: Option<&mut i32>,
     cigar_: Option<&mut Vec<u32>>,
 ) -> i32 {
-    ksw_global2(qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, w, n_cigar_, cigar_)
+    ksw_global2(
+        qlen, query, tlen, target, m, mat, gapo, gape, gapo, gape, w, n_cigar_, cigar_,
+    )
 }
 
 #[doc = "Original function: main:706"]
-pub fn main(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn main(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("main")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ksw_align, ksw_align2, ksw_extend, ksw_extend2, ksw_global, ksw_global2, ksw_i16, ksw_qinit, ksw_u8, push_cigar};
+    use super::{
+        ksw_align, ksw_align2, ksw_extend, ksw_extend2, ksw_global, ksw_global2, ksw_i16,
+        ksw_qinit, ksw_u8, push_cigar,
+    };
     use crate::generated::ksw_h::{KSW_XSTART, KSW_XSUBO};
 
     fn score_mat(match_score: i8, mismatch_penalty: i8) -> [i8; 25] {
@@ -1372,7 +1615,11 @@ mod tests {
         let mut k = 0;
         for i in 0..4 {
             for j in 0..4 {
-                mat[k] = if i == j { match_score } else { -mismatch_penalty };
+                mat[k] = if i == j {
+                    match_score
+                } else {
+                    -mismatch_penalty
+                };
                 k += 1;
             }
             mat[k] = -1;
@@ -1445,7 +1692,21 @@ mod tests {
         let target = [0_u8, 1, 2, 3];
         let mut n_cigar = 0;
         let mut cigar = Vec::new();
-        let score = ksw_global2(4, &query, 4, &target, 5, &mat, 5, 1, 5, 1, 0, Some(&mut n_cigar), Some(&mut cigar));
+        let score = ksw_global2(
+            4,
+            &query,
+            4,
+            &target,
+            5,
+            &mat,
+            5,
+            1,
+            5,
+            1,
+            0,
+            Some(&mut n_cigar),
+            Some(&mut cigar),
+        );
         assert_eq!(score, 8);
         assert_eq!(n_cigar, 1);
         assert_eq!(cigar, vec![4 << 4]);
@@ -1465,7 +1726,20 @@ mod tests {
         let mat = score_mat(2, 3);
         let mut query = [0_u8, 1, 2, 3];
         let mut target = [3_u8, 3, 0, 1, 2, 3, 0];
-        let r = ksw_align2(4, &mut query, 7, &mut target, 5, &mat, 5, 1, 5, 1, KSW_XSTART, None);
+        let r = ksw_align2(
+            4,
+            &mut query,
+            7,
+            &mut target,
+            5,
+            &mat,
+            5,
+            1,
+            5,
+            1,
+            KSW_XSTART,
+            None,
+        );
         assert_eq!(r.score, 8);
         assert_eq!(r.qe, 3);
         assert_eq!(r.te, 5);

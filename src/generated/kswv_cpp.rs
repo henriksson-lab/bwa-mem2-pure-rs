@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/kswv.cpp`.
 
@@ -18,6 +23,21 @@ const G_DEFR: kswr_t = kswr_t {
     tb: -1,
     qb: -1,
 };
+
+// Thread-local scratch buffers for kswvBatchWrapper8/16. These were allocated per call
+// (padded_pairs, seq1_soa, seq2_soa); per-thread reuse amortizes the heap traffic since
+// kswv is invoked once per worker_sam call, ~50-200 times per program run.
+thread_local! {
+    static KSWV_BATCH_SCRATCH: std::cell::RefCell<(
+        Vec<SeqPair>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<i16>,
+        Vec<i16>,
+    )> = const {
+        std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()))
+    };
+}
 
 #[doc = "Original function: parseCmdLine:1636"]
 pub fn parseCmdLine(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
@@ -46,12 +66,19 @@ pub fn find_stats(
 }
 
 #[doc = "Original function: main:1751"]
-pub fn main(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) -> crate::support::Opaque {
+pub fn main(
+    _arg0: crate::support::Opaque,
+    _arg1: crate::support::Opaque,
+) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("main")
 }
 
 fn max_i8(a: i8, b: i8) -> i8 {
-    if a > b { a } else { b }
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 impl kswv {
@@ -70,8 +97,10 @@ impl kswv {
         let num_threads = usize::try_from(numThreads.max(1)).expect("numThreads");
         let max_ref_len = maxRefLen.unwrap_or(MAX_SEQ_LEN_REF_SAM) + 16;
         let max_qer_len = maxQerLen.unwrap_or(MAX_SEQ_LEN_QER_SAM) + 16;
-        let ref_cap16 = usize::try_from(max_ref_len).expect("maxRefLen") * SIMD_WIDTH16 * num_threads;
-        let qer_cap16 = usize::try_from(max_qer_len).expect("maxQerLen") * SIMD_WIDTH16 * num_threads;
+        let ref_cap16 =
+            usize::try_from(max_ref_len).expect("maxRefLen") * SIMD_WIDTH16 * num_threads;
+        let qer_cap16 =
+            usize::try_from(max_qer_len).expect("maxQerLen") * SIMD_WIDTH16 * num_threads;
         let ref_cap8 = usize::try_from(max_ref_len).expect("maxRefLen") * SIMD_WIDTH8 * num_threads;
         let qer_cap8 = usize::try_from(max_qer_len).expect("maxQerLen") * SIMD_WIDTH8 * num_threads;
         let g_qmax = i32::from(max_i8(max_i8(w_match, w_mismatch), DEFAULT_AMBIG));
@@ -131,7 +160,9 @@ impl kswv {
         nthreads: u16,
         phase: i32,
     ) {
-        self.kswvBatchWrapper8(pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase);
+        self.kswvBatchWrapper8(
+            pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase,
+        );
     }
 
     #[doc = "Original function: kswv::kswvBatchWrapper8:177"]
@@ -146,68 +177,76 @@ impl kswv {
         phase: i32,
     ) {
         let total = usize::try_from(numPairs).expect("numPairs");
-        let round_num_pairs = total.div_ceil(SIMD_WIDTH8) * SIMD_WIDTH8;
-        let mut padded_pairs = pairArray[..total].to_vec();
-        padded_pairs.resize(round_num_pairs, SeqPair::default());
-        for ii in total..round_num_pairs {
-            padded_pairs[ii].regid = i32::try_from(ii).expect("ii");
-            padded_pairs[ii].id = i32::try_from(ii).expect("ii");
-            padded_pairs[ii].len1 = 0;
-            padded_pairs[ii].len2 = 0;
+        let mut mat = [0_i8; 25];
+        self.bwa_fill_scmat(&mut mat);
+        let q_max = ksw_qmax(self.m, &mat);
+        for chunk in pairArray[..total].chunks(SIMD_WIDTH8) {
+            self.kswv_scalar_lanes_u8(chunk, seqBufRef, seqBufQer, aln, &mat, q_max, phase);
+        }
+    }
+
+    #[inline]
+    fn kswv_batch8_chunk(
+        &self,
+        lanes: &[SeqPair],
+        seqBufRef: &[u8],
+        seqBufQer: &[u8],
+        seq1_soa: &mut [u8],
+        seq2_soa: &mut [u8],
+        aln: &mut [kswr_t],
+        offset: usize,
+        numPairs: i32,
+        phase: i32,
+    ) {
+        debug_assert_eq!(lanes.len(), SIMD_WIDTH8);
+        let mut max_len1 = 0_i32;
+        let mut max_len2 = 0_i32;
+
+        for (j, sp) in lanes.iter().copied().enumerate() {
+            let seq1 = &seqBufRef[usize::try_from(sp.idr).expect("idr")..];
+            for k in 0..usize::try_from(sp.len1).expect("len1") {
+                seq1_soa[k * SIMD_WIDTH8 + j] = if seq1[k] == 4 { 4 } else { seq1[k] };
+            }
+            max_len1 = max_len1.max(sp.len1);
+        }
+        for (j, sp) in lanes.iter().copied().enumerate() {
+            for k in usize::try_from(sp.len1).expect("len1")
+                ..=usize::try_from(max_len1).expect("max_len1")
+            {
+                seq1_soa[k * SIMD_WIDTH8 + j] = 0xff;
+            }
         }
 
-        let mut seq1_soa = vec![0_u8; usize::try_from(self.maxRefLen).expect("maxRefLen") * SIMD_WIDTH8];
-        let mut seq2_soa = vec![0_u8; usize::try_from(self.maxQerLen).expect("maxQerLen") * SIMD_WIDTH8];
-
-        for i in (0..round_num_pairs).step_by(SIMD_WIDTH8) {
-            let lanes = &padded_pairs[i..i + SIMD_WIDTH8];
-            let mut max_len1 = 0_i32;
-            let mut max_len2 = 0_i32;
-
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let seq1 = &seqBufRef[usize::try_from(sp.idr).expect("idr")..];
-                for k in 0..usize::try_from(sp.len1).expect("len1") {
-                    seq1_soa[k * SIMD_WIDTH8 + j] = if seq1[k] == 4 { 4 } else { seq1[k] };
-                }
-                max_len1 = max_len1.max(sp.len1);
+        for (j, sp) in lanes.iter().copied().enumerate() {
+            let seq2 = &seqBufQer[usize::try_from(sp.idq).expect("idq")..];
+            let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
+            for k in 0..usize::try_from(sp.len2).expect("len2") {
+                seq2_soa[k * SIMD_WIDTH8 + j] = if seq2[k] == 4 { 8 } else { seq2[k] };
             }
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                for k in usize::try_from(sp.len1).expect("len1")..=usize::try_from(max_len1).expect("max_len1") {
-                    seq1_soa[k * SIMD_WIDTH8 + j] = 0xff;
-                }
+            for k in usize::try_from(sp.len2).expect("len2")..quanta {
+                seq2_soa[k * SIMD_WIDTH8 + j] = 5;
             }
-
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let seq2 = &seqBufQer[usize::try_from(sp.idq).expect("idq")..];
-                let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
-                for k in 0..usize::try_from(sp.len2).expect("len2") {
-                    seq2_soa[k * SIMD_WIDTH8 + j] = if seq2[k] == 4 { 8 } else { seq2[k] };
-                }
-                for k in usize::try_from(sp.len2).expect("len2")..quanta {
-                    seq2_soa[k * SIMD_WIDTH8 + j] = 5;
-                }
-                max_len2 = max_len2.max(i32::try_from(quanta).expect("quanta"));
-            }
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
-                for k in quanta..=usize::try_from(max_len2).expect("max_len2") {
-                    seq2_soa[k * SIMD_WIDTH8 + j] = 0xff;
-                }
-            }
-
-            self.kswv512_u8(
-                &seq1_soa,
-                &seq2_soa,
-                i16::try_from(max_len1).expect("max_len1"),
-                i16::try_from(max_len2).expect("max_len2"),
-                lanes,
-                aln,
-                i32::try_from(i).expect("i"),
-                0,
-                numPairs,
-                phase,
-            );
+            max_len2 = max_len2.max(i32::try_from(quanta).expect("quanta"));
         }
+        for (j, sp) in lanes.iter().copied().enumerate() {
+            let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
+            for k in quanta..=usize::try_from(max_len2).expect("max_len2") {
+                seq2_soa[k * SIMD_WIDTH8 + j] = 0xff;
+            }
+        }
+
+        self.kswv512_u8(
+            seq1_soa,
+            seq2_soa,
+            i16::try_from(max_len1).expect("max_len1"),
+            i16::try_from(max_len2).expect("max_len2"),
+            lanes,
+            aln,
+            i32::try_from(offset).expect("offset"),
+            0,
+            numPairs,
+            phase,
+        );
     }
 
     #[doc = "Original function: kswv::getScores16:713"]
@@ -221,7 +260,9 @@ impl kswv {
         nthreads: u16,
         phase: i32,
     ) {
-        self.kswvBatchWrapper16(pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase);
+        self.kswvBatchWrapper16(
+            pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase,
+        );
     }
 
     #[doc = "Original function: kswv::kswvBatchWrapper16:725"]
@@ -236,71 +277,92 @@ impl kswv {
         phase: i32,
     ) {
         let total = usize::try_from(numPairs).expect("numPairs");
-        let round_num_pairs = total.div_ceil(SIMD_WIDTH16) * SIMD_WIDTH16;
-        let mut padded_pairs = pairArray[..total].to_vec();
-        padded_pairs.resize(round_num_pairs, SeqPair::default());
-        for ii in total..round_num_pairs {
-            padded_pairs[ii].regid = i32::try_from(ii).expect("ii");
-            padded_pairs[ii].id = i32::try_from(ii).expect("ii");
-            padded_pairs[ii].len1 = 0;
-            padded_pairs[ii].len2 = 0;
+        let mut mat = [0_i8; 25];
+        self.bwa_fill_scmat(&mut mat);
+        let q_max = ksw_qmax(self.m, &mat);
+        for chunk in pairArray[..total].chunks(SIMD_WIDTH16) {
+            self.kswv_scalar_lanes_i16(chunk, seqBufRef, seqBufQer, aln, &mat, q_max, phase);
         }
+    }
 
-        let mut seq1_soa = vec![0_i16; usize::try_from(self.maxRefLen).expect("maxRefLen") * SIMD_WIDTH16];
-        let mut seq2_soa = vec![0_i16; usize::try_from(self.maxQerLen).expect("maxQerLen") * SIMD_WIDTH16];
-
-        for i in (0..round_num_pairs).step_by(SIMD_WIDTH16) {
-            let lanes = &padded_pairs[i..i + SIMD_WIDTH16];
-            let mut max_len1 = 0_i32;
-            let mut max_len2 = 0_i32;
-
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let seq1 = &seqBufRef[usize::try_from(sp.idr).expect("idr")..];
-                for k in 0..usize::try_from(sp.len1).expect("len1") {
-                    seq1_soa[k * SIMD_WIDTH16 + j] = if seq1[k] == 4 { 15 } else { i16::from(seq1[k]) };
-                }
-                max_len1 = max_len1.max(sp.len1);
-            }
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                for k in usize::try_from(sp.len1).expect("len1")..=usize::try_from(max_len1).expect("max_len1") {
-                    seq1_soa[k * SIMD_WIDTH16 + j] = -1;
-                }
-            }
-
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let seq2 = &seqBufQer[usize::try_from(sp.idq).expect("idq")..];
-                let quanta = usize::try_from((sp.len2 + 8 - 1) / 8 * 8).expect("quanta");
-                for k in 0..usize::try_from(sp.len2).expect("len2") {
-                    seq2_soa[k * SIMD_WIDTH16 + j] = if seq2[k] == 4 { 16 } else { i16::from(seq2[k]) };
-                }
-                for k in usize::try_from(sp.len2).expect("len2")..quanta {
-                    seq2_soa[k * SIMD_WIDTH16 + j] = 26;
-                }
-                max_len2 = max_len2.max(i32::try_from(quanta).expect("quanta"));
-            }
-            for (j, sp) in lanes.iter().copied().enumerate() {
-                let quanta = usize::try_from((sp.len2 + 8 - 1) / 8 * 8).expect("quanta");
-                for k in quanta..=usize::try_from(max_len2).expect("max_len2") {
-                    seq2_soa[k * SIMD_WIDTH16 + j] = -1;
-                }
-            }
-
-            self.kswv512_16(
-                &seq1_soa,
-                &seq2_soa,
-                i16::try_from(max_len1).expect("max_len1"),
-                i16::try_from(max_len2).expect("max_len2"),
-                lanes,
-                aln,
-                i32::try_from(i).expect("i"),
-                0,
-                numPairs,
-                phase,
+    #[inline]
+    fn kswv_scalar_lanes_i16(
+        &self,
+        lanes: &[SeqPair],
+        seqBufRef: &[u8],
+        seqBufQer: &[u8],
+        aln: &mut [kswr_t],
+        mat: &[i8; 25],
+        q_max: u8,
+        phase: i32,
+    ) {
+        for &sp in lanes {
+            let ind = usize::try_from(sp.regid).expect("regid");
+            let target_start = usize::try_from(sp.idr).expect("idr");
+            let query_start = usize::try_from(sp.idq).expect("idq");
+            let target_len = usize::try_from(sp.len1).expect("len1");
+            let query_len = usize::try_from(sp.len2).expect("len2");
+            let target = &seqBufRef[target_start..target_start + target_len];
+            let query = &seqBufQer[query_start..query_start + query_len];
+            let ks = ksw_i16_slices(
+                query, self.m, mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
+                self.e_ins, sp.h0,
             );
+            if phase != 0 {
+                if aln[ind].score == ks.score {
+                    aln[ind].tb = aln[ind].te - ks.te;
+                    aln[ind].qb = aln[ind].qe - ks.qe;
+                }
+            } else {
+                aln[ind].score = ks.score;
+                aln[ind].te = ks.te;
+                aln[ind].qe = ks.qe;
+                aln[ind].score2 = ks.score2;
+                aln[ind].te2 = ks.te2;
+            }
+        }
+    }
+
+    #[inline]
+    fn kswv_scalar_lanes_u8(
+        &self,
+        lanes: &[SeqPair],
+        seqBufRef: &[u8],
+        seqBufQer: &[u8],
+        aln: &mut [kswr_t],
+        mat: &[i8; 25],
+        q_max: u8,
+        phase: i32,
+    ) {
+        for &sp in lanes {
+            let ind = usize::try_from(sp.regid).expect("regid");
+            let target_start = usize::try_from(sp.idr).expect("idr");
+            let query_start = usize::try_from(sp.idq).expect("idq");
+            let target_len = usize::try_from(sp.len1).expect("len1");
+            let query_len = usize::try_from(sp.len2).expect("len2");
+            let target = &seqBufRef[target_start..target_start + target_len];
+            let query = &seqBufQer[query_start..query_start + query_len];
+            let ks = ksw_u8_slices(
+                query, self.m, mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
+                self.e_ins, sp.h0,
+            );
+            if phase != 0 {
+                if aln[ind].score == ks.score {
+                    aln[ind].tb = aln[ind].te - ks.te;
+                    aln[ind].qb = aln[ind].qe - ks.qe;
+                }
+            } else {
+                aln[ind].score = ks.score.min(255);
+                aln[ind].te = ks.te;
+                aln[ind].qe = ks.qe;
+                aln[ind].score2 = ks.score2;
+                aln[ind].te2 = ks.te2;
+            }
         }
     }
 
     #[doc = "Original function: kswv::kswv512_16:933"]
+    #[inline]
     pub fn kswv512_16(
         &self,
         seq1SoA: &[i16],
@@ -318,19 +380,36 @@ impl kswv {
         self.bwa_fill_scmat(&mut mat);
         // ksw_qmax depends only on `mat`, not the per-lane query — hoist it.
         let q_max = ksw_qmax(self.m, &mat);
+        // Hoist the per-lane decode buffers outside the loop so capacity reuses.
+        let mut target_buf: Vec<u8> = Vec::new();
+        let mut query_buf: Vec<u8> = Vec::new();
         for lane in 0..SIMD_WIDTH16 {
-            if usize::try_from(po_ind).expect("po_ind") + lane >= usize::try_from(numPairs).expect("numPairs") {
+            if usize::try_from(po_ind).expect("po_ind") + lane
+                >= usize::try_from(numPairs).expect("numPairs")
+            {
                 break;
             }
             let sp = p[lane];
             let ind = usize::try_from(sp.regid).expect("regid");
-            let target = decode_soa_lane(seq1SoA, lane, usize::try_from(sp.len1).expect("len1"));
-            let query = decode_soa_lane(seq2SoA, lane, usize::try_from(sp.len2).expect("len2"));
+            decode_soa_lane_into(
+                seq1SoA,
+                lane,
+                usize::try_from(sp.len1).expect("len1"),
+                &mut target_buf,
+            );
+            decode_soa_lane_into(
+                seq2SoA,
+                lane,
+                usize::try_from(sp.len2).expect("len2"),
+                &mut query_buf,
+            );
+            let target = &target_buf[..];
+            let query = &query_buf[..];
             // Forward-only SW (no internal reverse pass) — matches SIMD kernel semantics.
             // Borrow query/mat directly to avoid the two clones inside ksw_qinit + ksw_i16.
             let ks = ksw_i16_slices(
-                &query, self.m, &mat, q_max, sp.len1, &target,
-                self.o_del, self.e_del, self.o_ins, self.e_ins, sp.h0,
+                query, self.m, &mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
+                self.e_ins, sp.h0,
             );
             if phase != 0 {
                 if aln[ind].score == ks.score {
@@ -349,6 +428,7 @@ impl kswv {
     }
 
     #[doc = "Original function: kswv::kswv512_u8:371"]
+    #[inline]
     pub fn kswv512_u8(
         &self,
         seq1SoA: &[u8],
@@ -365,19 +445,35 @@ impl kswv {
         let mut mat = [0_i8; 25];
         self.bwa_fill_scmat(&mut mat);
         let q_max = ksw_qmax(self.m, &mat);
+        let mut target_buf: Vec<u8> = Vec::new();
+        let mut query_buf: Vec<u8> = Vec::new();
         for lane in 0..SIMD_WIDTH8 {
-            if usize::try_from(po_ind).expect("po_ind") + lane >= usize::try_from(numPairs).expect("numPairs") {
+            if usize::try_from(po_ind).expect("po_ind") + lane
+                >= usize::try_from(numPairs).expect("numPairs")
+            {
                 break;
             }
             let sp = p[lane];
             let ind = usize::try_from(sp.regid).expect("regid");
-            let target = decode_soa_lane_u8(seq1SoA, lane, usize::try_from(sp.len1).expect("len1"));
-            let query = decode_soa_lane_u8_query(seq2SoA, lane, usize::try_from(sp.len2).expect("len2"));
+            decode_soa_lane_u8_into(
+                seq1SoA,
+                lane,
+                usize::try_from(sp.len1).expect("len1"),
+                &mut target_buf,
+            );
+            decode_soa_lane_u8_query_into(
+                seq2SoA,
+                lane,
+                usize::try_from(sp.len2).expect("len2"),
+                &mut query_buf,
+            );
+            let target = &target_buf[..];
+            let query = &query_buf[..];
             // Forward-only SW (no internal reverse pass) — matches SIMD kernel semantics.
             // Borrow query/mat directly to avoid the two clones inside ksw_qinit + ksw_u8.
             let ks = ksw_u8_slices(
-                &query, self.m, &mat, q_max, sp.len1, &target,
-                self.o_del, self.e_del, self.o_ins, self.e_ins, sp.h0,
+                query, self.m, &mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
+                self.e_ins, sp.h0,
             );
             if phase != 0 {
                 if aln[ind].score == ks.score {
@@ -396,11 +492,16 @@ impl kswv {
     }
 
     #[doc = "Original function: kswv::bwa_fill_scmat:1231"]
+    #[inline]
     pub fn bwa_fill_scmat(&self, mat: &mut [i8; 25]) {
         let mut k = 0_usize;
         for i in 0..4 {
             for j in 0..4 {
-                mat[k] = if i == j { self.w_match } else { self.w_mismatch };
+                mat[k] = if i == j {
+                    self.w_match
+                } else {
+                    self.w_mismatch
+                };
                 k += 1;
             }
             mat[k] = self.w_ambig;
@@ -445,7 +546,11 @@ impl kswv {
                 for i in 0..slen_usize {
                     let mut k = i;
                     while k < nlen {
-                        let v = if k >= qlen_usize { 0 } else { i16::from(ma[usize::from(query[k])]) + i16::from(shift_u8) };
+                        let v = if k >= qlen_usize {
+                            0
+                        } else {
+                            i16::from(ma[usize::from(query[k])]) + i16::from(shift_u8)
+                        };
                         qp_u8.push(i8::try_from(v).expect("qp_u8"));
                         k += slen_usize;
                     }
@@ -459,7 +564,11 @@ impl kswv {
                 for i in 0..slen_usize {
                     let mut k = i;
                     while k < nlen {
-                        let v = if k >= qlen_usize { 0 } else { i16::from(ma[usize::from(query[k])]) };
+                        let v = if k >= qlen_usize {
+                            0
+                        } else {
+                            i16::from(ma[usize::from(query[k])])
+                        };
                         qp_i16.push(v);
                         k += slen_usize;
                     }
@@ -575,18 +684,37 @@ impl kswv {
     ) {
         let mut mat = [0_i8; 25];
         self.bwa_fill_scmat(&mut mat);
-        for p in seqPairArray.iter().take(usize::try_from(numPairs).expect("numPairs")) {
+        for p in seqPairArray
+            .iter()
+            .take(usize::try_from(numPairs).expect("numPairs"))
+        {
             let target_start = usize::try_from(p.idr).expect("idr");
             let query_start = usize::try_from(p.idq).expect("idq");
             let tlen = usize::try_from(p.len1).expect("len1");
             let qlen = usize::try_from(p.len2).expect("len2");
             let target = &seqBufRef[target_start..target_start + tlen];
             let query = &seqBufQer[query_start..query_start + qlen];
-            let q = self.ksw_qinit(if sw { 2 } else if (p.h0 & KSW_XBYTE) != 0 { 1 } else { 2 }, p.len2, query, self.m, &mat);
+            let q = self.ksw_qinit(
+                if sw {
+                    2
+                } else if (p.h0 & KSW_XBYTE) != 0 {
+                    1
+                } else {
+                    2
+                },
+                p.len2,
+                query,
+                self.m,
+                &mat,
+            );
             let ks = if sw {
-                self.kswvScalar_i16(&q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0)
+                self.kswvScalar_i16(
+                    &q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0,
+                )
             } else {
-                self.kswvScalar_u8(&q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0)
+                self.kswvScalar_u8(
+                    &q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0,
+                )
             };
             let slot = &mut aln[usize::try_from(p.regid).expect("regid")];
             *slot = ks;
@@ -648,50 +776,57 @@ fn linearized_index_i16(pos: usize, slen: usize) -> usize {
 
 fn decode_soa_lane(soa: &[i16], lane: usize, len: usize) -> Vec<u8> {
     let mut seq = Vec::with_capacity(len);
+    decode_soa_lane_into(soa, lane, len, &mut seq);
+    seq
+}
+
+#[inline]
+fn decode_soa_lane_into(soa: &[i16], lane: usize, len: usize, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(len);
     for row in 0..len {
         let v = soa[row * SIMD_WIDTH16 + lane];
-        let base = match v {
-            0..=3 => u8::try_from(v).expect("base"),
-            15 | 16 | 26 => 4,
-            _ => 4,
-        };
-        seq.push(base);
+        let base = if (0..=3).contains(&v) { v as u8 } else { 4 };
+        out.push(base);
     }
-    seq
 }
 
 fn decode_soa_lane_u8(soa: &[u8], lane: usize, len: usize) -> Vec<u8> {
     let mut seq = Vec::with_capacity(len);
+    decode_soa_lane_u8_into(soa, lane, len, &mut seq);
+    seq
+}
+
+#[inline]
+fn decode_soa_lane_u8_into(soa: &[u8], lane: usize, len: usize, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(len);
     for row in 0..len {
         let v = soa[row * SIMD_WIDTH8 + lane];
-        let base = match v {
-            0..=3 => v,
-            4 | 8 | 5 => 4,
-            _ => 4,
-        };
-        seq.push(base);
+        out.push(if v <= 3 { v } else { 4 });
     }
-    seq
 }
 
 fn decode_soa_lane_u8_query(soa: &[u8], lane: usize, len: usize) -> Vec<u8> {
     let mut seq = Vec::with_capacity(len);
+    decode_soa_lane_u8_query_into(soa, lane, len, &mut seq);
+    seq
+}
+
+#[inline]
+fn decode_soa_lane_u8_query_into(soa: &[u8], lane: usize, len: usize, out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(len);
     for row in 0..len {
         let v = soa[row * SIMD_WIDTH8 + lane];
-        let base = match v {
-            0..=3 => v,
-            8 | 5 => 4,
-            _ => 4,
-        };
-        seq.push(base);
+        out.push(if v <= 3 { v } else { 4 });
     }
-    seq
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_soa_lane, decode_soa_lane_u8, decode_soa_lane_u8_query, kswv, kswr_t, SeqPair,
+        decode_soa_lane, decode_soa_lane_u8, decode_soa_lane_u8_query, kswr_t, kswv, SeqPair,
         SIMD_WIDTH16, SIMD_WIDTH8,
     };
 
@@ -785,13 +920,16 @@ mod tests {
     #[test]
     fn kswv512_16_updates_phase_zero_and_phase_one_fields() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, None, None);
-        let p = vec![SeqPair {
-            len1: 4,
-            len2: 4,
-            h0: 0x80000,
-            regid: 0,
-            ..Default::default()
-        }; SIMD_WIDTH16];
+        let p = vec![
+            SeqPair {
+                len1: 4,
+                len2: 4,
+                h0: 0x80000,
+                regid: 0,
+                ..Default::default()
+            };
+            SIMD_WIDTH16
+        ];
         let mut seq1 = vec![-1_i16; 4 * SIMD_WIDTH16];
         let mut seq2 = vec![-1_i16; 8 * SIMD_WIDTH16];
         for lane in 0..SIMD_WIDTH16 {
@@ -839,13 +977,16 @@ mod tests {
     #[test]
     fn kswv512_u8_updates_phase_zero_and_phase_one_fields() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, None, None);
-        let p = vec![SeqPair {
-            len1: 4,
-            len2: 4,
-            h0: 0x10000 | 0x80000,
-            regid: 0,
-            ..Default::default()
-        }; SIMD_WIDTH8];
+        let p = vec![
+            SeqPair {
+                len1: 4,
+                len2: 4,
+                h0: 0x10000 | 0x80000,
+                regid: 0,
+                ..Default::default()
+            };
+            SIMD_WIDTH8
+        ];
         let mut seq1 = vec![0xff_u8; 4 * SIMD_WIDTH8];
         let mut seq2 = vec![0xff_u8; 16 * SIMD_WIDTH8];
         for lane in 0..SIMD_WIDTH8 {

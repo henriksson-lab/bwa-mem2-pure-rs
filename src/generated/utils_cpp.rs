@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/utils.cpp`.
 
@@ -38,7 +43,10 @@ impl ErrFile {
         match self {
             ErrFile::File(file) => file.write_all(buf),
             ErrFile::Stdout => std::io::stdout().write_all(buf),
-            ErrFile::Stdin => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stdin is not writable")),
+            ErrFile::Stdin => Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "stdin is not writable",
+            )),
         }
     }
 
@@ -54,7 +62,10 @@ impl ErrFile {
         match self {
             ErrFile::File(file) => file.read_exact(buf),
             ErrFile::Stdin => std::io::stdin().read_exact(buf),
-            ErrFile::Stdout => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "stdout is not readable")),
+            ErrFile::Stdout => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "stdout is not readable",
+            )),
         }
     }
 
@@ -70,7 +81,11 @@ impl ErrFile {
                 ))
             }
         };
-        if n == 0 { Ok(None) } else { Ok(Some(byte[0])) }
+        if n == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(byte[0]))
+        }
     }
 
     fn seek_checked(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
@@ -106,10 +121,19 @@ impl ErrGzFile {
     fn open_path(path: &str, mode: &str) -> std::io::Result<Self> {
         if mode.contains('r') {
             let file = File::open(path)?;
-            Ok(ErrGzFile::ReaderFile(MultiGzDecoder::new(BufReader::new(file))))
+            Ok(ErrGzFile::ReaderFile(MultiGzDecoder::new(BufReader::new(
+                file,
+            ))))
         } else {
-            let file = OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
-            Ok(ErrGzFile::WriterFile(GzEncoder::new(file, Compression::default())))
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)?;
+            Ok(ErrGzFile::WriterFile(GzEncoder::new(
+                file,
+                Compression::default(),
+            )))
         }
     }
 }
@@ -122,7 +146,11 @@ fn format_error_line(header: &str, message: &str, abort_suffix: bool) -> String 
 #[doc = "Original function: err_xopen_core:56"]
 pub fn err_xopen_core(func: &str, fn_: &str, mode: &str) -> ErrFile {
     if fn_ == "-" {
-        return if mode.contains('r') { ErrFile::Stdin } else { ErrFile::Stdout };
+        return if mode.contains('r') {
+            ErrFile::Stdin
+        } else {
+            ErrFile::Stdout
+        };
     }
     match ErrFile::open_path(fn_, mode) {
         Ok(fp) => fp,
@@ -360,8 +388,9 @@ pub fn realtime() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        cputime, err_fclose, err_fflush, err_fgets, err_fprintf, err_fputc, err_fread_noeof, err_fseek, err_ftell, err_fwrite,
-        err_gzclose, err_gzread, err_xopen_core, err_xreopen_core, err_xzopen_core, format_error_line, realtime, ErrFile,
+        cputime, err_fclose, err_fflush, err_fgets, err_fprintf, err_fputc, err_fread_noeof,
+        err_fseek, err_ftell, err_fwrite, err_gzclose, err_gzread, err_xopen_core,
+        err_xreopen_core, err_xzopen_core, format_error_line, realtime, ErrFile,
     };
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -432,7 +461,8 @@ mod tests {
     #[test]
     fn err_xzopen_gzread_and_close_round_trip() {
         let path = temp_path("gzip").with_extension("gz");
-        let mut encoder = GzEncoder::new(File::create(&path).expect("create"), Compression::default());
+        let mut encoder =
+            GzEncoder::new(File::create(&path).expect("create"), Compression::default());
         encoder.write_all(b"gzip-data").expect("write");
         encoder.finish().expect("finish");
 

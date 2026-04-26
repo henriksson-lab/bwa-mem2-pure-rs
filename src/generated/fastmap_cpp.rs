@@ -1,4 +1,9 @@
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    dead_code,
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals
+)]
 
 //! Generated scaffold for `bwa-mem2/src/fastmap.cpp`.
 
@@ -12,17 +17,19 @@ use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rayon::scope;
 
-use crate::generated::bntseq_h::bntseq_t;
-use crate::generated::bwa_cpp::{bseq_classify, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg};
-use crate::generated::bwa_cpp::BWA_VERBOSE;
-use crate::generated::bwa_cpp::bseq_read_orig;
 use crate::generated::bandedswa_h::SeqPair;
+use crate::generated::bntseq_h::bntseq_t;
+use crate::generated::bwa_cpp::bseq_read_orig;
+use crate::generated::bwa_cpp::BWA_VERBOSE;
+use crate::generated::bwa_cpp::{
+    bseq_classify, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg,
+};
 use crate::generated::bwamem_cpp::mem_process_seqs;
-use crate::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, mem_seed_t, worker_t};
-use crate::generated::fmi_search_cpp::FMI_search;
+use crate::generated::bwamem_h::{mem_opt_t, mem_pestat_t, worker_t};
 use crate::generated::fastmap_h::{ktp_aux_t, ktp_data_t};
+use crate::generated::fmi_search_cpp::FMI_search;
 use crate::generated::kseq_h::kseq_t;
-use crate::generated::utils_cpp::{ErrFile, err_fclose, err_fputs, err_xopen_core};
+use crate::generated::utils_cpp::{err_fclose, err_fputs, err_xopen_core, ErrFile};
 
 const AVG_SEEDS_PER_READ: usize = 64;
 const BATCH_MUL: usize = 20;
@@ -135,14 +142,19 @@ struct MemCli {
 }
 
 fn parse_pair_i32(arg: &str) -> Option<(i32, Option<i32>)> {
-    let mut parts = arg.split(|c: char| c.is_ascii_punctuation()).filter(|s| !s.is_empty());
+    let mut parts = arg
+        .split(|c: char| c.is_ascii_punctuation())
+        .filter(|s| !s.is_empty());
     let first = parts.next()?.parse().ok()?;
     let second = parts.next().and_then(|s| s.parse().ok());
     Some((first, second))
 }
 
 fn parse_insert_stats(arg: &str) -> Option<mem_pestat_t> {
-    let parts: Vec<&str> = arg.split(|c: char| c.is_ascii_punctuation()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = arg
+        .split(|c: char| c.is_ascii_punctuation())
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         return None;
     }
@@ -166,7 +178,13 @@ fn parse_insert_stats(arg: &str) -> Option<mem_pestat_t> {
     if parts.len() > 3 {
         low = (parts[3].parse::<f64>().ok()? + 0.499) as i32;
     }
-    Some(mem_pestat_t { avg, std, high, low, failed: 0 })
+    Some(mem_pestat_t {
+        avg,
+        std,
+        high,
+        low,
+        failed: 0,
+    })
 }
 
 fn parse_http_url(url: &str) -> Option<(String, u16, String)> {
@@ -188,8 +206,7 @@ fn fetch_http_bytes(url: &str) -> Result<Vec<u8>, ()> {
     write!(
         stream,
         "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: bwa-mem2-rs\r\nConnection: close\r\n\r\n",
-        path,
-        host
+        path, host
     )
     .map_err(|_| ())?;
     let mut response = Vec::new();
@@ -198,7 +215,12 @@ fn fetch_http_bytes(url: &str) -> Result<Vec<u8>, ()> {
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map(|idx| idx + 4)
-        .or_else(|| response.windows(2).position(|w| w == b"\n\n").map(|idx| idx + 2))
+        .or_else(|| {
+            response
+                .windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|idx| idx + 2)
+        })
         .ok_or(())?;
     let header = String::from_utf8_lossy(&response[..header_end]);
     let status_line = header.lines().next().ok_or(())?;
@@ -209,10 +231,7 @@ fn fetch_http_bytes(url: &str) -> Result<Vec<u8>, ()> {
 }
 
 fn fetch_remote_with_tool(url: &str) -> Result<Vec<u8>, ()> {
-    for (program, args) in [
-        ("curl", vec!["-fsSL", url]),
-        ("wget", vec!["-qO-", url]),
-    ] {
+    for (program, args) in [("curl", vec!["-fsSL", url]), ("wget", vec!["-qO-", url])] {
         let Ok(output) = Command::new(program).args(&args).output() else {
             continue;
         };
@@ -325,9 +344,14 @@ fn read_text_input(path: &str) -> Result<String, ()> {
 
 fn open_kseq_input(path: &str) -> Result<kseq_t, ()> {
     if path == "-" {
-        return Ok(kseq_t::from_reader(Box::new(BufReader::new(std::io::stdin()))));
+        return Ok(kseq_t::from_reader(Box::new(BufReader::new(
+            std::io::stdin(),
+        ))));
     }
-    if path.trim_start().starts_with('<') || path.starts_with("http://") || path.starts_with("ftp://") {
+    if path.trim_start().starts_with('<')
+        || path.starts_with("http://")
+        || path.starts_with("ftp://")
+    {
         return read_text_input(path).map(|text| kseq_t::from_text(&text));
     }
     kseq_t::from_path(path).map_err(|_| ())
@@ -337,7 +361,13 @@ fn read_batch(aux: &mut ktp_aux_t) -> Option<ktp_data_t> {
     let mut ret = ktp_data_t::default();
     let mut sz = 0_i64;
     let ks = aux.ks.as_mut().expect("read_batch requires aux.ks");
-    ret.seqs = bseq_read_orig(aux.task_size, &mut ret.n_seqs, ks, aux.ks2.as_mut(), &mut sz);
+    ret.seqs = bseq_read_orig(
+        aux.task_size,
+        &mut ret.n_seqs,
+        ks,
+        aux.ks2.as_mut(),
+        &mut sz,
+    );
     if ret.seqs.is_empty() {
         return None;
     }
@@ -356,14 +386,6 @@ fn process_batch(
     pes0: Option<&[mem_pestat_t; 4]>,
     w: &mut worker_t,
 ) {
-    if w.nreads < batch.n_seqs {
-        w.nreads = batch.n_seqs;
-        let nreads = usize::try_from(batch.n_seqs).expect("nreads");
-        w.regs = vec![mem_alnreg_v::default(); nreads];
-        w.chain_ar = vec![mem_chain_v::default(); nreads];
-        w.seedBuf = vec![mem_seed_t::default(); nreads * AVG_SEEDS_PER_READ];
-    }
-
     if opt.flag & MEM_F_SMARTPE != 0 {
         let mut sep = [Vec::new(), Vec::new()];
         let mut n_sep = [0_i32; 2];
@@ -394,13 +416,26 @@ fn process_batch(
     } else {
         mem_process_seqs(opt, n_processed, batch.n_seqs, &mut batch.seqs, pes0, w);
     }
+
+    batch.sam_lines.clear();
+    batch.sam_lines.reserve(batch.seqs.len());
+    for seq in &mut batch.seqs {
+        if let Some(sam) = seq.sam.take() {
+            batch.sam_lines.push(sam);
+        }
+        seq.name = None;
+        seq.comment = None;
+        seq.seq = None;
+        seq.qual = None;
+        seq.seq_nt4.clear();
+    }
+    batch.seqs.clear();
+    batch.seqs.shrink_to(0);
 }
 
 fn write_batch(batch: &ktp_data_t, fp: &mut ErrFile) {
-    for seq in &batch.seqs {
-        if let Some(sam) = seq.sam.as_deref() {
-            err_fputs(sam, fp);
-        }
+    for sam in &batch.sam_lines {
+        err_fputs(sam, fp);
     }
 }
 
@@ -454,15 +489,15 @@ pub fn HTStatus() -> i32 {
 }
 
 #[doc = "Original function: memoryAlloc:100"]
-pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32) {
+pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, _nreads: i32, nthreads: i32) {
     let opt = aux.opt.as_ref().expect("memoryAlloc requires aux.opt");
     let read_len = READ_LEN;
 
-    let mem_size = usize::try_from(nreads.max(0)).expect("nreads");
-    w.regs = vec![mem_alnreg_v::default(); mem_size];
-    w.chain_ar = vec![mem_chain_v::default(); mem_size];
-    w.seedBuf = vec![mem_seed_t::default(); mem_size * AVG_SEEDS_PER_READ];
-    w.seedBufSize = i64::try_from(crate::generated::macro_h::BATCH_SIZE * AVG_SEEDS_PER_READ).expect("seedBufSize");
+    w.regs.clear();
+    w.chain_ar.clear();
+    w.seedBuf.clear();
+    w.seedBufSize = i64::try_from(crate::generated::macro_h::BATCH_SIZE * AVG_SEEDS_PER_READ)
+        .expect("seedBufSize");
 
     let nthreads_usize = usize::try_from(nthreads).expect("nthreads");
     let wsize = crate::generated::macro_h::BATCH_SIZE * SEEDS_PER_READ;
@@ -490,13 +525,26 @@ pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32
     w.mmc.rid = vec![Vec::new(); nthreads_usize];
     w.mmc.lim = vec![vec![0; crate::generated::macro_h::BATCH_SIZE + 32]; nthreads_usize];
 
-    let _alloc_mem = (wsize * MAX_SEQ_LEN_REF + MAX_LINE_LEN) * usize::try_from(opt.n_threads.max(0)).expect("opt threads") * 2
-        + (wsize * MAX_SEQ_LEN_QER + MAX_LINE_LEN) * usize::try_from(opt.n_threads.max(0)).expect("opt threads") * 2
-        + wsize * std::mem::size_of::<SeqPair>() * usize::try_from(opt.n_threads.max(0)).expect("opt threads") * 3;
+    let _alloc_mem = (wsize * MAX_SEQ_LEN_REF + MAX_LINE_LEN)
+        * usize::try_from(opt.n_threads.max(0)).expect("opt threads")
+        * 2
+        + (wsize * MAX_SEQ_LEN_QER + MAX_LINE_LEN)
+            * usize::try_from(opt.n_threads.max(0)).expect("opt threads")
+            * 2
+        + wsize
+            * std::mem::size_of::<SeqPair>()
+            * usize::try_from(opt.n_threads.max(0)).expect("opt threads")
+            * 3;
 }
 
 #[doc = "Original function: kt_pipeline:189"]
-pub fn kt_pipeline(shared: &mut ktp_aux_t, step: i32, data: Option<ktp_data_t>, opt: &mut mem_opt_t, w: &mut worker_t) -> Option<ktp_data_t> {
+pub fn kt_pipeline(
+    shared: &mut ktp_aux_t,
+    step: i32,
+    data: Option<ktp_data_t>,
+    opt: &mut mem_opt_t,
+    w: &mut worker_t,
+) -> Option<ktp_data_t> {
     match step {
         0 => read_batch(shared),
         1 => {
@@ -517,10 +565,16 @@ pub fn ktp_worker(_arg0: crate::support::Opaque) {
 
 #[doc = "Original function: process:368"]
 pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> i32 {
-    let nthreads = shared.opt.as_ref().expect("process requires aux.opt").n_threads;
+    let nthreads = shared
+        .opt
+        .as_ref()
+        .expect("process requires aux.opt")
+        .n_threads;
     w.nthreads = i16::try_from(nthreads).expect("nthreads");
 
-    let nreads = i32::try_from(shared.actual_chunk_size / i64::try_from(READ_LEN).expect("READ_LEN") + 10).expect("nreads");
+    let nreads =
+        i32::try_from(shared.actual_chunk_size / i64::try_from(READ_LEN).expect("READ_LEN") + 10)
+            .expect("nreads");
     memoryAlloc(shared, w, nreads, nthreads);
     w.ref_string = shared.ref_string.clone();
     w.nreads = 0;
@@ -528,7 +582,13 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
     let mut opt = (*shared.opt.as_ref().expect("opt")).clone();
     if _pipe_threads <= 1 {
         while let Some(mut batch) = read_batch(shared) {
-            process_batch(&mut batch, &mut opt, shared.n_processed, shared.pes0.as_deref(), w);
+            process_batch(
+                &mut batch,
+                &mut opt,
+                shared.n_processed,
+                shared.pes0.as_deref(),
+                w,
+            );
             shared.n_processed += i64::from(batch.n_seqs);
             if let Some(fp) = shared.fp.as_mut() {
                 write_batch(&batch, fp);
@@ -537,8 +597,8 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
         return 0;
     }
 
-    let (tx_read, rx_read) = sync_channel::<Option<ktp_data_t>>(1);
-    let (tx_write, rx_write) = sync_channel::<Option<ktp_data_t>>(1);
+    let (tx_read, rx_read) = sync_channel::<Option<ktp_data_t>>(0);
+    let (tx_write, rx_write) = sync_channel::<Option<ktp_data_t>>(0);
     let mut ks = shared.ks.take();
     let mut ks2 = shared.ks2.take();
     let task_size = shared.task_size;
@@ -652,44 +712,115 @@ pub fn main_mem(argv: &[String]) -> i32 {
 
     let mut opt = *crate::generated::bwamem_cpp::mem_opt_init();
     let mut opt0 = mem_opt_t::default();
-    if let Some(v) = cli.min_seed_len { opt.min_seed_len = v; opt0.min_seed_len = 1; }
-    if let Some(v) = cli.band_width { opt.w = v; opt0.w = 1; }
-    if let Some(v) = cli.zdrop { opt.zdrop = v; opt0.zdrop = 1; }
-    if let Some(v) = cli.split_factor { opt.split_factor = v; opt0.split_factor = 1.0; }
-    if let Some(v) = cli.split_width { opt.split_width = v; }
-    if let Some(v) = cli.max_occ { opt.max_occ = v; opt0.max_occ = 1; }
-    if let Some(v) = cli.drop_ratio { opt.drop_ratio = v; opt0.drop_ratio = 1.0; }
-    if let Some(v) = cli.max_chain_gap { opt.max_chain_gap = v; opt0.max_chain_gap = 1; }
-    if let Some(v) = cli.max_matesw { opt.max_matesw = v; opt0.max_matesw = 1; }
-    if let Some(v) = cli.max_chain_extend { opt.max_chain_extend = v; opt0.max_chain_extend = 1; }
-    if let Some(v) = cli.a { opt.a = v; opt0.a = 1; }
-    if let Some(v) = cli.b { opt.b = v; opt0.b = 1; }
-    if let Some(v) = cli.pen_unpaired { opt.pen_unpaired = v; opt0.pen_unpaired = 1; }
-    if let Some(v) = cli.min_score { opt.T = v; opt0.T = 1; }
+    if let Some(v) = cli.min_seed_len {
+        opt.min_seed_len = v;
+        opt0.min_seed_len = 1;
+    }
+    if let Some(v) = cli.band_width {
+        opt.w = v;
+        opt0.w = 1;
+    }
+    if let Some(v) = cli.zdrop {
+        opt.zdrop = v;
+        opt0.zdrop = 1;
+    }
+    if let Some(v) = cli.split_factor {
+        opt.split_factor = v;
+        opt0.split_factor = 1.0;
+    }
+    if let Some(v) = cli.split_width {
+        opt.split_width = v;
+    }
+    if let Some(v) = cli.max_occ {
+        opt.max_occ = v;
+        opt0.max_occ = 1;
+    }
+    if let Some(v) = cli.drop_ratio {
+        opt.drop_ratio = v;
+        opt0.drop_ratio = 1.0;
+    }
+    if let Some(v) = cli.max_chain_gap {
+        opt.max_chain_gap = v;
+        opt0.max_chain_gap = 1;
+    }
+    if let Some(v) = cli.max_matesw {
+        opt.max_matesw = v;
+        opt0.max_matesw = 1;
+    }
+    if let Some(v) = cli.max_chain_extend {
+        opt.max_chain_extend = v;
+        opt0.max_chain_extend = 1;
+    }
+    if let Some(v) = cli.a {
+        opt.a = v;
+        opt0.a = 1;
+    }
+    if let Some(v) = cli.b {
+        opt.b = v;
+        opt0.b = 1;
+    }
+    if let Some(v) = cli.pen_unpaired {
+        opt.pen_unpaired = v;
+        opt0.pen_unpaired = 1;
+    }
+    if let Some(v) = cli.min_score {
+        opt.T = v;
+        opt0.T = 1;
+    }
     if let Some(v) = cli.mapq_coef_len {
         opt.mapQ_coef_len = v as f32;
         opt.mapQ_coef_fac = if v > 0 { (f64::from(v)).ln() as i32 } else { 0 };
     }
-    if let Some(v) = cli.mask_level { opt.mask_level = v; }
-    if let Some(v) = cli.max_mem_intv { opt.max_mem_intv = v; opt0.max_mem_intv = 1; }
-    if let Some(v) = cli.min_chain_weight { opt.min_chain_weight = v; opt0.min_chain_weight = 1; }
+    if let Some(v) = cli.mask_level {
+        opt.mask_level = v;
+    }
+    if let Some(v) = cli.max_mem_intv {
+        opt.max_mem_intv = v;
+        opt0.max_mem_intv = 1;
+    }
+    if let Some(v) = cli.min_chain_weight {
+        opt.min_chain_weight = v;
+        opt0.min_chain_weight = 1;
+    }
     if let Some(arg) = cli.xa_hits.as_deref().and_then(parse_pair_i32) {
         opt.max_XA_hits = arg.0;
         opt.max_XA_hits_alt = arg.1.unwrap_or(arg.0);
         opt0.max_XA_hits = 1;
         opt0.max_XA_hits_alt = 1;
     }
-    if let Some(v) = cli.threads { opt.n_threads = v.max(1); }
-    if let Some(v) = cli.verbose { BWA_VERBOSE.store(v, std::sync::atomic::Ordering::Relaxed); }
-    if cli.no_pairing { opt.flag |= MEM_F_NOPAIRING; }
-    if cli.all_alignments { opt.flag |= MEM_F_ALL; }
-    if cli.no_multi { opt.flag |= MEM_F_NO_MULTI; }
-    if cli.no_rescue { opt.flag |= MEM_F_NO_RESCUE; }
-    if cli.softclip { opt.flag |= MEM_F_SOFTCLIP; }
-    if cli.ref_hdr { opt.flag |= MEM_F_REF_HDR; }
-    if cli.primary5 { opt.flag |= MEM_F_PRIMARY5 | MEM_F_KEEP_SUPP_MAPQ; }
-    if cli.keep_supp_mapq { opt.flag |= MEM_F_KEEP_SUPP_MAPQ; }
-    if cli.smart_pairing { opt.flag |= MEM_F_PE | MEM_F_SMARTPE; }
+    if let Some(v) = cli.threads {
+        opt.n_threads = v.max(1);
+    }
+    if let Some(v) = cli.verbose {
+        BWA_VERBOSE.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+    if cli.no_pairing {
+        opt.flag |= MEM_F_NOPAIRING;
+    }
+    if cli.all_alignments {
+        opt.flag |= MEM_F_ALL;
+    }
+    if cli.no_multi {
+        opt.flag |= MEM_F_NO_MULTI;
+    }
+    if cli.no_rescue {
+        opt.flag |= MEM_F_NO_RESCUE;
+    }
+    if cli.softclip {
+        opt.flag |= MEM_F_SOFTCLIP;
+    }
+    if cli.ref_hdr {
+        opt.flag |= MEM_F_REF_HDR;
+    }
+    if cli.primary5 {
+        opt.flag |= MEM_F_PRIMARY5 | MEM_F_KEEP_SUPP_MAPQ;
+    }
+    if cli.keep_supp_mapq {
+        opt.flag |= MEM_F_KEEP_SUPP_MAPQ;
+    }
+    if cli.smart_pairing {
+        opt.flag |= MEM_F_PE | MEM_F_SMARTPE;
+    }
     if let Some(arg) = cli.gap_open.as_deref() {
         if let Some((first, second)) = parse_pair_i32(arg) {
             opt.o_del = first;
@@ -774,7 +905,9 @@ pub fn main_mem(argv: &[String]) -> i32 {
     };
     let ks2 = if cli.smart_pairing {
         if let Some(in2) = cli.in2.as_deref() {
-            eprintln!("[W::main_mem] when '-p' is in use, the second query file is ignored: `{in2}`");
+            eprintln!(
+                "[W::main_mem] when '-p' is in use, the second query file is ignored: `{in2}`"
+            );
         }
         None
     } else if let Some(in2) = cli.in2.as_deref() {
@@ -796,8 +929,12 @@ pub fn main_mem(argv: &[String]) -> i32 {
         ks2: ks2,
         opt: Some(Box::new(opt.clone())),
         copy_comment: if cli.copy_comment { 1 } else { 0 },
-        task_size: cli.fixed_chunk_size.unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
-        actual_chunk_size: cli.fixed_chunk_size.unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
+        task_size: cli
+            .fixed_chunk_size
+            .unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
+        actual_chunk_size: cli
+            .fixed_chunk_size
+            .unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
         fp: Some(out),
         ..Default::default()
     };
@@ -911,30 +1048,37 @@ fn usage_text(opt: &mem_opt_t) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cpuid, kt_pipeline, main_mem, memoryAlloc, process, read_text_input, update_a, usage_text, HTStatus, AVG_SEEDS_PER_READ};
+    use super::{
+        cpuid, kt_pipeline, main_mem, memoryAlloc, process, read_text_input, update_a, usage_text,
+        HTStatus, AVG_SEEDS_PER_READ,
+    };
+    use crate::generated::bntseq_cpp::bns_fasta2bntseq;
     use crate::generated::bwa_cpp::BWA_VERBOSE;
     use crate::generated::bwa_h::bseq1_t;
-    use crate::generated::bntseq_cpp::bns_fasta2bntseq;
-    use crate::generated::fmi_search_cpp::FMI_search;
     use crate::generated::bwamem_cpp::mem_opt_init;
-    use crate::generated::bwamem_h::{mem_alnreg_v, mem_cache, mem_chain_v, mem_opt_t, mem_seed_t, worker_t};
+    use crate::generated::bwamem_h::{
+        mem_alnreg_v, mem_cache, mem_chain_v, mem_opt_t, mem_seed_t, worker_t,
+    };
     use crate::generated::fastmap_h::ktp_aux_t;
-    use crate::generated::macro_h::BATCH_SIZE;
+    use crate::generated::fmi_search_cpp::FMI_search;
     use crate::generated::kseq_h::kseq_t;
+    use crate::generated::macro_h::BATCH_SIZE;
     use crate::generated::utils_cpp::{err_fclose, err_xopen_core};
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::fs;
     use std::io::{BufRead, BufReader, Cursor, Read, Write};
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use std::sync::atomic::Ordering;
 
     fn tutorial_fixture_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("external").join("tutorial_bwa_small")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("external")
+            .join("tutorial_bwa_small")
     }
 
     fn indexed_real_fixture_prefix() -> PathBuf {
@@ -961,7 +1105,12 @@ mod tests {
         out
     }
 
-    fn write_real_fixture_slice(dir: &Path, pair_ordinal: usize, before_pairs: usize, pair_count: usize) -> (PathBuf, PathBuf) {
+    fn write_real_fixture_slice(
+        dir: &Path,
+        pair_ordinal: usize,
+        before_pairs: usize,
+        pair_count: usize,
+    ) -> (PathBuf, PathBuf) {
         let fixture_dir = tutorial_fixture_dir();
         let r1 = fixture_dir.join("SRR2584863_1.trim.sub.fastq");
         let r2 = fixture_dir.join("SRR2584863_2.trim.sub.fastq");
@@ -973,8 +1122,10 @@ mod tests {
         let end_line = (start_pair + pair_count) * 4;
         let out1 = dir.join("slice_1.fq");
         let out2 = dir.join("slice_2.fq");
-        fs::write(&out1, extract_fastq_line_range(&r1, start_line, end_line)).expect("write slice1");
-        fs::write(&out2, extract_fastq_line_range(&r2, start_line, end_line)).expect("write slice2");
+        fs::write(&out1, extract_fastq_line_range(&r1, start_line, end_line))
+            .expect("write slice1");
+        fs::write(&out2, extract_fastq_line_range(&r2, start_line, end_line))
+            .expect("write slice2");
         (out1, out2)
     }
 
@@ -998,7 +1149,8 @@ mod tests {
         dir.push(format!("bwa_mem2_rs_real_slice_{target}_{nanos}"));
         fs::create_dir_all(&dir).expect("create temp dir");
 
-        let (reads1, reads2) = write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
+        let (reads1, reads2) =
+            write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
         let out = dir.join("out.sam");
         let argv = vec![
             "mem".to_string(),
@@ -1021,7 +1173,12 @@ mod tests {
         lines
     }
 
-    fn real_slice_sam_body(pair_ordinal: usize, before_pairs: usize, pair_count: usize, threads: i32) -> Vec<String> {
+    fn real_slice_sam_body(
+        pair_ordinal: usize,
+        before_pairs: usize,
+        pair_count: usize,
+        threads: i32,
+    ) -> Vec<String> {
         let prefix = indexed_real_fixture_prefix();
         assert!(
             prefix.with_extension("bwt.2bit.64").exists(),
@@ -1033,10 +1190,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        dir.push(format!("bwa_mem2_rs_real_slice_body_{pair_ordinal}_{threads}_{nanos}"));
+        dir.push(format!(
+            "bwa_mem2_rs_real_slice_body_{pair_ordinal}_{threads}_{nanos}"
+        ));
         fs::create_dir_all(&dir).expect("create temp dir");
 
-        let (reads1, reads2) = write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
+        let (reads1, reads2) =
+            write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
         let out = dir.join("out.sam");
         let argv = vec![
             "mem".to_string(),
@@ -1059,10 +1219,21 @@ mod tests {
         body
     }
 
-    fn real_slice_cpp_sam_body(pair_ordinal: usize, before_pairs: usize, pair_count: usize, threads: i32) -> Vec<String> {
+    fn real_slice_cpp_sam_body(
+        pair_ordinal: usize,
+        before_pairs: usize,
+        pair_count: usize,
+        threads: i32,
+    ) -> Vec<String> {
         let prefix = indexed_real_fixture_prefix();
-        let cpp_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bwa-mem2").join("bwa-mem2.debug");
-        assert!(cpp_bin.exists(), "missing upstream debug binary at {}", cpp_bin.display());
+        let cpp_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("bwa-mem2")
+            .join("bwa-mem2.debug");
+        assert!(
+            cpp_bin.exists(),
+            "missing upstream debug binary at {}",
+            cpp_bin.display()
+        );
         assert!(
             prefix.with_extension("bwt.2bit.64").exists(),
             "missing indexed real fixture at {}",
@@ -1073,10 +1244,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        dir.push(format!("bwa_mem2_rs_real_slice_cpp_{pair_ordinal}_{threads}_{nanos}"));
+        dir.push(format!(
+            "bwa_mem2_rs_real_slice_cpp_{pair_ordinal}_{threads}_{nanos}"
+        ));
         fs::create_dir_all(&dir).expect("create temp dir");
 
-        let (reads1, reads2) = write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
+        let (reads1, reads2) =
+            write_real_fixture_slice(&dir, pair_ordinal, before_pairs, pair_count);
         let output = Command::new(&cpp_bin)
             .arg("mem")
             .arg("-t")
@@ -1110,7 +1284,9 @@ mod tests {
         assert!(text.contains("    -t INT        number of threads ["));
         assert!(text.contains("    -k INT        minimum seed length ["));
         assert!(text.contains("   -R STR        read group header line"));
-        assert!(text.contains("   -v INT        verbose level: 1=error, 2=warning, 3=message, 4+=debugging [3]"));
+        assert!(text.contains(
+            "   -v INT        verbose level: 1=error, 2=warning, 3=message, 4+=debugging [3]"
+        ));
         assert!(text.contains("Note: Please read the man page"));
     }
 
@@ -1163,14 +1339,20 @@ mod tests {
 
     #[test]
     fn memoryalloc_builds_expected_worker_buffers() {
-        let aux = ktp_aux_t { opt: Some(mem_opt_init()), ..Default::default() };
+        let aux = ktp_aux_t {
+            opt: Some(mem_opt_init()),
+            ..Default::default()
+        };
         let mut w = worker_t::default();
         memoryAlloc(&aux, &mut w, 3, 2);
 
-        assert_eq!(w.regs.len(), 3);
-        assert_eq!(w.chain_ar.len(), 3);
-        assert_eq!(w.seedBuf.len(), 3 * AVG_SEEDS_PER_READ);
-        assert_eq!(w.seedBufSize, i64::try_from(BATCH_SIZE * AVG_SEEDS_PER_READ).expect("seedBufSize"));
+        assert_eq!(w.regs.len(), 0);
+        assert_eq!(w.chain_ar.len(), 0);
+        assert_eq!(w.seedBuf.len(), 0);
+        assert_eq!(
+            w.seedBufSize,
+            i64::try_from(BATCH_SIZE * AVG_SEEDS_PER_READ).expect("seedBufSize")
+        );
 
         assert_eq!(w.mmc.seqBufLeftRef.len(), 2);
         assert_eq!(w.mmc.seqBufLeftRef[0].len(), 0);
@@ -1186,7 +1368,9 @@ mod tests {
     #[test]
     fn kt_pipeline_step0_reads_chunk_and_respects_copy_comment_flag() {
         let mut aux = ktp_aux_t {
-            ks: Some(kseq_t::from_text("@r0 note\nACGT\n+\nIIII\n@r1 keep\nTT\n+\nJJ\n")),
+            ks: Some(kseq_t::from_text(
+                "@r0 note\nACGT\n+\nIIII\n@r1 keep\nTT\n+\nJJ\n",
+            )),
             task_size: 100,
             copy_comment: 0,
             ..Default::default()
@@ -1211,7 +1395,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1245,9 +1433,10 @@ mod tests {
                 qual: Some("IIIIII".into()),
                 ..Default::default()
             }],
+            sam_lines: Vec::new(),
         };
         let ret = kt_pipeline(&mut aux, 1, Some(input), &mut opt, &mut worker).expect("step1 data");
-        let sam = ret.seqs[0].sam.as_deref().expect("sam");
+        let sam = ret.sam_lines[0].as_ref();
         assert!(sam.starts_with("read-fastmap\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
         assert_eq!(aux.n_processed, 1);
@@ -1266,7 +1455,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1318,7 +1511,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi1 = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi1.build_index(), 0);
@@ -1352,8 +1549,14 @@ mod tests {
             ..Default::default()
         };
 
-        let mut worker1 = worker_t { fmi: Some(fmi1), ..Default::default() };
-        let mut worker2 = worker_t { fmi: Some(fmi2), ..Default::default() };
+        let mut worker1 = worker_t {
+            fmi: Some(fmi1),
+            ..Default::default()
+        };
+        let mut worker2 = worker_t {
+            fmi: Some(fmi2),
+            ..Default::default()
+        };
 
         assert_eq!(process(&mut aux1, &mut worker1, 1), 0);
         assert_eq!(process(&mut aux2, &mut worker2, 2), 0);
@@ -1379,7 +1582,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1422,7 +1629,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1525,7 +1736,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1569,7 +1784,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1615,7 +1834,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1677,7 +1900,11 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGTACGTACGTACGTACGT\n";
-        bns_fasta2bntseq(Cursor::new(fasta.as_slice()), prefix.to_str().expect("utf8"), 1);
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
 
         let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
         assert_eq!(fmi.build_index(), 0);
@@ -1713,10 +1940,7 @@ mod tests {
         ];
         assert_eq!(main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam");
-        let record_count = sam
-            .lines()
-            .filter(|line| !line.starts_with('@'))
-            .count();
+        let record_count = sam.lines().filter(|line| !line.starts_with('@')).count();
         assert_eq!(record_count, 520 * 2, "{sam}");
 
         fs::remove_dir_all(&dir).expect("cleanup");
