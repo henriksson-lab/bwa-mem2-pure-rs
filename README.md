@@ -94,20 +94,36 @@ target/release/bwa-mem2-rs mem -t 2 .tmp/real_bench/ecoli_rel606 <reads_1.fq> <r
 
 The full-fixture comparisons below were validated by exact SAM-body comparison against upstream output.
 
+Additional real-data conformance coverage can be prepared with:
+
+```bash
+scripts/download-real-world-fixtures.py --extra miseq-2x250 --extra-read-limit 5000
+STRICT_KNOWN_GAPS=1 READ_LIMIT=2000 scripts/conformance-real-data-matrix.sh
+```
+
+The optional `ecoli_miseq_2x250` fixture streams a 5,000-pair subset from ENA run `SRR13321180` (Illumina MiSeq 2x250 E. coli) and compares Rust against upstream C++ using the same REL606 reference index. The matrix also keeps a single-end pass over the tutorial fixture to exercise SE behavior.
+
+The focused SIMD16 regression guard for the non-default scoring case is:
+
+```bash
+READ_LIMIT=2000 scripts/regression-simd16-a5.sh
+```
+
 ## Full-Dataset Speed Comparison
 
 Full local real paired-end fixture, 175,000 paired reads, `-K 20000000`.
 
 | Command | `bwa-mem2-rs` | upstream `bwa-mem2.avx512bw` | Rust vs upstream |
 |---|---:|---:|---:|
-| `mem -t 1` | 12.76s | 14.84s | 1.16x faster, about 14% less wall time |
-| `mem -t 2` | 6.88s | 8.36s | 1.22x faster, about 18% less wall time |
+| `mem -t 1` | 15.49s | 18.50s | 1.19x faster, about 16% less wall time |
+| `mem -t 2` | 10.51s | 10.35s | 1.02x slower, about 2% more wall time |
 
 Interpretation:
 
 - These timings exclude index construction.
 - Rust and upstream SAM bodies are byte-identical for both `-t 1` and `-t 2`, ignoring header command-line differences.
 - Older benchmark notes used a smaller/different setup and should not be compared directly to this full-fixture result.
+- Re-run locally with `scripts/benchmark-real-data.sh`; it emits `.tmp/real_bench/report.tsv` when the upstream C++ binary is available.
 
 ## License
 

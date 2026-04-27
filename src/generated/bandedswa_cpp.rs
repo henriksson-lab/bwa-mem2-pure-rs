@@ -577,10 +577,9 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
     let mut len2_i16 = [0_i16; SIMD_WIDTH16_AVX512];
     for lane in 0..n {
         tail_lane[lane] = len2_lanes[lane] as i16;
-        let max_ins =
-            ((len2_lanes[lane] as i32 + bsw.end_bonus - bsw.o_ins) / bsw.e_ins + 1).max(1);
-        let max_del =
-            ((len2_lanes[lane] as i32 + bsw.end_bonus - bsw.o_del) / bsw.e_del + 1).max(1);
+        let len2_score = len2_lanes[lane] as i32 * i32::from(bsw.w_match);
+        let max_ins = ((len2_score + bsw.end_bonus - bsw.o_ins) / bsw.e_ins + 1).max(1);
+        let max_del = ((len2_score + bsw.end_bonus - bsw.o_del) / bsw.e_del + 1).max(1);
         band_lane[lane] = w.min(max_ins).min(max_del) as i16;
         len1_i16[lane] = len1_lanes[lane] as i16;
         len2_i16[lane] = len2_lanes[lane] as i16;
@@ -3763,16 +3762,12 @@ impl BandedPairWiseSW {
             j += 1;
         }
 
-        // Match C++ smithWaterman512_16 (bandedSWA.cpp:2887-2903) per-pair myband narrowing,
-        // NOT C++ scalarBandedSWA's wider formula. C++ scalar uses `qlen * max_score + eb - o`
-        // (multiplies by max scoring matrix entry); C++ SIMD uses `qlen + eb - o` (no multiply).
-        // At default -A 1 they're equivalent; at -A 2+ they diverge (-A 2 scalar=150, SIMD=75
-        // for qlen=75). C++ AVX-512 SIMD is the production path, so our scalar fallback for the
-        // i16 bucket must use the SIMD's narrower band to match upstream output.
-        let mut max_ins = (qlen + self.end_bonus - self.o_ins) / self.e_ins + 1;
+        let mut max_ins =
+            (qlen * i32::from(self.w_match) + self.end_bonus - self.o_ins) / self.e_ins + 1;
         max_ins = max_ins.max(1);
         w = w.min(max_ins);
-        let mut max_del = (qlen + self.end_bonus - self.o_del) / self.e_del + 1;
+        let mut max_del =
+            (qlen * i32::from(self.w_match) + self.end_bonus - self.o_del) / self.e_del + 1;
         max_del = max_del.max(1);
         w = w.min(max_del);
 

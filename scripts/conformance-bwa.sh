@@ -10,18 +10,25 @@ CPP_BIN="${CPP_BIN:-$ROOT/bwa-mem2/bwa-mem2.avx512bw}"
 READ_LIMIT="${READ_LIMIT:-2000}"
 BENCH_K="${BENCH_K:-20000000}"
 STRICT_KNOWN_GAPS="${STRICT_KNOWN_GAPS:-0}"
+RUN_PE="${RUN_PE:-1}"
+RUN_SE="${RUN_SE:-1}"
 
-REF="$FIXTURE_DIR/ecoli_rel606.fasta.gz"
-R1="$FIXTURE_DIR/SRR2584863_1.trim.sub.fastq"
-R2="$FIXTURE_DIR/SRR2584863_2.trim.sub.fastq"
-PREFIX="$OUT_DIR/ecoli_rel606"
+REF="${REF:-$FIXTURE_DIR/ecoli_rel606.fasta.gz}"
+R1="${R1:-$FIXTURE_DIR/SRR2584863_1.trim.sub.fastq}"
+R2="${R2:-$FIXTURE_DIR/SRR2584863_2.trim.sub.fastq}"
+PREFIX_NAME="${PREFIX_NAME:-$(basename "$REF")}"
+PREFIX_NAME="${PREFIX_NAME%.gz}"
+PREFIX_NAME="${PREFIX_NAME%.fasta}"
+PREFIX_NAME="${PREFIX_NAME%.fa}"
+PREFIX_NAME="${PREFIX_NAME%.fna}"
+PREFIX="${PREFIX:-$OUT_DIR/$PREFIX_NAME}"
 SUB_R1="$OUT_DIR/subset_${READ_LIMIT}_1.fq"
 SUB_R2="$OUT_DIR/subset_${READ_LIMIT}_2.fq"
 REPORT="$OUT_DIR/report.tsv"
 
 mkdir -p "$TMPDIR" "$OUT_DIR"
 
-if [[ ! -f "$REF" || ! -f "$R1" || ! -f "$R2" ]]; then
+if [[ ! -f "$REF" || ! -f "$R1" ]] || [[ "$RUN_PE" == "1" && ! -f "$R2" ]]; then
   echo "fixture files not found under $FIXTURE_DIR" >&2
   echo "run scripts/download-real-world-fixtures.py first" >&2
   exit 1
@@ -41,7 +48,9 @@ fi
 
 if [[ "$READ_LIMIT" -gt 0 ]]; then
   head -n $((READ_LIMIT * 4)) "$R1" >"$SUB_R1"
-  head -n $((READ_LIMIT * 4)) "$R2" >"$SUB_R2"
+  if [[ "$RUN_PE" == "1" ]]; then
+    head -n $((READ_LIMIT * 4)) "$R2" >"$SUB_R2"
+  fi
 else
   SUB_R1="$R1"
   SUB_R2="$R2"
@@ -133,23 +142,29 @@ run_and_count() {
   fi
 }
 
-run_and_count default_pe_t1 pe 0 -t 1 -K "$BENCH_K"
-run_and_count default_pe_t2 pe 0 -t 2 -K "$BENCH_K"
-run_and_count default_pe_t4 pe 0 -t 4 -K "$BENCH_K"
-run_and_count default_se_t1 se 0 -t 1 -K "$BENCH_K"
-run_and_count default_se_t2 se 0 -t 2 -K "$BENCH_K"
-run_and_count small_batch_pe pe 0 -t 2 -K 50000
-run_and_count scoring_A2_pe pe 1 -t 1 -K "$BENCH_K" -A 2
-run_and_count scoring_A4_pe pe 1 -t 1 -K "$BENCH_K" -A 4
-run_and_count scoring_A5_pe pe 1 -t 1 -K "$BENCH_K" -A 5
-run_and_count mismatch_B3_pe pe 1 -t 1 -K "$BENCH_K" -B 3
-run_and_count mismatch_B6_pe pe 1 -t 1 -K "$BENCH_K" -B 6
-run_and_count gap_open_O4_pe pe 1 -t 1 -K "$BENCH_K" -O 4
-run_and_count gap_open_O8_pe pe 1 -t 1 -K "$BENCH_K" -O 8
-run_and_count gap_ext_E2_pe pe 1 -t 1 -K "$BENCH_K" -E 2
-run_and_count combo_A2_B6_O8_E2_pe pe 1 -t 1 -K "$BENCH_K" -A 2 -B 6 -O 8 -E 2
-run_and_count zdrop_150_pe pe 1 -t 1 -K "$BENCH_K" -d 150
-run_and_count zdrop_200_pe pe 1 -t 1 -K "$BENCH_K" -d 200
+if [[ "$RUN_PE" == "1" ]]; then
+  run_and_count default_pe_t1 pe 0 -t 1 -K "$BENCH_K"
+  run_and_count default_pe_t2 pe 0 -t 2 -K "$BENCH_K"
+  run_and_count default_pe_t4 pe 0 -t 4 -K "$BENCH_K"
+fi
+if [[ "$RUN_SE" == "1" ]]; then
+  run_and_count default_se_t1 se 0 -t 1 -K "$BENCH_K"
+  run_and_count default_se_t2 se 0 -t 2 -K "$BENCH_K"
+fi
+if [[ "$RUN_PE" == "1" ]]; then
+  run_and_count small_batch_pe pe 0 -t 2 -K 50000
+  run_and_count scoring_A2_pe pe 1 -t 1 -K "$BENCH_K" -A 2
+  run_and_count scoring_A4_pe pe 1 -t 1 -K "$BENCH_K" -A 4
+  run_and_count scoring_A5_pe pe 1 -t 1 -K "$BENCH_K" -A 5
+  run_and_count mismatch_B3_pe pe 1 -t 1 -K "$BENCH_K" -B 3
+  run_and_count mismatch_B6_pe pe 1 -t 1 -K "$BENCH_K" -B 6
+  run_and_count gap_open_O4_pe pe 1 -t 1 -K "$BENCH_K" -O 4
+  run_and_count gap_open_O8_pe pe 1 -t 1 -K "$BENCH_K" -O 8
+  run_and_count gap_ext_E2_pe pe 1 -t 1 -K "$BENCH_K" -E 2
+  run_and_count combo_A2_B6_O8_E2_pe pe 1 -t 1 -K "$BENCH_K" -A 2 -B 6 -O 8 -E 2
+  run_and_count zdrop_150_pe pe 1 -t 1 -K "$BENCH_K" -d 150
+  run_and_count zdrop_200_pe pe 1 -t 1 -K "$BENCH_K" -d 200
+fi
 
 echo "[conf] report: $REPORT" >&2
 if [[ "$failures" -ne 0 ]]; then

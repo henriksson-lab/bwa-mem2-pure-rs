@@ -22,7 +22,9 @@ include = [
     "/src/generated/**",
     "/scripts/benchmark-real-data.sh",
     "/scripts/conformance-bwa.sh",
+    "/scripts/conformance-real-data-matrix.sh",
     "/scripts/download-real-world-fixtures.py",
+    "/scripts/regression-simd16-a5.sh",
 ]
 
 [lib]

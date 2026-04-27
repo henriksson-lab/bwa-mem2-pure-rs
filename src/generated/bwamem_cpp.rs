@@ -133,6 +133,11 @@ fn debug_trace_read(name: Option<&str>) -> bool {
     !target.is_empty() && name == Some(target)
 }
 
+fn debug_timings() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("BWA_MEM2_RS_TIMINGS").is_some())
+}
+
 #[derive(Clone, Copy)]
 struct WorkerPtr(*mut worker_t);
 
@@ -2050,6 +2055,8 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
         let mut maxQerLen = 0_i32;
         let mut gcnt = 0_i32;
         let mut pos = start >> 1;
+        let timing = debug_timings();
+        let t0 = std::time::Instant::now();
         for i in (start..end).step_by(2) {
             let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos"))
                 .expect("pair id");
@@ -2076,6 +2083,7 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
                 tid_usize,
             );
         }
+        let t1 = std::time::Instant::now();
 
         let pcnt8 =
             i32::try_from(sort_classify(&mut data.mmc, i64::from(pcnt), tid)).expect("pcnt8");
@@ -2090,6 +2098,7 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
             maxQerLen,
             tid_usize,
         );
+        let t2 = std::time::Instant::now();
 
         gcnt = 0;
         pos = start >> 1;
@@ -2131,6 +2140,20 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
             seq_pair[1].qual = None;
             seq_pair[0].seq_nt4 = Vec::new();
             seq_pair[1].seq_nt4 = Vec::new();
+        }
+        if timing {
+            let t3 = std::time::Instant::now();
+            eprintln!(
+                "[timing::worker_sam] seqid={} n={} tid={} pcnt={} pre={:.3}s batch_sw={:.3}s post={:.3}s total={:.3}s",
+                seqid,
+                batch_size,
+                tid,
+                pcnt,
+                (t1 - t0).as_secs_f64(),
+                (t2 - t1).as_secs_f64(),
+                (t3 - t2).as_secs_f64(),
+                (t3 - t0).as_secs_f64(),
+            );
         }
     } else {
         let opt = data.opt.as_ref().expect("worker opt missing");
@@ -2204,8 +2227,12 @@ pub fn mem_process_seqs(
 
     let n_ = n;
     if opt.flag & MEM_F_PE != 0 {
+        let timing = debug_timings();
+        let t0 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_bwt);
+        let t1 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_aln);
+        let t2 = std::time::Instant::now();
         if let Some(pes0) = pes0 {
             w.pes = *pes0;
         } else {
@@ -2244,11 +2271,41 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
                 );
             }
         }
+        let t3 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_sam);
+        if timing {
+            let t4 = std::time::Instant::now();
+            eprintln!(
+                "[timing::mem_process_seqs] n={} t={} bwt={:.3}s aln={:.3}s pestat={:.3}s sam={:.3}s total={:.3}s",
+                n_,
+                opt.n_threads,
+                (t1 - t0).as_secs_f64(),
+                (t2 - t1).as_secs_f64(),
+                (t3 - t2).as_secs_f64(),
+                (t4 - t3).as_secs_f64(),
+                (t4 - t0).as_secs_f64(),
+            );
+        }
     } else {
+        let timing = debug_timings();
+        let t0 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_bwt);
+        let t1 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_aln);
+        let t2 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_sam);
+        if timing {
+            let t3 = std::time::Instant::now();
+            eprintln!(
+                "[timing::mem_process_seqs] n={} t={} bwt={:.3}s aln={:.3}s sam={:.3}s total={:.3}s",
+                n_,
+                opt.n_threads,
+                (t1 - t0).as_secs_f64(),
+                (t2 - t1).as_secs_f64(),
+                (t3 - t2).as_secs_f64(),
+                (t3 - t0).as_secs_f64(),
+            );
+        }
     }
     *seqs = std::mem::take(&mut w.seqs);
 }
@@ -3977,7 +4034,7 @@ pub fn mem_chain2aln_across_reads_V2(
                             continue;
                         }
                         let t = &c.seeds[usize::try_from(next_seed_idx).expect("next_seed_idx")];
-                        if t.len < ((s.len as f32) * 0.95) as i32 {
+                        if f64::from(t.len) < f64::from(s.len) * 0.95 {
                             continue;
                         }
                         if s.qbeg <= t.qbeg
@@ -3996,6 +4053,7 @@ pub fn mem_chain2aln_across_reads_V2(
                         }
                     }
                     if !overlap {
+                        let aln_idx = usize::try_from(s.aln).expect("s.aln");
                         if debug_trace_read(seq_[l].name.as_deref()) {
                             eprintln!(
                                 "[trace::chain2aln:prune] read={} chain={} seed_idx={} seed_aln={} lim={} seed=({},{},{}) reg_before={:?}",
@@ -4010,7 +4068,7 @@ pub fn mem_chain2aln_across_reads_V2(
                                 av.a.get(usize::try_from(s.aln).expect("s.aln")).map(|r| (r.score, r.qb, r.qe, r.rb, r.re, r.seedlen0)),
                             );
                         }
-                        let ar = &mut av.a[usize::try_from(s.aln).expect("s.aln")];
+                        let ar = &mut av.a[aln_idx];
                         ar.qb = -1;
                         ar.qe = -1;
                         srt2[k] = u32::MAX;

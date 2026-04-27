@@ -167,13 +167,12 @@ impl MemAligner {
         }
         self.n_processed += i64::from(n);
 
-        let mut sam = Vec::with_capacity(self.worker.seqs.len());
-        for seq in &mut self.worker.seqs {
+        let mut sam = Vec::with_capacity(seqs.len());
+        for seq in &mut seqs {
             if let Some(line) = seq.sam.take() {
                 sam.push(line.into_string());
             }
         }
-        self.worker.seqs.clear();
         Ok(sam)
     }
 
@@ -241,9 +240,15 @@ fn make_bseq(id: i32, name: &str, seq: &[u8], qual: &[u8]) -> Result<bseq1_t> {
 mod tests {
     use super::MemAligner;
     use super::MemAlignerBuilder;
+    use super::MemReadPair;
+    use crate::generated::bntseq_cpp::bns_fasta2bntseq;
+    use crate::generated::fmi_search_cpp::FMI_search;
     use crate::output::{RunOutput, SharedWriterOutput};
     use rayon::ThreadPoolBuilder;
+    use std::fs;
+    use std::io::Cursor;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn builder_api_is_available() {
@@ -276,5 +281,87 @@ mod tests {
         output.stderr(format_args!("diagnostic")).unwrap();
         let text = String::from_utf8(output.into_inner().unwrap()).unwrap();
         assert_eq!(text, "[stdout] @HD\tVN:1.6\n[stderr] diagnostic\n");
+    }
+
+    #[test]
+    fn builder_shared_pool_and_output_capture_write_sam() {
+        let dir = unique_temp_dir("bwa_mem2_rs_mem_api");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let prefix = dir.join("ref");
+        let prefix_str = prefix.to_str().expect("utf8 path");
+
+        let reference = deterministic_reference(800);
+        let fasta = format!(">chr1\n{reference}\n");
+        let l_pac = bns_fasta2bntseq(Cursor::new(fasta.as_bytes()), prefix_str, 1);
+        assert_eq!(l_pac, 800);
+        let mut fmi = FMI_search::ctor(prefix_str);
+        assert_eq!(fmi.build_index(), 0);
+        fmi.dtor();
+
+        let pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("thread pool"),
+        );
+        let mut aligner = MemAligner::builder(&prefix)
+            .threads(1)
+            .thread_pool(pool)
+            .build()
+            .expect("load generated index");
+        aligner.opt.flag &= !super::MEM_F_PE;
+        aligner.opt.min_seed_len = 2;
+        aligner.opt.split_factor = 1.5;
+        aligner.opt.split_width = 10;
+        aligner.opt.max_mem_intv = 20;
+        aligner.opt.min_chain_weight = 1;
+        aligner.opt.T = 1;
+        let mut pairs = Vec::new();
+        let qual = b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII";
+        for i in 0..20 {
+            let start = 10 + i * 9;
+            pairs.push(MemReadPair {
+                name: format!("read-lib-{i}"),
+                r1: reference[start..start + 60].as_bytes(),
+                q1: qual,
+                r2: reference[start + 140..start + 200].as_bytes(),
+                q2: qual,
+            });
+        }
+        let output = SharedWriterOutput::with_stream_labels(Vec::new());
+
+        aligner
+            .write_sam_for_pairs(&pairs, &output)
+            .expect("write SAM");
+
+        let text = String::from_utf8(output.into_inner().unwrap()).unwrap();
+        assert!(text.contains("[stdout] @SQ\tSN:chr1\tLN:800"), "{text}");
+        assert!(
+            text.contains("[stdout] @PG\tID:bwa-mem2-rs\tPN:bwa-mem2-rs"),
+            "{text}"
+        );
+        assert!(text.contains("[stdout] read-lib-0\t"), "{text}");
+        assert!(text.contains("\tchr1\t"), "{text}");
+
+        fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
+    }
+
+    fn deterministic_reference(len: usize) -> String {
+        const BASES: &[u8; 4] = b"ACGT";
+        let mut out = String::with_capacity(len);
+        let mut state = 0x1357_2468_u32;
+        for _ in 0..len {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            out.push(BASES[((state >> 29) & 3) as usize] as char);
+        }
+        out
     }
 }
