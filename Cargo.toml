@@ -36,6 +36,7 @@ path = "src/bin/bwa-mem2-rs.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+cpu-time = "1.0"
 flate2 = "1"
 libc = "0.2"
 rayon = "1.10"

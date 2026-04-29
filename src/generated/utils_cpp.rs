@@ -366,15 +366,7 @@ pub fn err_gzclose(file: ErrGzFile) -> i32 {
 
 #[doc = "Original function: cputime:293"]
 pub fn cputime() -> f64 {
-    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
-    if rc != 0 {
-        err_fatal_simple("getrusage", &std::io::Error::last_os_error().to_string());
-    }
-    let usage = unsafe { usage.assume_init() };
-    let user = usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 * 1e-6;
-    let system = usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 * 1e-6;
-    user + system
+    cpu_time::ProcessTime::now().as_duration().as_secs_f64()
 }
 
 #[doc = "Original function: realtime:300"]

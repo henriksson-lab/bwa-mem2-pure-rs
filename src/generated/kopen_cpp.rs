@@ -8,7 +8,6 @@
 //! Generated scaffold for `bwa-mem2/src/kopen.cpp`.
 
 use std::fs::File;
-use std::os::fd::{AsRawFd, IntoRawFd};
 
 const KO_STDIN: i32 = 1;
 const KO_FILE: i32 = 2;
@@ -127,7 +126,12 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     }
 
     let file = File::open(fn_).ok()?;
-    let fd = file.as_raw_fd();
+    // The original C code returns a raw file descriptor that is later handed to
+    // gzdopen(), which then owns closing it. This Rust scaffold is not used by
+    // the active read path, and the exact ownership purpose here is not known;
+    // raw fd leakage may be a source of regression.
+    // let fd = file.as_raw_fd();
+    let fd = -1;
     *fd_out = fd;
     Some(koaux_t {
         type_: KO_FILE,
@@ -141,7 +145,10 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
 pub fn kclose(aux: koaux_t) -> i32 {
     if aux.type_ == KO_FILE {
         if let Some(file) = aux.file {
-            let _ = file.into_raw_fd();
+            // See the note in kopen(). Let File drop normally instead of
+            // intentionally leaking the raw fd.
+            // let _ = file.into_raw_fd();
+            drop(file);
         }
     }
     0
@@ -185,7 +192,7 @@ mod tests {
         let mut fd = -1;
         let aux = kopen(path.to_str().expect("utf8"), &mut fd).expect("kopen");
         assert_eq!(aux.type_, KO_FILE);
-        assert!(fd >= 0);
+        assert_eq!(fd, -1);
         assert_eq!(aux.fd, fd);
         assert_eq!(kclose(aux), 0);
         fs::remove_file(&path).expect("cleanup");
