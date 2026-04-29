@@ -1516,6 +1516,175 @@ pub fn mem_chain_seeds(
     matchArray: &[SMEM],
     num_smem: i64,
 ) {
+    // C++ uses kb_init(chn, KB_DEFAULT_SIZE + 8). With mem_chain_t's layout this
+    // gives B-tree degree 5; duplicate-key lookup depends on the node split shape.
+    const CHAIN_TREE_T: usize = 5;
+
+    #[derive(Default)]
+    struct ChainTreeNode {
+        is_internal: bool,
+        keys: Vec<mem_chain_t>,
+        children: Vec<usize>,
+    }
+
+    struct ChainTree {
+        nodes: Vec<ChainTreeNode>,
+        root: usize,
+    }
+
+    impl ChainTree {
+        fn new() -> Self {
+            Self {
+                nodes: vec![ChainTreeNode::default()],
+                root: 0,
+            }
+        }
+
+        fn len(&self) -> usize {
+            self.nodes.iter().map(|n| n.keys.len()).sum()
+        }
+
+        fn getp_aux(keys: &[mem_chain_t], pos: i64) -> (isize, i32) {
+            if keys.is_empty() {
+                return (-1, 0);
+            }
+            let mut begin = 0_usize;
+            let mut end = keys.len();
+            while begin < end {
+                let mid = (begin + end) >> 1;
+                if keys[mid].pos < pos {
+                    begin = mid + 1;
+                } else {
+                    end = mid;
+                }
+            }
+            if begin == keys.len() {
+                return ((keys.len() - 1) as isize, 1);
+            }
+            let r = if pos < keys[begin].pos {
+                -1
+            } else if keys[begin].pos < pos {
+                1
+            } else {
+                0
+            };
+            if r < 0 {
+                (begin as isize - 1, r)
+            } else {
+                (begin as isize, r)
+            }
+        }
+
+        fn interval_index(&self, pos: i64) -> Option<(usize, usize)> {
+            let mut x = self.root;
+            let mut lower = None;
+            loop {
+                let node = &self.nodes[x];
+                let (i, r) = Self::getp_aux(&node.keys, pos);
+                if i >= 0 && r == 0 {
+                    return Some((x, usize::try_from(i).expect("tree index")));
+                }
+                if i >= 0 {
+                    lower = Some((x, usize::try_from(i).expect("tree index")));
+                }
+                if !node.is_internal {
+                    return lower;
+                }
+                x = node.children[usize::try_from(i + 1).expect("child index")];
+            }
+        }
+
+        fn interval_mut(&mut self, pos: i64) -> Option<&mut mem_chain_t> {
+            let (node_idx, key_idx) = self.interval_index(pos)?;
+            self.nodes
+                .get_mut(node_idx)
+                .and_then(|node| node.keys.get_mut(key_idx))
+        }
+
+        fn split_child(&mut self, parent_idx: usize, child_slot: usize) {
+            let child_idx = self.nodes[parent_idx].children[child_slot];
+            let z_idx = self.nodes.len();
+            let (median, z_node) = {
+                let child = &mut self.nodes[child_idx];
+                let mut right_keys = child.keys.split_off(CHAIN_TREE_T);
+                let median = child.keys.pop().expect("full child median");
+                let right_children = if child.is_internal {
+                    child.children.split_off(CHAIN_TREE_T)
+                } else {
+                    Vec::new()
+                };
+                (
+                    median,
+                    ChainTreeNode {
+                        is_internal: child.is_internal,
+                        keys: std::mem::take(&mut right_keys),
+                        children: right_children,
+                    },
+                )
+            };
+            self.nodes.push(z_node);
+            let parent = &mut self.nodes[parent_idx];
+            parent.children.insert(child_slot + 1, z_idx);
+            parent.keys.insert(child_slot, median);
+        }
+
+        fn insert(&mut self, key: mem_chain_t) {
+            if self.nodes[self.root].keys.len() == 2 * CHAIN_TREE_T - 1 {
+                let old_root = self.root;
+                let new_root = self.nodes.len();
+                self.nodes.push(ChainTreeNode {
+                    is_internal: true,
+                    keys: Vec::new(),
+                    children: vec![old_root],
+                });
+                self.root = new_root;
+                self.split_child(new_root, 0);
+            }
+            self.insert_nonfull(self.root, key);
+        }
+
+        fn insert_nonfull(&mut self, node_idx: usize, key: mem_chain_t) {
+            if !self.nodes[node_idx].is_internal {
+                let (i, _) = Self::getp_aux(&self.nodes[node_idx].keys, key.pos);
+                self.nodes[node_idx]
+                    .keys
+                    .insert(usize::try_from(i + 1).expect("insert index"), key);
+                return;
+            }
+
+            let (i_raw, _) = Self::getp_aux(&self.nodes[node_idx].keys, key.pos);
+            let mut child_slot = usize::try_from(i_raw + 1).expect("child slot");
+            let child_idx = self.nodes[node_idx].children[child_slot];
+            if self.nodes[child_idx].keys.len() == 2 * CHAIN_TREE_T - 1 {
+                self.split_child(node_idx, child_slot);
+                if key.pos > self.nodes[node_idx].keys[child_slot].pos {
+                    child_slot += 1;
+                }
+            }
+            let next_idx = self.nodes[node_idx].children[child_slot];
+            self.insert_nonfull(next_idx, key);
+        }
+
+        fn traverse_into(self) -> Vec<mem_chain_t> {
+            fn visit(tree: &ChainTree, node_idx: usize, out: &mut Vec<mem_chain_t>) {
+                let node = &tree.nodes[node_idx];
+                for i in 0..node.keys.len() {
+                    if node.is_internal {
+                        visit(tree, node.children[i], out);
+                    }
+                    out.push(node.keys[i].clone());
+                }
+                if node.is_internal {
+                    visit(tree, node.children[node.keys.len()], out);
+                }
+            }
+
+            let mut out = Vec::with_capacity(self.len());
+            visit(&self, self.root, &mut out);
+            out
+        }
+    }
+
     let mut pos = 0_i64;
     let mut smem_ptr = 0_usize;
     let l_pac = bns.l_pac;
@@ -1552,9 +1721,7 @@ pub fn mem_chain_seeds(
         }
         assert_eq!(usize::try_from(matchArray[smem_ptr].rid).expect("rid"), l);
 
-        // Reuse chain_ar[l].a's capacity (was kept by clear_vec_with_cap above) instead of
-        // allocating a fresh Vec here that would replace it on assignment.
-        let mut chains: Vec<mem_chain_t> = std::mem::take(&mut chain_ar[l].a);
+        let mut chains = ChainTree::new();
         let chain = &mut chain_ar[l];
 
         let mut b = 0_i32;
@@ -1629,20 +1796,7 @@ pub fn mem_chain_seeds(
                 let rid = bns_intv2rid(bns, s.rbeg, s.rbeg + i64::from(s.len));
                 if rid >= 0 {
                     let mut to_add = true;
-                    let first_ge_idx = chains.partition_point(|c| c.pos < tmp.pos);
-                    let (candidate_idx, insert_idx) =
-                        if first_ge_idx < chains.len() && chains[first_ge_idx].pos == tmp.pos {
-                            // `kb_intervalp()` returns an exact-match key when one exists,
-                            // and `kb_putp()` inserts a duplicate immediately after that slot,
-                            // not after the whole equal-key run.
-                            (Some(first_ge_idx), first_ge_idx + 1)
-                        } else if first_ge_idx > 0 {
-                            (Some(first_ge_idx - 1), first_ge_idx)
-                        } else {
-                            (None, 0)
-                        };
-                    if let Some(candidate_idx) = candidate_idx {
-                        let lower = &mut chains[candidate_idx];
+                    if let Some(lower) = chains.interval_mut(tmp.pos) {
                         if test_and_merge(opt, l_pac, lower, &s, rid, tid) != 0 {
                             to_add = false;
                         }
@@ -1666,7 +1820,7 @@ pub fn mem_chain_seeds(
                         tmp.seqid = i32::try_from(l).expect("l");
                         tmp.is_alt =
                             u32::from(bns.anns[usize::try_from(rid).expect("rid")].is_alt != 0);
-                        chains.insert(insert_idx, tmp);
+                        chains.insert(tmp);
                     }
                 }
                 k += step;
@@ -1675,6 +1829,7 @@ pub fn mem_chain_seeds(
         }
 
         smem_ptr = usize::try_from(pos + 1).expect("smem_ptr");
+        let mut chains = chains.traverse_into();
         for c in &mut chains {
             c.frac_rep = l_rep as f32 / seq_[l].l_seq as f32;
         }
@@ -4174,7 +4329,7 @@ mod tests {
         let mut ks2 = kseq_t::from_text(&r2_text);
         let mut n = 0_i32;
         let mut total_bases = 0_i64;
-        let mut seqs = bseq_read_orig(i64::MAX, &mut n, &mut ks1, Some(&mut ks2), &mut total_bases);
+        let mut seqs = bseq_read_orig(1 << 20, &mut n, &mut ks1, Some(&mut ks2), &mut total_bases);
         assert!(n > 0);
 
         let mut fmi = FMI_search::ctor(prefix);

@@ -121,8 +121,20 @@ impl MemAligner {
     }
 
     pub fn align_pairs(&mut self, pairs: &[MemReadPair<'_>]) -> Result<Vec<String>> {
+        let mut sam = Vec::new();
+        self.align_pairs_into(pairs, |line| {
+            sam.push(line.to_owned());
+            Ok(())
+        })?;
+        Ok(sam)
+    }
+
+    pub fn align_pairs_into<F>(&mut self, pairs: &[MemReadPair<'_>], mut sink: F) -> Result<()>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
         if pairs.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
 
         let mut seqs = Vec::with_capacity(pairs.len() * 2);
@@ -167,13 +179,12 @@ impl MemAligner {
         }
         self.n_processed += i64::from(n);
 
-        let mut sam = Vec::with_capacity(seqs.len());
         for seq in &mut seqs {
             if let Some(line) = seq.sam.take() {
-                sam.push(line.into_string());
+                sink(&line.into_string())?;
             }
         }
-        Ok(sam)
+        Ok(())
     }
 
     pub fn write_sam_for_pairs(
@@ -186,11 +197,11 @@ impl MemAligner {
                 .stdout(format_args!("{line}"))
                 .map_err(|e| format!("failed to write SAM header: {e}"))?;
         }
-        for line in self.align_pairs(pairs)? {
+        self.align_pairs_into(pairs, |line| {
             output
                 .stdout(format_args!("{}", line.trim_end_matches('\n')))
-                .map_err(|e| format!("failed to write SAM record: {e}"))?;
-        }
+                .map_err(|e| format!("failed to write SAM record: {e}"))
+        })?;
         Ok(())
     }
 

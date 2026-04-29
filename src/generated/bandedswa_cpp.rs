@@ -388,7 +388,7 @@ pub(crate) fn process_batch_soa_banded_dp(
                         row_m[lane] = h11_i;
                         row_mj[lane] = j_i32;
                     }
-                    if (j as u32) == len2_lanes[lane] - 1 && h11_i > state.gscore[lane] {
+                    if (j as u32) == len2_lanes[lane] - 1 && h11_i >= state.gscore[lane] {
                         state.gscore[lane] = h11_i;
                         state.max_ie[lane] = i_i32;
                     }
@@ -2493,20 +2493,13 @@ mod simd_batch_tests {
         }
     }
 
-    // KNOWN-FAIL regression test (ignored): the u8 SoA prototype's internal i8 arithmetic
-    // saturates at 127, so when a pair's max DP score exceeds that range the prototype
-    // produces truncated output. In production this is mitigated by the sortPairsLenExt
-    // bucketing which routes higher-score pairs to the i16 path — but the i16 SIMD wrapper
-    // ALSO has subtle drift on real-fixture data at -A 3/4/5 (currently undebugged).
-    //
-    // Re-enable when:
-    //   1. u8 prototype guards against bucket-mis-sized inputs (or rejects them up front)
-    //   2. i16 prototype max-tracking semantics fully match scalarBandedSWA on real data
-    //
-    // Asserts they SHOULD match — currently expected to FAIL (max_score = 127 vs scalar 195).
+    // Upstream u8 SIMD uses signed 8-bit score lanes and saturates on this deliberately
+    // bucket-mis-sized input. The scalar and i16 paths score 195; upstream getScores8 returns
+    // score=127/qle=50/tle=42/gtle=60/gscore=123/max_off=8. Production must route this
+    // score range to i16 rather than expecting u8 to match scalar.
     #[test]
     #[ignore]
-    fn process_batch_soa_banded_dp_matches_scalar_at_match_score_3() {
+    fn process_batch_soa_banded_dp_u8_matches_upstream_saturation_at_match_score_3() {
         let bsw = make_bsw_a(3, 3, 6, 1, 6, 1); // -A 3 -B 3 -O 6 -E 1
                                                 // 60-bp identical sequence, banded w=10, h0=15 (typical chain extension scores at -A 3).
         let seq: Vec<u8> = (0..60).map(|i| (i & 3) as u8).collect();
@@ -2539,12 +2532,14 @@ mod simd_batch_tests {
             &mut max_off,
         );
 
-        assert_eq!(state.max_score[0], scalar, "max_score at -A 3");
-        assert_eq!(state.max_i[0] + 1, tle, "tle at -A 3");
-        assert_eq!(state.max_j[0] + 1, qle, "qle at -A 3");
-        assert_eq!(state.gscore[0], gscore, "gscore at -A 3");
-        assert_eq!(state.max_ie[0] + 1, gtle, "gtle at -A 3");
-        assert_eq!(state.max_off[0], max_off, "max_off at -A 3");
+        assert_eq!(scalar, 195, "scalar max_score at -A 3");
+        assert_eq!((qle, tle, gtle, gscore, max_off), (60, 60, 60, 195, 0));
+        assert_eq!(state.max_score[0], 127, "u8 saturated max_score at -A 3");
+        assert_eq!(state.max_i[0] + 1, 42, "u8 saturated tle at -A 3");
+        assert_eq!(state.max_j[0] + 1, 50, "u8 saturated qle at -A 3");
+        assert_eq!(state.gscore[0], 123, "u8 saturated gscore at -A 3");
+        assert_eq!(state.max_ie[0] + 1, 60, "u8 saturated gtle at -A 3");
+        assert_eq!(state.max_off[0], 8, "u8 saturated max_off at -A 3");
     }
 
     #[cfg(target_arch = "x86_64")]

@@ -34,6 +34,10 @@ path = "src/lib.rs"
 name = "bwa-mem2-rs"
 path = "src/bin/bwa-mem2-rs.rs"
 
+[[bin]]
+name = "dump-pe-batch-read"
+path = "src/bin/dump-pe-batch-read.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 cpu-time = "1.0"
