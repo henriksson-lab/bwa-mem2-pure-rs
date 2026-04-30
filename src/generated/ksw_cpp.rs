@@ -210,13 +210,37 @@ mod ksw_i16_sse2 {
     use super::{kswr_t, G_DEFR};
     use crate::generated::ksw_h::{KSW_XSTOP, KSW_XSUBO};
     use core::arch::x86_64::*;
+    use std::cell::RefCell;
 
-    fn build_qp(query: &[u8], m: i32, mat: &[i8]) -> (Vec<i16>, i32) {
+    #[derive(Default)]
+    struct Scratch {
+        qp: Vec<i16>,
+        h0: Vec<__m128i>,
+        h1: Vec<__m128i>,
+        e_buf: Vec<__m128i>,
+        hmax_buf: Vec<__m128i>,
+        peaks: Vec<(i32, i32)>,
+    }
+
+    thread_local! {
+        static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+    }
+
+    fn build_qp_into(query: &[u8], m: i32, mat: &[i8], qp: &mut Vec<i16>) -> i32 {
         let qlen = query.len() as i32;
         let slen = (qlen + 7) / 8;
         let m_usize = m as usize;
         let nlen = slen * 8;
-        let mut qp = vec![0_i16; m_usize * (slen as usize) * 8];
+        let total = m_usize * (slen as usize) * 8;
+        qp.clear();
+        if qp.capacity() < total {
+            qp.reserve(total - qp.capacity());
+        }
+        // Every profile slot is assigned below, including padding cells, so avoid
+        // zero-initializing the buffer before immediately overwriting it.
+        unsafe {
+            qp.set_len(total);
+        }
         let mut t = 0_usize;
         for a in 0..m_usize {
             let ma = &mat[a * m_usize..a * m_usize + m_usize];
@@ -233,7 +257,7 @@ mod ksw_i16_sse2 {
                 }
             }
         }
-        (qp, slen)
+        slen
     }
 
     #[target_feature(enable = "sse2")]
@@ -257,7 +281,41 @@ mod ksw_i16_sse2 {
         e_ins: i32,
         xtra: i32,
     ) -> kswr_t {
-        let (qp, slen) = build_qp(query, m, mat);
+        SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            run_with_scratch(
+                query,
+                m,
+                mat,
+                q_max,
+                tlen,
+                target,
+                o_del,
+                e_del,
+                o_ins,
+                e_ins,
+                xtra,
+                &mut scratch,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_with_scratch(
+        query: &[u8],
+        m: i32,
+        mat: &[i8],
+        q_max: u8,
+        tlen: i32,
+        target: &[u8],
+        o_del: i32,
+        e_del: i32,
+        o_ins: i32,
+        e_ins: i32,
+        xtra: i32,
+        scratch: &mut Scratch,
+    ) -> kswr_t {
+        let slen = build_qp_into(query, m, mat, &mut scratch.qp);
         let slen_us = slen as usize;
         let tlen_us = tlen as usize;
         let minsc = if xtra & KSW_XSUBO != 0 {
@@ -271,12 +329,23 @@ mod ksw_i16_sse2 {
             0x10000
         };
 
-        let mut h0: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut h1: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut e_buf: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
-        let mut hmax_buf: Vec<__m128i> = vec![unsafe { _mm_setzero_si128() }; slen_us];
+        let zero = unsafe { _mm_setzero_si128() };
+        scratch.h0.clear();
+        scratch.h0.resize(slen_us, zero);
+        scratch.h1.clear();
+        if scratch.h1.capacity() < slen_us {
+            scratch.h1.reserve(slen_us - scratch.h1.capacity());
+        }
+        // h1 is assigned for every stripe before it is read by the lazy-F pass.
+        unsafe {
+            scratch.h1.set_len(slen_us);
+        }
+        scratch.e_buf.clear();
+        scratch.e_buf.resize(slen_us, zero);
+        scratch.hmax_buf.clear();
+        scratch.hmax_buf.resize(slen_us, zero);
+        scratch.peaks.clear();
 
-        let mut peaks: Vec<(i32, i32)> = Vec::new();
         let mut gmax: i32 = 0;
         let mut te: i32 = -1;
 
@@ -285,37 +354,37 @@ mod ksw_i16_sse2 {
             let e_del_v = _mm_set1_epi16(e_del as i16);
             let oe_ins_v = _mm_set1_epi16((o_ins + e_ins) as i16);
             let e_ins_v = _mm_set1_epi16(e_ins as i16);
-            let zero = _mm_setzero_si128();
 
             'outer: for i in 0..tlen_us {
                 let mut f = zero;
                 let mut max_v = zero;
                 let s_base = (target[i] as usize) * slen_us;
-                let mut h = _mm_slli_si128::<2>(*h0.get_unchecked(slen_us - 1));
+                let mut h = _mm_slli_si128::<2>(*scratch.h0.get_unchecked(slen_us - 1));
                 for j in 0..slen_us {
-                    let s_v =
-                        _mm_loadu_si128(qp.as_ptr().add(s_base * 8 + j * 8) as *const __m128i);
+                    let s_v = _mm_loadu_si128(
+                        scratch.qp.as_ptr().add(s_base * 8 + j * 8) as *const __m128i
+                    );
                     h = _mm_adds_epi16(h, s_v);
-                    let mut e = *e_buf.get_unchecked(j);
+                    let mut e = *scratch.e_buf.get_unchecked(j);
                     h = _mm_max_epi16(h, e);
                     h = _mm_max_epi16(h, f);
                     max_v = _mm_max_epi16(max_v, h);
-                    *h1.get_unchecked_mut(j) = h;
+                    *scratch.h1.get_unchecked_mut(j) = h;
                     e = _mm_subs_epu16(e, e_del_v);
                     let t = _mm_subs_epu16(h, oe_del_v);
                     e = _mm_max_epi16(e, t);
-                    *e_buf.get_unchecked_mut(j) = e;
+                    *scratch.e_buf.get_unchecked_mut(j) = e;
                     f = _mm_subs_epu16(f, e_ins_v);
                     let t = _mm_subs_epu16(h, oe_ins_v);
                     f = _mm_max_epi16(f, t);
-                    h = *h0.get_unchecked(j);
+                    h = *scratch.h0.get_unchecked(j);
                 }
                 'lazyf: for _k in 0..16 {
                     f = _mm_slli_si128::<2>(f);
                     for j in 0..slen_us {
-                        let mut h = *h1.get_unchecked(j);
+                        let mut h = *scratch.h1.get_unchecked(j);
                         h = _mm_max_epi16(h, f);
-                        *h1.get_unchecked_mut(j) = h;
+                        *scratch.h1.get_unchecked_mut(j) = h;
                         let h2 = _mm_subs_epu16(h, oe_ins_v);
                         f = _mm_subs_epu16(f, e_ins_v);
                         // C++: !movemask(cmpgt(f, h)) → exit when no F lane exceeds H.
@@ -327,29 +396,29 @@ mod ksw_i16_sse2 {
                 let imax = hmax_i16(max_v);
                 if imax >= minsc {
                     let cur_i = i as i32;
-                    if let Some(last) = peaks.last_mut() {
+                    if let Some(last) = scratch.peaks.last_mut() {
                         if last.1 + 1 == cur_i {
                             if last.0 < imax {
                                 *last = (imax, cur_i);
                             }
                         } else {
-                            peaks.push((imax, cur_i));
+                            scratch.peaks.push((imax, cur_i));
                         }
                     } else {
-                        peaks.push((imax, cur_i));
+                        scratch.peaks.push((imax, cur_i));
                     }
                 }
                 if imax > gmax {
                     gmax = imax;
                     te = i as i32;
                     for j in 0..slen_us {
-                        *hmax_buf.get_unchecked_mut(j) = *h1.get_unchecked(j);
+                        *scratch.hmax_buf.get_unchecked_mut(j) = *scratch.h1.get_unchecked(j);
                     }
                     if gmax >= endsc {
                         break 'outer;
                     }
                 }
-                std::mem::swap(&mut h0, &mut h1);
+                std::mem::swap(&mut scratch.h0, &mut scratch.h1);
             }
         }
 
@@ -361,7 +430,7 @@ mod ksw_i16_sse2 {
         let mut max_v = -1_i32;
         let mut qe = -1_i32;
         unsafe {
-            let hmax_words = hmax_buf.as_ptr() as *const u16;
+            let hmax_words = scratch.hmax_buf.as_ptr() as *const u16;
             for i in 0..total {
                 let v = *hmax_words.add(i) as i32;
                 let pos = (i / 8) + (i % 8) * slen_us;
@@ -381,7 +450,7 @@ mod ksw_i16_sse2 {
             let high = r.te + radius;
             let mut best2 = -1;
             let mut te2 = -1;
-            for &(imax, te2_cand) in &peaks {
+            for &(imax, te2_cand) in &scratch.peaks {
                 if (te2_cand < low || te2_cand > high) && imax > best2 {
                     best2 = imax;
                     te2 = te2_cand;
@@ -1805,6 +1874,38 @@ mod tests {
         let simd = super::ksw_u8_sse2::run(&query, 5, &mat, q8.max, 32, &target, 5, 1, 5, 1, xtra);
         assert_eq!(simd.score, scalar.score, "score");
         assert_eq!(simd.te, scalar.te, "te");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn sse2_ksw_i16_slices_reuses_scratch_and_matches_scalar() {
+        let mat = score_mat(2, 3);
+        let cases: [(&[u8], &[u8]); 2] = [
+            (&[0, 1, 2, 3, 0, 1, 2, 3], &[3, 0, 1, 2, 3, 0, 1, 2, 3]),
+            (&[0, 1, 2, 3], &[3, 3, 0, 1, 2, 3]),
+        ];
+        for (query, target) in cases {
+            let q16 = ksw_qinit(2, query.len() as i32, query, 5, &mat);
+            let scalar = ksw_i16(&q16, target.len() as i32, target, 5, 1, 5, 1, KSW_XSUBO | 1);
+            let simd = super::ksw_i16_slices(
+                query,
+                5,
+                &mat,
+                q16.max,
+                target.len() as i32,
+                target,
+                5,
+                1,
+                5,
+                1,
+                KSW_XSUBO | 1,
+            );
+            assert_eq!(simd.score, scalar.score, "score");
+            assert_eq!(simd.te, scalar.te, "te");
+            assert_eq!(simd.qe, scalar.qe, "qe");
+            assert_eq!(simd.score2, scalar.score2, "score2");
+            assert_eq!(simd.te2, scalar.te2, "te2");
+        }
     }
 
     #[test]

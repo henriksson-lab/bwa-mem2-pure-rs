@@ -2,7 +2,8 @@
     dead_code,
     non_snake_case,
     non_camel_case_types,
-    non_upper_case_globals
+    non_upper_case_globals,
+    unused_unsafe
 )]
 
 //! Generated scaffold for `bwa-mem2/src/kswv.cpp`.
@@ -13,6 +14,8 @@ use crate::generated::kswv_h::{
     kswq_t, kswr_t, kswv, SeqPair, DEFAULT_AMBIG, MAX_SEQ_LEN_QER_SAM, MAX_SEQ_LEN_REF_SAM,
     SIMD_WIDTH16, SIMD_WIDTH8,
 };
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 
 const G_DEFR: kswr_t = kswr_t {
     score: 0,
@@ -37,6 +40,40 @@ thread_local! {
     )> = const {
         std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()))
     };
+}
+
+#[cfg(target_arch = "x86_64")]
+thread_local! {
+    static KSWV16_AVX_SCRATCH: std::cell::RefCell<(
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+        Vec<i16>,
+    )> = const {
+        std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new()))
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+thread_local! {
+    static KSWV8_AVX_SCRATCH: std::cell::RefCell<(
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    )> = const {
+        std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new()))
+    };
+}
+
+fn disable_kswv8_avx512() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("BWA_DISABLE_KSWV8").is_some())
+}
+
+fn disable_kswv16_avx512() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("BWA_DISABLE_KSWV16").is_some())
 }
 
 #[doc = "Original function: parseCmdLine:1636"]
@@ -177,12 +214,49 @@ impl kswv {
         phase: i32,
     ) {
         let total = usize::try_from(numPairs).expect("numPairs");
-        let mut mat = [0_i8; 25];
-        self.bwa_fill_scmat(&mut mat);
-        let q_max = ksw_qmax(self.m, &mat);
-        for chunk in pairArray[..total].chunks(SIMD_WIDTH8) {
-            self.kswv_scalar_lanes_u8(chunk, seqBufRef, seqBufQer, aln, &mat, q_max, phase);
-        }
+        KSWV_BATCH_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            let (padded, seq1_soa, seq2_soa, _, _) = &mut *scratch;
+            let ref_cap = usize::try_from(self.maxRefLen).expect("maxRefLen") * SIMD_WIDTH8;
+            let qer_cap = usize::try_from(self.maxQerLen).expect("maxQerLen") * SIMD_WIDTH8;
+            if seq1_soa.len() < ref_cap {
+                seq1_soa.resize(ref_cap, 0xff);
+            }
+            if seq2_soa.len() < qer_cap {
+                seq2_soa.resize(qer_cap, 0xff);
+            }
+
+            let mut idx = 0_usize;
+            while idx + SIMD_WIDTH8 <= total {
+                let lanes = &pairArray[idx..idx + SIMD_WIDTH8];
+                self.kswv_batch8_chunk(
+                    lanes, seqBufRef, seqBufQer, seq1_soa, seq2_soa, aln, idx, numPairs, phase,
+                );
+                idx += SIMD_WIDTH8;
+            }
+            if idx < total {
+                padded.clear();
+                padded.resize(SIMD_WIDTH8, SeqPair::default());
+                let tail = &pairArray[idx..total];
+                padded[..tail.len()].copy_from_slice(tail);
+                for (lane, p) in padded[tail.len()..].iter_mut().enumerate() {
+                    let id = idx + tail.len() + lane;
+                    p.id = i32::try_from(id).expect("pad id");
+                    p.regid = p.id;
+                }
+                self.kswv_batch8_chunk(
+                    &padded[..SIMD_WIDTH8],
+                    seqBufRef,
+                    seqBufQer,
+                    seq1_soa,
+                    seq2_soa,
+                    aln,
+                    idx,
+                    numPairs,
+                    phase,
+                );
+            }
+        });
     }
 
     #[inline]
@@ -202,36 +276,54 @@ impl kswv {
         let mut max_len1 = 0_i32;
         let mut max_len2 = 0_i32;
 
-        for (j, sp) in lanes.iter().copied().enumerate() {
-            let seq1 = &seqBufRef[usize::try_from(sp.idr).expect("idr")..];
-            for k in 0..usize::try_from(sp.len1).expect("len1") {
-                seq1_soa[k * SIMD_WIDTH8 + j] = if seq1[k] == 4 { 4 } else { seq1[k] };
-            }
+        // Compute max_len1/max_len2 first so we can size-validate the SoA writes once.
+        for sp in lanes.iter().copied() {
             max_len1 = max_len1.max(sp.len1);
+            let quanta = (sp.len2 + 16 - 1) / 16 * 16;
+            max_len2 = max_len2.max(quanta);
         }
+        let max_len1_usize = usize::try_from(max_len1).expect("max_len1");
+        let max_len2_usize = usize::try_from(max_len2).expect("max_len2");
+        // Caller (kswvBatchWrapper8) sized seq1_soa to maxRefLen*SIMD_WIDTH8 and seq2_soa to
+        // maxQerLen*SIMD_WIDTH8. Per-row writes use indices k*SIMD_WIDTH8 + j with k <= max_len{1,2}
+        // and j < SIMD_WIDTH8, so the maximum write offset is max_len*SIMD_WIDTH8 + (SIMD_WIDTH8-1)
+        // = (max_len+1)*SIMD_WIDTH8 - 1. Validate the SoA buffers cover that range up front.
+        let s1_used = (max_len1_usize + 1) * SIMD_WIDTH8;
+        let s2_used = (max_len2_usize + 1) * SIMD_WIDTH8;
+        assert!(seq1_soa.len() >= s1_used);
+        assert!(seq2_soa.len() >= s2_used);
+        // Pre-fill the chunk's used range to 0xff (the AMBIG sentinel). This replaces the per-lane
+        // strided pad loops at indices k*SIMD_WIDTH8 + j for k in [len, max_len], which would issue
+        // 64-stride byte writes; a contiguous fill is far more cache-friendly.
+        seq1_soa[..s1_used].fill(0xff);
+        seq2_soa[..s2_used].fill(0xff);
+        let seq1_soa_ptr = seq1_soa.as_mut_ptr();
+        let seq2_soa_ptr = seq2_soa.as_mut_ptr();
+
+        // C++ kswv.cpp line 274: AMBR=AMBIG_=4 (identity for seq1). Skip the conditional.
         for (j, sp) in lanes.iter().copied().enumerate() {
-            for k in usize::try_from(sp.len1).expect("len1")
-                ..=usize::try_from(max_len1).expect("max_len1")
-            {
-                seq1_soa[k * SIMD_WIDTH8 + j] = 0xff;
+            let idr = usize::try_from(sp.idr).expect("idr");
+            let len1 = usize::try_from(sp.len1).expect("len1");
+            let seq1 = unsafe { seqBufRef.get_unchecked(idr..idr + len1) };
+            for k in 0..len1 {
+                let b = unsafe { *seq1.get_unchecked(k) };
+                unsafe { *seq1_soa_ptr.add(k * SIMD_WIDTH8 + j) = b };
             }
         }
 
+        // C++ kswv.cpp line 300: AMBQ=8 (so the seq2 conditional 4→8 is real, not identity).
         for (j, sp) in lanes.iter().copied().enumerate() {
-            let seq2 = &seqBufQer[usize::try_from(sp.idq).expect("idq")..];
+            let idq = usize::try_from(sp.idq).expect("idq");
+            let len2 = usize::try_from(sp.len2).expect("len2");
             let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
-            for k in 0..usize::try_from(sp.len2).expect("len2") {
-                seq2_soa[k * SIMD_WIDTH8 + j] = if seq2[k] == 4 { 8 } else { seq2[k] };
+            let seq2 = unsafe { seqBufQer.get_unchecked(idq..idq + len2) };
+            for k in 0..len2 {
+                let b = unsafe { *seq2.get_unchecked(k) };
+                let v = if b == 4 { 8 } else { b };
+                unsafe { *seq2_soa_ptr.add(k * SIMD_WIDTH8 + j) = v };
             }
-            for k in usize::try_from(sp.len2).expect("len2")..quanta {
-                seq2_soa[k * SIMD_WIDTH8 + j] = 5;
-            }
-            max_len2 = max_len2.max(i32::try_from(quanta).expect("quanta"));
-        }
-        for (j, sp) in lanes.iter().copied().enumerate() {
-            let quanta = usize::try_from((sp.len2 + 16 - 1) / 16 * 16).expect("quanta");
-            for k in quanta..=usize::try_from(max_len2).expect("max_len2") {
-                seq2_soa[k * SIMD_WIDTH8 + j] = 0xff;
+            for k in len2..quanta {
+                unsafe { *seq2_soa_ptr.add(k * SIMD_WIDTH8 + j) = 5 };
             }
         }
 
@@ -277,11 +369,126 @@ impl kswv {
         phase: i32,
     ) {
         let total = usize::try_from(numPairs).expect("numPairs");
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx512bw") && !disable_kswv16_avx512() {
+                KSWV_BATCH_SCRATCH.with(|cell| {
+                    let mut scratch = cell.borrow_mut();
+                    let (padded, _, _, seq1_soa, seq2_soa) = &mut *scratch;
+                    let mut idx = 0_usize;
+                    while idx + SIMD_WIDTH16 <= total {
+                        let lanes = &pairArray[idx..idx + SIMD_WIDTH16];
+                        self.kswv_batch16_chunk_avx512(
+                            lanes, seqBufRef, seqBufQer, seq1_soa, seq2_soa, aln, idx, numPairs,
+                            phase,
+                        );
+                        idx += SIMD_WIDTH16;
+                    }
+                    if idx < total {
+                        padded.clear();
+                        padded.resize(SIMD_WIDTH16, SeqPair::default());
+                        let tail = &pairArray[idx..total];
+                        padded[..tail.len()].copy_from_slice(tail);
+                        for (lane, p) in padded[tail.len()..].iter_mut().enumerate() {
+                            let id = idx + tail.len() + lane;
+                            p.id = i32::try_from(id).expect("pad id");
+                            p.regid = p.id;
+                        }
+                        self.kswv_batch16_chunk_avx512(
+                            &padded[..SIMD_WIDTH16],
+                            seqBufRef,
+                            seqBufQer,
+                            seq1_soa,
+                            seq2_soa,
+                            aln,
+                            idx,
+                            numPairs,
+                            phase,
+                        );
+                    }
+                });
+                return;
+            }
+        }
         let mut mat = [0_i8; 25];
         self.bwa_fill_scmat(&mut mat);
         let q_max = ksw_qmax(self.m, &mat);
         for chunk in pairArray[..total].chunks(SIMD_WIDTH16) {
             self.kswv_scalar_lanes_i16(chunk, seqBufRef, seqBufQer, aln, &mat, q_max, phase);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn kswv_batch16_chunk_avx512(
+        &self,
+        lanes: &[SeqPair],
+        seqBufRef: &[u8],
+        seqBufQer: &[u8],
+        seq1_soa: &mut Vec<i16>,
+        seq2_soa: &mut Vec<i16>,
+        aln: &mut [kswr_t],
+        offset: usize,
+        numPairs: i32,
+        phase: i32,
+    ) {
+        debug_assert_eq!(lanes.len(), SIMD_WIDTH16);
+        let mut max_len1 = 0_i32;
+        let mut max_len2 = 0_i32;
+
+        for &sp in lanes {
+            max_len1 = max_len1.max(sp.len1);
+            let quanta = (sp.len2 + 8 - 1) / 8 * 8;
+            max_len2 = max_len2.max(quanta);
+        }
+        let rows1 = usize::try_from(max_len1 + 1).expect("max_len1");
+        let rows2 = usize::try_from(max_len2 + 1).expect("max_len2");
+        seq1_soa.clear();
+        seq1_soa.resize(rows1 * SIMD_WIDTH16, -1);
+        seq2_soa.clear();
+        seq2_soa.resize(rows2 * SIMD_WIDTH16, -1);
+
+        // seq1_soa and seq2_soa were already filled with -1 by the resize() above. The trailing
+        // pad loops only need to write the non-(-1) sentinels: 26 in the [len2, quanta) range
+        // for seq2. The k in [len1, max_len1] and k in [quanta, max_len2] loops are redundant.
+        for (lane, sp) in lanes.iter().copied().enumerate() {
+            let seq1 = &seqBufRef[usize::try_from(sp.idr).expect("idr")..];
+            let seq1_ptr = seq1_soa.as_mut_ptr();
+            for k in 0..usize::try_from(sp.len1).expect("len1") {
+                let base = unsafe { *seq1.get_unchecked(k) };
+                unsafe {
+                    *seq1_ptr.add(k * SIMD_WIDTH16 + lane) =
+                        if base == 4 { 15 } else { i16::from(base) };
+                }
+            }
+
+            let seq2 = &seqBufQer[usize::try_from(sp.idq).expect("idq")..];
+            let seq2_ptr = seq2_soa.as_mut_ptr();
+            let quanta = usize::try_from((sp.len2 + 8 - 1) / 8 * 8).expect("quanta");
+            for k in 0..usize::try_from(sp.len2).expect("len2") {
+                let base = unsafe { *seq2.get_unchecked(k) };
+                unsafe {
+                    *seq2_ptr.add(k * SIMD_WIDTH16 + lane) =
+                        if base == 4 { 16 } else { i16::from(base) };
+                }
+            }
+            for k in usize::try_from(sp.len2).expect("len2")..quanta {
+                unsafe { *seq2_ptr.add(k * SIMD_WIDTH16 + lane) = 26 };
+            }
+        }
+
+        unsafe {
+            self.kswv512_16_avx512(
+                seq1_soa,
+                seq2_soa,
+                i16::try_from(max_len1).expect("max_len1"),
+                i16::try_from(max_len2).expect("max_len2"),
+                lanes,
+                aln,
+                i32::try_from(offset).expect("offset"),
+                numPairs,
+                phase,
+            );
         }
     }
 
@@ -296,29 +503,34 @@ impl kswv {
         q_max: u8,
         phase: i32,
     ) {
-        for &sp in lanes {
-            let ind = usize::try_from(sp.regid).expect("regid");
-            let target_start = usize::try_from(sp.idr).expect("idr");
-            let query_start = usize::try_from(sp.idq).expect("idq");
-            let target_len = usize::try_from(sp.len1).expect("len1");
-            let query_len = usize::try_from(sp.len2).expect("len2");
-            let target = &seqBufRef[target_start..target_start + target_len];
-            let query = &seqBufQer[query_start..query_start + query_len];
-            let ks = ksw_i16_slices(
-                query, self.m, mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
-                self.e_ins, sp.h0,
-            );
-            if phase != 0 {
-                if aln[ind].score == ks.score {
-                    aln[ind].tb = aln[ind].te - ks.te;
-                    aln[ind].qb = aln[ind].qe - ks.qe;
+        unsafe {
+            for &sp in lanes {
+                let ind = usize::try_from(sp.regid).expect("regid");
+                let target_start = usize::try_from(sp.idr).expect("idr");
+                let query_start = usize::try_from(sp.idq).expect("idq");
+                let target_len = usize::try_from(sp.len1).expect("len1");
+                let query_len = usize::try_from(sp.len2).expect("len2");
+                let target =
+                    std::slice::from_raw_parts(seqBufRef.as_ptr().add(target_start), target_len);
+                let query =
+                    std::slice::from_raw_parts(seqBufQer.as_ptr().add(query_start), query_len);
+                let ks = ksw_i16_slices(
+                    query, self.m, mat, q_max, sp.len1, target, self.o_del, self.e_del, self.o_ins,
+                    self.e_ins, sp.h0,
+                );
+                let a = aln.get_unchecked_mut(ind);
+                if phase != 0 {
+                    if a.score == ks.score {
+                        a.tb = a.te - ks.te;
+                        a.qb = a.qe - ks.qe;
+                    }
+                } else {
+                    a.score = ks.score;
+                    a.te = ks.te;
+                    a.qe = ks.qe;
+                    a.score2 = ks.score2;
+                    a.te2 = ks.te2;
                 }
-            } else {
-                aln[ind].score = ks.score;
-                aln[ind].te = ks.te;
-                aln[ind].qe = ks.qe;
-                aln[ind].score2 = ks.score2;
-                aln[ind].te2 = ks.te2;
             }
         }
     }
@@ -427,6 +639,307 @@ impl kswv {
         1
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bw")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn kswv512_16_avx512(
+        &self,
+        seq1_soa: &[i16],
+        seq2_soa: &[i16],
+        nrow: i16,
+        ncol: i16,
+        p: &[SeqPair],
+        aln: &mut [kswr_t],
+        po_ind: i32,
+        numPairs: i32,
+        phase: i32,
+    ) -> i32 {
+        KSWV16_AVX_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            let (h0, h1, f_buf, row_max) = &mut *scratch;
+            unsafe {
+                self.kswv512_16_avx512_impl(
+                    seq1_soa, seq2_soa, nrow, ncol, p, aln, po_ind, numPairs, phase, h0, h1, f_buf,
+                    row_max,
+                )
+            }
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bw")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn kswv512_16_avx512_impl(
+        &self,
+        seq1_soa: &[i16],
+        seq2_soa: &[i16],
+        nrow: i16,
+        ncol: i16,
+        p: &[SeqPair],
+        aln: &mut [kswr_t],
+        po_ind: i32,
+        numPairs: i32,
+        phase: i32,
+        h0: &mut Vec<i16>,
+        h1: &mut Vec<i16>,
+        f_buf: &mut Vec<i16>,
+        row_max: &mut Vec<i16>,
+    ) -> i32 {
+        #[inline]
+        unsafe fn load_i16x32(ptr: *const i16) -> __m512i {
+            unsafe { _mm512_loadu_si512(ptr as *const __m512i) }
+        }
+        #[inline]
+        unsafe fn store_i16x32(ptr: *mut i16, v: __m512i) {
+            unsafe { _mm512_storeu_si512(ptr as *mut __m512i, v) }
+        }
+        #[inline]
+        unsafe fn cmpge_epi16_mask(a: __m512i, b: __m512i) -> u32 {
+            unsafe { _mm512_cmpgt_epi16_mask(a, b) | _mm512_cmpeq_epi16_mask(a, b) }
+        }
+
+        let nrow_us = usize::try_from(nrow.max(0)).expect("nrow");
+        let ncol_us = usize::try_from(ncol.max(0)).expect("ncol");
+        let dp_len = (ncol_us + 1) * SIMD_WIDTH16;
+        h0.clear();
+        h0.resize(dp_len, 0);
+        if h1.len() < dp_len {
+            h1.resize(dp_len, 0);
+        } else {
+            h1.truncate(dp_len);
+        }
+        f_buf.clear();
+        f_buf.resize(dp_len, 0);
+        row_max.clear();
+        row_max.resize(nrow_us.max(1) * SIMD_WIDTH16, -1);
+
+        let zero = unsafe { _mm512_setzero_si512() };
+        let one = unsafe { _mm512_set1_epi16(1) };
+        let minus1 = unsafe { _mm512_set1_epi16(-1) };
+        let e_del = unsafe { _mm512_set1_epi16(self.e_del as i16) };
+        let oe_del = unsafe { _mm512_set1_epi16((self.o_del + self.e_del) as i16) };
+        let e_ins = unsafe { _mm512_set1_epi16(self.e_ins as i16) };
+        let oe_ins = unsafe { _mm512_set1_epi16((self.o_ins + self.e_ins) as i16) };
+
+        let mut perm = [0_i16; SIMD_WIDTH16];
+        perm[0] = i16::from(self.w_match);
+        perm[1] = i16::from(self.w_mismatch);
+        perm[2] = i16::from(self.w_mismatch);
+        perm[3] = i16::from(self.w_mismatch);
+        for item in &mut perm[12..16] {
+            *item = i16::from(self.w_ambig);
+        }
+        for item in &mut perm[16..20] {
+            *item = i16::from(self.w_ambig);
+        }
+        perm[31] = i16::from(self.w_ambig);
+        let perm_v = unsafe { load_i16x32(perm.as_ptr()) };
+
+        let mut minsc = [0_i16; SIMD_WIDTH16];
+        let mut endsc = [0_i16; SIMD_WIDTH16];
+        let mut minsc_mask_a = 0_u32;
+        let mut endsc_mask_a = 0_u32;
+        for lane in 0..SIMD_WIDTH16 {
+            let xtra = p[lane].h0;
+            let val = if xtra & crate::generated::ksw_h::KSW_XSUBO != 0 {
+                xtra & 0xffff
+            } else {
+                0x10000
+            };
+            if val <= i32::from(i16::MAX) {
+                minsc[lane] = val as i16;
+                minsc_mask_a |= 1_u32 << lane;
+            }
+            let val = if xtra & crate::generated::ksw_h::KSW_XSTOP != 0 {
+                xtra & 0xffff
+            } else {
+                0x10000
+            };
+            if val <= i32::from(i16::MAX) {
+                endsc[lane] = val as i16;
+                endsc_mask_a |= 1_u32 << lane;
+            }
+        }
+        let minsc_v = unsafe { load_i16x32(minsc.as_ptr()) };
+        let endsc_v = unsafe { load_i16x32(endsc.as_ptr()) };
+
+        let mut gmax = zero;
+        let mut te_v = unsafe { _mm512_set1_epi16(-1) };
+        let mut qe_v = zero;
+        let mut exit0 = u32::MAX;
+        let mut max_v: __m512i;
+        let mut imax_v;
+        let mut pimax_v = zero;
+        let mut mask_v = 0_u32;
+        let mut minsc_mask = 0_u32;
+        let mut i_v = zero;
+        let mut limit = nrow_us;
+        let mut rows_done = 0_usize;
+
+        for i in 0..nrow_us {
+            let s1 = unsafe { load_i16x32(seq1_soa.as_ptr().add(i * SIMD_WIDTH16)) };
+            let mut e11 = zero;
+            imax_v = zero;
+            let mut iqe_v = unsafe { _mm512_set1_epi16(-1) };
+            let mut l_v = zero;
+            for j in 0..ncol_us {
+                let h00 = unsafe { load_i16x32(h0.as_ptr().add(j * SIMD_WIDTH16)) };
+                let s2 = unsafe { load_i16x32(seq2_soa.as_ptr().add(j * SIMD_WIDTH16)) };
+                let f11 = unsafe { load_i16x32(f_buf.as_ptr().add((j + 1) * SIMD_WIDTH16)) };
+                let xor_v = unsafe { _mm512_xor_si512(s1, s2) };
+                let sbt = unsafe { _mm512_permutexvar_epi16(xor_v, perm_v) };
+                let mut m11 = unsafe { _mm512_add_epi16(h00, sbt) };
+                let or_v = unsafe { _mm512_or_si512(s1, s2) };
+                let invalid = unsafe { _mm512_movepi8_mask(or_v) };
+                m11 = unsafe { _mm512_mask_blend_epi8(invalid, m11, zero) };
+                let mut h11 = unsafe { _mm512_max_epi16(m11, e11) };
+                h11 = unsafe { _mm512_max_epi16(h11, f11) };
+                h11 = unsafe { _mm512_max_epi16(h11, zero) };
+                let cmp0 = unsafe { _mm512_cmpgt_epi16_mask(h11, imax_v) };
+                imax_v = unsafe { _mm512_max_epi16(imax_v, h11) };
+                iqe_v = unsafe { _mm512_mask_blend_epi16(cmp0, iqe_v, l_v) };
+                let gap_e = unsafe { _mm512_sub_epi16(h11, oe_ins) };
+                e11 = unsafe { _mm512_sub_epi16(e11, e_ins) };
+                e11 = unsafe { _mm512_max_epi16(gap_e, e11) };
+                let gap_d = unsafe { _mm512_sub_epi16(h11, oe_del) };
+                let mut f21 = unsafe { _mm512_sub_epi16(f11, e_del) };
+                f21 = unsafe { _mm512_max_epi16(gap_d, f21) };
+                unsafe { store_i16x32(h1.as_mut_ptr().add((j + 1) * SIMD_WIDTH16), h11) };
+                unsafe { store_i16x32(f_buf.as_mut_ptr().add((j + 1) * SIMD_WIDTH16), f21) };
+                l_v = unsafe { _mm512_add_epi16(l_v, one) };
+            }
+
+            if i > 0 {
+                let mut msk = unsafe { _mm512_cmpgt_epi16_mask(imax_v, pimax_v) } | mask_v;
+                // Combined: stored = (!msk && minsc_mask && exit0) ? pimax : minus1. Saves 2
+                // blends vs the original 3-blend chain. Note: minus1 is the "fill" sentinel here
+                // (vs zero in the u8 wrapper).
+                let keep = !msk & minsc_mask & exit0;
+                let stored = unsafe { _mm512_mask_blend_epi16(keep, minus1, pimax_v) };
+                unsafe { store_i16x32(row_max.as_mut_ptr().add((i - 1) * SIMD_WIDTH16), stored) };
+                msk &= u32::MAX;
+                mask_v = !msk;
+            }
+            pimax_v = imax_v;
+            minsc_mask = unsafe { cmpge_epi16_mask(imax_v, minsc_v) } & minsc_mask_a;
+
+            let cmp0 = unsafe { _mm512_cmpgt_epi16_mask(imax_v, gmax) } & exit0;
+            gmax = unsafe { _mm512_mask_blend_epi16(cmp0, gmax, imax_v) };
+            te_v = unsafe { _mm512_mask_blend_epi16(cmp0, te_v, i_v) };
+            qe_v = unsafe { _mm512_mask_blend_epi16(cmp0, qe_v, iqe_v) };
+            let stop_mask = unsafe { cmpge_epi16_mask(gmax, endsc_v) } & endsc_mask_a;
+            exit0 &= !stop_mask;
+            rows_done = i + 1;
+            if exit0 == 0 {
+                limit = i;
+                break;
+            }
+            std::mem::swap(h0, h1);
+            i_v = unsafe { _mm512_add_epi16(i_v, one) };
+        }
+
+        if rows_done > 0 {
+            // Combined: stored = (!mask_v && minsc_mask && exit0) ? pimax : minus1. Saves 2 blends.
+            let keep = !mask_v & minsc_mask & exit0;
+            let stored = unsafe { _mm512_mask_blend_epi16(keep, minus1, pimax_v) };
+            unsafe {
+                store_i16x32(
+                    row_max.as_mut_ptr().add((rows_done - 1) * SIMD_WIDTH16),
+                    stored,
+                )
+            };
+        }
+
+        let mut score = [0_i16; SIMD_WIDTH16];
+        let mut te = [0_i16; SIMD_WIDTH16];
+        let mut qe = [0_i16; SIMD_WIDTH16];
+        unsafe {
+            store_i16x32(score.as_mut_ptr(), gmax);
+            store_i16x32(te.as_mut_ptr(), te_v);
+            store_i16x32(qe.as_mut_ptr(), qe_v);
+        }
+
+        for lane in 0..SIMD_WIDTH16 {
+            if po_ind + lane as i32 >= numPairs {
+                break;
+            }
+            let ind = usize::try_from(p[lane].regid).expect("regid");
+            if phase != 0 {
+                if aln[ind].score == i32::from(score[lane]) {
+                    aln[ind].tb = aln[ind].te - i32::from(te[lane]);
+                    aln[ind].qb = aln[ind].qe - i32::from(qe[lane]);
+                }
+            } else {
+                aln[ind].score = i32::from(score[lane]);
+                aln[ind].te = i32::from(te[lane]);
+                aln[ind].qe = i32::from(qe[lane]);
+            }
+        }
+        if phase != 0 {
+            return 1;
+        }
+
+        let qmax = self.g_qmax.max(1);
+        let mut low = [0_i16; SIMD_WIDTH16];
+        let mut high = [0_i16; SIMD_WIDTH16];
+        let mut maxl = 0_i32;
+        let mut minh = nrow_us as i32;
+        for lane in 0..SIMD_WIDTH16 {
+            let val = (i32::from(score[lane]) + qmax - 1) / qmax;
+            let lo = i32::from(te[lane]) - val;
+            let hi = i32::from(te[lane]) + val;
+            low[lane] = lo as i16;
+            high[lane] = hi as i16;
+            maxl = maxl.max(lo);
+            minh = minh.min(hi);
+        }
+        max_v = unsafe { _mm512_set1_epi16(-1) };
+        te_v = unsafe { _mm512_set1_epi16(-1) };
+        let low_v = unsafe { load_i16x32(low.as_ptr()) };
+        let high_v = unsafe { load_i16x32(high.as_ptr()) };
+
+        for row in 0..usize::try_from(maxl.max(0)).expect("maxl") {
+            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let rmax = unsafe { load_i16x32(row_max.as_ptr().add(row * SIMD_WIDTH16)) };
+            let mask1 = unsafe { _mm512_cmpgt_epi16_mask(low_v, row_i) };
+            let mask2 = unsafe { _mm512_cmpgt_epi16_mask(rmax, max_v) } & mask1;
+            max_v = unsafe { _mm512_mask_blend_epi16(mask2, max_v, rmax) };
+            te_v = unsafe { _mm512_mask_blend_epi16(mask2, te_v, row_i) };
+        }
+
+        let mut rlen = [0_i16; SIMD_WIDTH16];
+        for lane in 0..SIMD_WIDTH16 {
+            rlen[lane] = p[lane].len1 as i16;
+        }
+        let rlen_v = unsafe { load_i16x32(rlen.as_ptr()) };
+        let start = (minh + 1).max(0) as usize;
+        for row in start..limit {
+            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let rmax = unsafe { load_i16x32(row_max.as_ptr().add(row * SIMD_WIDTH16)) };
+            let mask1 = unsafe { _mm512_cmpgt_epi16_mask(row_i, high_v) };
+            let mut mask2 = unsafe { _mm512_cmpgt_epi16_mask(rmax, max_v) } & mask1;
+            mask2 &= unsafe { _mm512_cmpgt_epi16_mask(rlen_v, row_i) };
+            max_v = unsafe { _mm512_mask_blend_epi16(mask2, max_v, rmax) };
+            te_v = unsafe { _mm512_mask_blend_epi16(mask2, te_v, row_i) };
+        }
+
+        let mut score2 = [0_i16; SIMD_WIDTH16];
+        let mut te2 = [0_i16; SIMD_WIDTH16];
+        unsafe {
+            store_i16x32(score2.as_mut_ptr(), max_v);
+            store_i16x32(te2.as_mut_ptr(), te_v);
+        }
+        for lane in 0..SIMD_WIDTH16 {
+            if po_ind + lane as i32 >= numPairs {
+                break;
+            }
+            let ind = usize::try_from(p[lane].regid).expect("regid");
+            aln[ind].score2 = i32::from(score2[lane]);
+            aln[ind].te2 = i32::from(te2[lane]);
+        }
+        1
+    }
+
     #[doc = "Original function: kswv::kswv512_u8:371"]
     #[inline]
     pub fn kswv512_u8(
@@ -442,6 +955,16 @@ impl kswv {
         numPairs: i32,
         phase: i32,
     ) -> i32 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::is_x86_feature_detected!("avx512bw") && !disable_kswv8_avx512() {
+                return unsafe {
+                    self.kswv512_u8_avx512(
+                        seq1SoA, seq2SoA, _nrow, _ncol, p, aln, po_ind, numPairs, phase,
+                    )
+                };
+            }
+        }
         let mut mat = [0_i8; 25];
         self.bwa_fill_scmat(&mut mat);
         let q_max = ksw_qmax(self.m, &mat);
@@ -486,6 +1009,361 @@ impl kswv {
                 aln[ind].qe = ks.qe;
                 aln[ind].score2 = ks.score2;
                 aln[ind].te2 = ks.te2;
+            }
+        }
+        1
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bw")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn kswv512_u8_avx512(
+        &self,
+        seq1_soa: &[u8],
+        seq2_soa: &[u8],
+        nrow: i16,
+        ncol: i16,
+        p: &[SeqPair],
+        aln: &mut [kswr_t],
+        po_ind: i32,
+        numPairs: i32,
+        phase: i32,
+    ) -> i32 {
+        KSWV8_AVX_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            let (h0, h1, f_buf, row_max) = &mut *scratch;
+            unsafe {
+                self.kswv512_u8_avx512_impl(
+                    seq1_soa, seq2_soa, nrow, ncol, p, aln, po_ind, numPairs, phase, h0, h1, f_buf,
+                    row_max,
+                )
+            }
+        })
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx512bw")]
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn kswv512_u8_avx512_impl(
+        &self,
+        seq1_soa: &[u8],
+        seq2_soa: &[u8],
+        nrow: i16,
+        ncol: i16,
+        p: &[SeqPair],
+        aln: &mut [kswr_t],
+        po_ind: i32,
+        numPairs: i32,
+        phase: i32,
+        h0: &mut Vec<u8>,
+        h1: &mut Vec<u8>,
+        f_buf: &mut Vec<u8>,
+        row_max: &mut Vec<u8>,
+    ) -> i32 {
+        #[inline]
+        unsafe fn load_u8x64(ptr: *const u8) -> __m512i {
+            unsafe { _mm512_loadu_si512(ptr as *const __m512i) }
+        }
+        #[inline]
+        unsafe fn store_u8x64(ptr: *mut u8, v: __m512i) {
+            unsafe { _mm512_storeu_si512(ptr as *mut __m512i, v) }
+        }
+        #[inline]
+        unsafe fn load_i16x32(ptr: *const i16) -> __m512i {
+            unsafe { _mm512_loadu_si512(ptr as *const __m512i) }
+        }
+        #[inline]
+        unsafe fn cmpge_epu8_mask(a: __m512i, b: __m512i) -> u64 {
+            unsafe { _mm512_cmpgt_epu8_mask(a, b) | _mm512_cmpeq_epu8_mask(a, b) }
+        }
+        #[inline]
+        unsafe fn cmpgt_epi16_mask(a: __m512i, b: __m512i) -> u32 {
+            unsafe { _mm512_cmpgt_epi16_mask(a, b) }
+        }
+
+        let nrow_us = usize::try_from(nrow.max(0)).expect("nrow");
+        let ncol_us = usize::try_from(ncol.max(0)).expect("ncol");
+        let dp_len = (ncol_us + 1) * SIMD_WIDTH8;
+        h0.clear();
+        h0.resize(dp_len, 0);
+        if h1.len() < dp_len {
+            h1.resize(dp_len, 0);
+        } else {
+            h1.truncate(dp_len);
+            h1.fill(0);
+        }
+        f_buf.clear();
+        f_buf.resize(dp_len, 0);
+        row_max.clear();
+        row_max.resize(nrow_us.max(1) * SIMD_WIDTH8, 0);
+
+        let zero = unsafe { _mm512_setzero_si512() };
+        let one = unsafe { _mm512_set1_epi8(1) };
+        let mut shift = self.w_match.min(self.w_mismatch).min(self.w_ambig) as u8;
+        let mdiff = self.w_match.max(self.w_mismatch).max(self.w_ambig) as u8;
+        let qmax = mdiff;
+        shift = 0_u8.wrapping_sub(shift);
+        let sft = unsafe { _mm512_set1_epi8(shift as i8) };
+        let cmax = unsafe { _mm512_set1_epi8(-1) };
+
+        let mut perm = [0_i8; SIMD_WIDTH8];
+        perm[0] = self.w_match;
+        perm[1] = self.w_mismatch;
+        perm[2] = self.w_mismatch;
+        perm[3] = self.w_mismatch;
+        for item in &mut perm[4..13] {
+            *item = self.w_ambig;
+        }
+        for item in perm.iter_mut().take(16) {
+            *item = item.wrapping_add(shift as i8);
+        }
+        for idx in 16..SIMD_WIDTH8 {
+            perm[idx] = perm[(idx - 16) & 15];
+        }
+        let perm_v = unsafe { load_u8x64(perm.as_ptr() as *const u8) };
+
+        let mut minsc = [0_u8; SIMD_WIDTH8];
+        let mut endsc = [0_u8; SIMD_WIDTH8];
+        let mut minsc_mask_a = 0_u64;
+        let mut endsc_mask_a = 0_u64;
+        for lane in 0..SIMD_WIDTH8 {
+            let xtra = p[lane].h0;
+            let val = if xtra & crate::generated::ksw_h::KSW_XSUBO != 0 {
+                xtra & 0xffff
+            } else {
+                0x10000
+            };
+            if val <= u8::MAX as i32 {
+                minsc[lane] = val as u8;
+                minsc_mask_a |= 1_u64 << lane;
+            }
+            let val = if xtra & crate::generated::ksw_h::KSW_XSTOP != 0 {
+                xtra & 0xffff
+            } else {
+                0x10000
+            };
+            if val <= u8::MAX as i32 {
+                endsc[lane] = val as u8;
+                endsc_mask_a |= 1_u64 << lane;
+            }
+        }
+        let minsc_v = unsafe { load_u8x64(minsc.as_ptr()) };
+        let endsc_v = unsafe { load_u8x64(endsc.as_ptr()) };
+        let e_del = unsafe { _mm512_set1_epi8(self.e_del as i8) };
+        let oe_del = unsafe { _mm512_set1_epi8((self.o_del + self.e_del) as i8) };
+        let e_ins = unsafe { _mm512_set1_epi8(self.e_ins as i8) };
+        let oe_ins = unsafe { _mm512_set1_epi8((self.o_ins + self.e_ins) as i8) };
+        let five = unsafe { _mm512_set1_epi8(5) };
+
+        let mut gmax = zero;
+        let mut te_lo = unsafe { _mm512_set1_epi16(-1) };
+        let mut te_hi = unsafe { _mm512_set1_epi16(-1) };
+        let mut qe_v = zero;
+        let mut exit0 = u64::MAX;
+        let mut pimax = zero;
+        let mut mask = 0_u64;
+        let mut minsc_mask = 0_u64;
+        let mut limit = nrow_us;
+        let mut rows_done = 0_usize;
+
+        for i in 0..nrow_us {
+            let s1 = unsafe { load_u8x64(seq1_soa.as_ptr().add(i * SIMD_WIDTH8)) };
+            let mut e11 = zero;
+            let mut imax = zero;
+            let mut iqe = unsafe { _mm512_set1_epi8(-1) };
+            let mut l_v = zero;
+            for j in 0..ncol_us {
+                let h00 = unsafe { load_u8x64(h0.as_ptr().add(j * SIMD_WIDTH8)) };
+                let s2 = unsafe { load_u8x64(seq2_soa.as_ptr().add(j * SIMD_WIDTH8)) };
+                let f11 = unsafe { load_u8x64(f_buf.as_ptr().add((j + 1) * SIMD_WIDTH8)) };
+                let xor_v = unsafe { _mm512_xor_si512(s1, s2) };
+                let mut sbt = unsafe { _mm512_shuffle_epi8(perm_v, xor_v) };
+                let cmpq = unsafe { _mm512_cmpeq_epu8_mask(s2, five) };
+                sbt = unsafe { _mm512_mask_blend_epi8(cmpq, sbt, sft) };
+                let or_v = unsafe { _mm512_or_si512(s1, s2) };
+                let invalid = unsafe { _mm512_movepi8_mask(or_v) };
+                let mut m11 = unsafe { _mm512_adds_epu8(h00, sbt) };
+                m11 = unsafe { _mm512_mask_blend_epi8(invalid, m11, zero) };
+                m11 = unsafe { _mm512_subs_epu8(m11, sft) };
+                let mut h11 = unsafe { _mm512_max_epu8(m11, e11) };
+                h11 = unsafe { _mm512_max_epu8(h11, f11) };
+                let cmp0 = unsafe { _mm512_cmpgt_epu8_mask(h11, imax) };
+                imax = unsafe { _mm512_max_epu8(imax, h11) };
+                iqe = unsafe { _mm512_mask_blend_epi8(cmp0, iqe, l_v) };
+                let gap_e = unsafe { _mm512_subs_epu8(h11, oe_ins) };
+                e11 = unsafe { _mm512_subs_epu8(e11, e_ins) };
+                e11 = unsafe { _mm512_max_epu8(gap_e, e11) };
+                let gap_d = unsafe { _mm512_subs_epu8(h11, oe_del) };
+                let mut f21 = unsafe { _mm512_subs_epu8(f11, e_del) };
+                f21 = unsafe { _mm512_max_epu8(gap_d, f21) };
+                unsafe { store_u8x64(h1.as_mut_ptr().add((j + 1) * SIMD_WIDTH8), h11) };
+                unsafe { store_u8x64(f_buf.as_mut_ptr().add((j + 1) * SIMD_WIDTH8), f21) };
+                l_v = unsafe { _mm512_add_epi8(l_v, one) };
+            }
+
+            if i > 0 {
+                let msk = unsafe { _mm512_cmpgt_epu8_mask(imax, pimax) } | mask;
+                // Combined: pimax_out = (!msk && minsc_mask && exit0) ? pimax : 0. Saves 2 blends
+                // vs the original 3-blend chain.
+                let keep = !msk & minsc_mask & exit0;
+                let stored = unsafe { _mm512_mask_blend_epi8(keep, zero, pimax) };
+                unsafe { store_u8x64(row_max.as_mut_ptr().add((i - 1) * SIMD_WIDTH8), stored) };
+                mask = !msk;
+            }
+            pimax = imax;
+            minsc_mask = unsafe { cmpge_epu8_mask(imax, minsc_v) } & minsc_mask_a;
+
+            let cmp0 = unsafe { _mm512_cmpgt_epu8_mask(imax, gmax) } & exit0;
+            gmax = unsafe { _mm512_mask_blend_epi8(cmp0, gmax, imax) };
+            let i_v = unsafe { _mm512_set1_epi16(i as i16) };
+            te_lo = unsafe { _mm512_mask_blend_epi16(cmp0 as u32, te_lo, i_v) };
+            te_hi = unsafe { _mm512_mask_blend_epi16((cmp0 >> SIMD_WIDTH16) as u32, te_hi, i_v) };
+            qe_v = unsafe { _mm512_mask_blend_epi8(cmp0, qe_v, iqe) };
+
+            let stop_mask = unsafe { cmpge_epu8_mask(gmax, endsc_v) } & endsc_mask_a;
+            let left = unsafe { _mm512_adds_epu8(gmax, sft) };
+            let sat_mask = unsafe { cmpge_epu8_mask(left, cmax) };
+            exit0 &= !(stop_mask | sat_mask);
+            rows_done = i + 1;
+            if exit0 == 0 {
+                limit = i;
+                break;
+            }
+            std::mem::swap(h0, h1);
+        }
+
+        if rows_done > 0 {
+            // Combined: stored = (!mask && minsc_mask && exit0) ? pimax : 0. Saves 2 blends.
+            let keep = !mask & minsc_mask & exit0;
+            let stored = unsafe { _mm512_mask_blend_epi8(keep, zero, pimax) };
+            unsafe {
+                store_u8x64(
+                    row_max.as_mut_ptr().add((rows_done - 1) * SIMD_WIDTH8),
+                    stored,
+                )
+            };
+        }
+
+        let mut score = [0_u8; SIMD_WIDTH8];
+        let mut te = [0_i16; SIMD_WIDTH8];
+        let mut qe = [0_u8; SIMD_WIDTH8];
+        unsafe {
+            store_u8x64(score.as_mut_ptr(), gmax);
+            _mm512_storeu_si512(te.as_mut_ptr() as *mut __m512i, te_lo);
+            _mm512_storeu_si512(te.as_mut_ptr().add(SIMD_WIDTH16) as *mut __m512i, te_hi);
+            store_u8x64(qe.as_mut_ptr(), qe_v);
+        }
+
+        let mut live = 0_i32;
+        for lane in 0..SIMD_WIDTH8 {
+            if po_ind + lane as i32 >= numPairs {
+                break;
+            }
+            let ind = usize::try_from(p[lane].regid).expect("regid");
+            if phase != 0 {
+                if aln[ind].score == i32::from(score[lane]) {
+                    aln[ind].tb = aln[ind].te - i32::from(te[lane]);
+                    aln[ind].qb = aln[ind].qe - i32::from(qe[lane]);
+                }
+            } else {
+                aln[ind].score = i32::from(score[lane]);
+                aln[ind].te = i32::from(te[lane]);
+                aln[ind].qe = i32::from(qe[lane]);
+                if score[lane] != u8::MAX {
+                    qe[lane] = 1;
+                    live += 1;
+                } else {
+                    qe[lane] = 0;
+                }
+            }
+        }
+        if phase != 0 || live == 0 {
+            return 1;
+        }
+
+        let qmax = i32::from(qmax).max(1);
+        let mut low = [0_i16; SIMD_WIDTH8];
+        let mut high = [0_i16; SIMD_WIDTH8];
+        let mut maxl = 0_i32;
+        let mut minh = nrow_us as i32;
+        for lane in 0..SIMD_WIDTH8 {
+            let val = (i32::from(score[lane]) + qmax - 1) / qmax;
+            low[lane] = (i32::from(te[lane]) - val) as i16;
+            high[lane] = (i32::from(te[lane]) + val) as i16;
+            if qe[lane] != 0 {
+                maxl = maxl.max(i32::from(low[lane]));
+                minh = minh.min(i32::from(high[lane]));
+            }
+        }
+
+        let mut max_v = zero;
+        te_lo = unsafe { _mm512_set1_epi16(-1) };
+        te_hi = unsafe { _mm512_set1_epi16(-1) };
+        let low_lo = unsafe { load_i16x32(low.as_ptr()) };
+        let high_lo = unsafe { load_i16x32(high.as_ptr()) };
+        let low_hi = unsafe { load_i16x32(low.as_ptr().add(SIMD_WIDTH16)) };
+        let high_hi = unsafe { load_i16x32(high.as_ptr().add(SIMD_WIDTH16)) };
+
+        for row in 0..usize::try_from(maxl.max(0)).expect("maxl") {
+            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let rmax = unsafe { load_u8x64(row_max.as_ptr().add(row * SIMD_WIDTH8)) };
+            let mask_lo = unsafe { cmpgt_epi16_mask(low_lo, row_i) };
+            let mask_hi = unsafe { cmpgt_epi16_mask(low_hi, row_i) };
+            let mut mask2 = unsafe { _mm512_cmpgt_epu8_mask(rmax, max_v) };
+            let mask1 = u64::from(mask_lo) | (u64::from(mask_hi) << SIMD_WIDTH16);
+            mask2 &= mask1;
+            max_v = unsafe { _mm512_mask_blend_epi8(mask2, max_v, rmax) };
+            te_lo = unsafe { _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i) };
+            te_hi =
+                unsafe { _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i) };
+        }
+
+        let mut rlen = [0_i16; SIMD_WIDTH8];
+        for lane in 0..SIMD_WIDTH8 {
+            rlen[lane] = p[lane].len1 as i16;
+        }
+        let rlen_lo = unsafe { load_i16x32(rlen.as_ptr()) };
+        let rlen_hi = unsafe { load_i16x32(rlen.as_ptr().add(SIMD_WIDTH16)) };
+        let start = usize::try_from((minh + 1).max(0)).expect("minh");
+        for row in start..limit {
+            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let rmax = unsafe { load_u8x64(row_max.as_ptr().add(row * SIMD_WIDTH8)) };
+            let mask_lo = unsafe { cmpgt_epi16_mask(row_i, high_lo) };
+            let mask_hi = unsafe { cmpgt_epi16_mask(row_i, high_hi) };
+            let mut mask2 = unsafe { _mm512_cmpgt_epu8_mask(rmax, max_v) };
+            let mask1 = u64::from(mask_lo) | (u64::from(mask_hi) << SIMD_WIDTH16);
+            let rmask_lo = unsafe { cmpgt_epi16_mask(rlen_lo, row_i) };
+            let rmask_hi = unsafe { cmpgt_epi16_mask(rlen_hi, row_i) };
+            let rmask = u64::from(rmask_lo) | (u64::from(rmask_hi) << SIMD_WIDTH16);
+            mask2 &= mask1 & rmask;
+            max_v = unsafe { _mm512_mask_blend_epi8(mask2, max_v, rmax) };
+            te_lo = unsafe { _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i) };
+            te_hi =
+                unsafe { _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i) };
+        }
+
+        let mut score2 = [0_u8; SIMD_WIDTH8];
+        let mut te2 = [0_i16; SIMD_WIDTH8];
+        unsafe {
+            store_u8x64(score2.as_mut_ptr(), max_v);
+            _mm512_storeu_si512(te2.as_mut_ptr() as *mut __m512i, te_lo);
+            _mm512_storeu_si512(te2.as_mut_ptr().add(SIMD_WIDTH16) as *mut __m512i, te_hi);
+        }
+        for lane in 0..SIMD_WIDTH8 {
+            if po_ind + lane as i32 >= numPairs {
+                break;
+            }
+            let ind = usize::try_from(p[lane].regid).expect("regid");
+            if qe[lane] != 0 {
+                aln[ind].score2 = if score2[lane] == 0 {
+                    -1
+                } else {
+                    i32::from(score2[lane])
+                };
+                aln[ind].te2 = i32::from(te2[lane]);
+            } else {
+                aln[ind].score2 = -1;
+                aln[ind].te2 = -1;
             }
         }
         1
@@ -887,6 +1765,64 @@ mod tests {
     }
 
     #[test]
+    fn getScores8_batch_wrapper_matches_scalar_lanes_on_full_and_tail_chunks() {
+        let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, Some(64), Some(64));
+        let mut pairs = Vec::new();
+        let mut seq_ref = Vec::new();
+        let mut seq_qer = Vec::new();
+        for lane in 0..(SIMD_WIDTH8 + 7) {
+            let len1 = 9 + (lane % 11) as i32;
+            let len2 = 8 + (lane % 9) as i32;
+            let idr = i32::try_from(seq_ref.len()).expect("idr");
+            let idq = i32::try_from(seq_qer.len()).expect("idq");
+            for i in 0..usize::try_from(len1).expect("len1") {
+                seq_ref.push(((i + lane) & 3) as u8);
+            }
+            for i in 0..usize::try_from(len2).expect("len2") {
+                seq_qer.push(((i + lane + usize::from(lane % 5 == 0)) & 3) as u8);
+            }
+            pairs.push(SeqPair {
+                idr,
+                idq,
+                len1,
+                len2,
+                h0: if lane % 3 == 0 { 0x10000 | 3 } else { 0x80000 },
+                regid: lane as i32,
+                ..Default::default()
+            });
+        }
+
+        let mut mat = [0_i8; 25];
+        k.bwa_fill_scmat(&mut mat);
+        let q_max = crate::generated::ksw_cpp::ksw_qmax(k.m, &mat);
+        let mut scalar_aln = vec![kswr_t::default(); pairs.len()];
+        for chunk in pairs.chunks(SIMD_WIDTH8) {
+            k.kswv_scalar_lanes_u8(chunk, &seq_ref, &seq_qer, &mut scalar_aln, &mat, q_max, 0);
+        }
+
+        let mut batch_pairs = pairs.clone();
+        let mut batch_aln = vec![kswr_t::default(); pairs.len()];
+        k.getScores8(
+            &mut batch_pairs,
+            &seq_ref,
+            &seq_qer,
+            &mut batch_aln,
+            i32::try_from(pairs.len()).expect("numPairs"),
+            1,
+            0,
+        );
+        for (lane, (batch, scalar)) in batch_aln.iter().zip(&scalar_aln).enumerate() {
+            assert_eq!(batch.score, scalar.score, "score lane {lane}");
+            assert_eq!(batch.te, scalar.te, "te lane {lane}");
+            assert_eq!(batch.qe, scalar.qe, "qe lane {lane}");
+            assert_eq!(batch.score2, scalar.score2, "score2 lane {lane}");
+            assert_eq!(batch.te2, scalar.te2, "te2 lane {lane}");
+            assert_eq!(batch.tb, scalar.tb, "tb lane {lane}");
+            assert_eq!(batch.qb, scalar.qb, "qb lane {lane}");
+        }
+    }
+
+    #[test]
     fn getScores16_matches_scalar_wrapper_outputs() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, None, None);
         let mut pairs = vec![SeqPair {
@@ -905,6 +1841,67 @@ mod tests {
         assert!(aln[0].score > 0);
         assert_eq!(aln[0].te, 3);
         assert_eq!(aln[0].qe, 3);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn getScores16_avx512_matches_scalar_lanes_on_mixed_batch() {
+        if !std::is_x86_feature_detected!("avx512bw") {
+            return;
+        }
+        let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, Some(64), Some(64));
+        let mut pairs = Vec::new();
+        let mut seq_ref = Vec::new();
+        let mut seq_qer = Vec::new();
+        for lane in 0..SIMD_WIDTH16 {
+            let len1 = 12 + (lane % 7) as i32;
+            let len2 = 10 + (lane % 5) as i32;
+            let idr = i32::try_from(seq_ref.len()).expect("idr");
+            let idq = i32::try_from(seq_qer.len()).expect("idq");
+            for i in 0..usize::try_from(len1).expect("len1") {
+                seq_ref.push(((i + lane) & 3) as u8);
+            }
+            for i in 0..usize::try_from(len2).expect("len2") {
+                seq_qer.push(((i + lane + usize::from(lane % 3 == 0)) & 3) as u8);
+            }
+            pairs.push(SeqPair {
+                idr,
+                idq,
+                len1,
+                len2,
+                h0: if lane % 4 == 0 { 0x40000 | 4 } else { 0x80000 },
+                regid: lane as i32,
+                ..Default::default()
+            });
+        }
+
+        let mut mat = [0_i8; 25];
+        k.bwa_fill_scmat(&mut mat);
+        let q_max = crate::generated::ksw_cpp::ksw_qmax(k.m, &mat);
+        let mut scalar_aln = vec![kswr_t::default(); SIMD_WIDTH16];
+        k.kswv_scalar_lanes_i16(&pairs, &seq_ref, &seq_qer, &mut scalar_aln, &mat, q_max, 0);
+
+        let mut avx_aln = vec![kswr_t::default(); SIMD_WIDTH16];
+        let mut seq1_soa = Vec::new();
+        let mut seq2_soa = Vec::new();
+        k.kswv_batch16_chunk_avx512(
+            &pairs,
+            &seq_ref,
+            &seq_qer,
+            &mut seq1_soa,
+            &mut seq2_soa,
+            &mut avx_aln,
+            0,
+            SIMD_WIDTH16 as i32,
+            0,
+        );
+        for (lane, (avx, scalar)) in avx_aln.iter().zip(&scalar_aln).enumerate() {
+            assert_eq!(avx.score, scalar.score, "score lane {lane}");
+            assert_eq!(avx.te, scalar.te, "te lane {lane}");
+            assert_eq!(avx.qe, scalar.qe, "qe lane {lane}");
+            assert_eq!(avx.score2, scalar.score2, "score2 lane {lane}");
+            assert_eq!(avx.te2, scalar.te2, "te2 lane {lane}");
+        }
     }
 
     #[test]

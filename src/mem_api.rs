@@ -129,9 +129,24 @@ impl MemAligner {
         Ok(sam)
     }
 
+    /// User-approved deviation from CCC: this library callback API exposes generated SAM
+    /// records without materializing a Vec, while leaving the translated core unchanged.
     pub fn align_pairs_into<F>(&mut self, pairs: &[MemReadPair<'_>], mut sink: F) -> Result<()>
     where
         F: FnMut(&str) -> Result<()>,
+    {
+        self.align_pairs_into_indexed(pairs, |_pair_index, line| sink(line))
+    }
+
+    /// User-approved deviation from CCC: the callback includes the input pair index so callers can
+    /// keep metadata out of QNAMEs and recover one-read-to-many-output associations explicitly.
+    pub fn align_pairs_into_indexed<F>(
+        &mut self,
+        pairs: &[MemReadPair<'_>],
+        mut sink: F,
+    ) -> Result<()>
+    where
+        F: FnMut(usize, &str) -> Result<()>,
     {
         if pairs.is_empty() {
             return Ok(());
@@ -181,7 +196,10 @@ impl MemAligner {
 
         for seq in &mut seqs {
             if let Some(line) = seq.sam.take() {
-                sink(&line.into_string())?;
+                let pair_index = usize::try_from(seq.id)
+                    .map_err(|_| format!("invalid negative read id in BWA output: {}", seq.id))?
+                    / 2;
+                sink(pair_index, &line.into_string())?;
             }
         }
         Ok(())
@@ -222,6 +240,8 @@ impl Drop for MemAligner {
     }
 }
 
+/// User-approved deviation from CCC: construct translated `bseq1_t` records from in-memory
+/// library inputs instead of the original FASTQ reader path.
 fn make_bseq(id: i32, name: &str, seq: &[u8], qual: &[u8]) -> Result<bseq1_t> {
     if seq.len() != qual.len() {
         return Err(format!(

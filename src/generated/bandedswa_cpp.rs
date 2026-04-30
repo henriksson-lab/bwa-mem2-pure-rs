@@ -552,12 +552,12 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
     h_v_extended.clear();
     h_v_extended.resize((max_l1 + 1) * SIMD_WIDTH16_AVX512, 0);
     if max_l1 > 0 {
-        init_h_v_soa_avx512_16_into(&h0_lanes_i16, max_l1, o_del, e_del, h_v_extended);
+        init_h_v_soa_avx512_16_into_simd(&h0_lanes_i16, max_l1, o_del, e_del, h_v_extended);
     }
     h_h.clear();
     h_h.resize((max_l2 + 1).max(1) * SIMD_WIDTH16_AVX512, 0);
     if max_l2 > 0 {
-        init_h_h_soa_avx512_16_into(&h0_lanes_i16, max_l2, oe_ins, e_ins, h_h);
+        init_h_h_soa_avx512_16_into_simd(&h0_lanes_i16, max_l2, oe_ins, e_ins, h_h);
     }
     f_buf.clear();
     f_buf.resize((max_l2 + 1) * SIMD_WIDTH16_AVX512, 0);
@@ -612,22 +612,19 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
     for i in 0..max_l1 {
         let i_i32 = i as i32;
         let i1_v = _mm512_set1_epi16((i + 1) as i16);
-        for lane in 0..n {
-            let lo = i_i32 as i16 - band_lane[lane];
-            if lo > head_lane[lane] {
-                head_lane[lane] = lo;
-            }
-            let hi = (i_i32 + 1) as i16 + band_lane[lane];
-            if hi < tail_lane[lane] {
-                tail_lane[lane] = hi;
-            }
-            if (len2_lanes[lane] as i16) < tail_lane[lane] {
-                tail_lane[lane] = len2_lanes[lane] as i16;
-            }
-        }
-
-        let head_v = _mm512_loadu_si512(head_lane.as_ptr() as *const __m512i);
-        let tail_v = _mm512_loadu_si512(tail_lane.as_ptr() as *const __m512i);
+        // Vectorized head/tail update across all 32 lanes:
+        //   lo = i - band; head = max(head, lo)
+        //   hi = (i+1) + band; tail = min(tail, hi); tail = min(tail, len2)
+        let i_v = _mm512_set1_epi16(i_i32 as i16);
+        let prev_head_v = _mm512_loadu_si512(head_lane.as_ptr() as *const __m512i);
+        let prev_tail_v = _mm512_loadu_si512(tail_lane.as_ptr() as *const __m512i);
+        let lo_v = _mm512_sub_epi16(i_v, band_v);
+        let hi_v = _mm512_add_epi16(i1_v, band_v);
+        let head_v = _mm512_max_epi16(prev_head_v, lo_v);
+        let tail_clipped = _mm512_min_epi16(prev_tail_v, hi_v);
+        let tail_v = _mm512_min_epi16(tail_clipped, len2_v);
+        _mm512_storeu_si512(head_lane.as_mut_ptr() as *mut __m512i, head_v);
+        _mm512_storeu_si512(tail_lane.as_mut_ptr() as *mut __m512i, tail_v);
         let head_zero_mask = _mm512_cmpeq_epi16_mask(head_v, zero_v);
 
         let mut e11_v = zero_v;
@@ -653,10 +650,11 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
         let mut max_rs_v = zero_v;
         let mut y1_v = zero_v;
 
+        // Avoid the per-iteration broadcast of j and j+1 by carrying them and incrementing.
+        let one_i16_v = _mm512_set1_epi16(1);
+        let mut j_v = _mm512_set1_epi16(beg as i16);
+        let mut j1_v = _mm512_set1_epi16((beg as i16).wrapping_add(1));
         for j in beg..end {
-            let j_i16 = j as i16;
-            let j_v = _mm512_set1_epi16(j_i16);
-            let j1_v = _mm512_set1_epi16(j_i16.wrapping_add(1));
             let s2_col_v =
                 _mm512_loadu_si512(s2_soa.as_ptr().add(j * SIMD_WIDTH16_AVX512) as *const __m512i);
             let h00_v =
@@ -669,9 +667,10 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
                 oe_ins_v, e_del_v, oe_del_v,
             );
 
-            // in_band = j >= head && j <= tail.
-            let in_band_mask: u32 =
-                _mm512_cmpge_epi16_mask(j_v, head_v) & _mm512_cmple_epi16_mask(j_v, tail_v);
+            // Compute the head>j mask once; in_band uses its negation, score_oob reuses it.
+            let head_gt_j: u32 = _mm512_cmpgt_epi16_mask(head_v, j_v);
+            // in_band = j >= head && j <= tail = !(head > j) && j <= tail.
+            let in_band_mask: u32 = !head_gt_j & _mm512_cmple_epi16_mask(j_v, tail_v);
 
             // h10_to_store = in_band ? h10_v : 0  (h10_v is the prev_h10 carry from prior column)
             // f_to_store = in_band ? f21_v : 0
@@ -691,32 +690,35 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
             h10_v = h11_v;
 
             let prev_max_rs_v = max_rs_v;
-            max_rs_v = _mm512_max_epi16(max_rs_v, h11_v);
-            let mut cmp_update = _mm512_cmpgt_epi16_mask(max_rs_v, prev_max_rs_v);
-            cmp_update |= _mm512_cmpeq_epi16_mask(max_rs_v, h11_v);
-            let score_oob_mask =
-                _mm512_cmpgt_epi16_mask(j1_v, tail_v) | _mm512_cmpgt_epi16_mask(head_v, j_v);
-            let y_candidate_v = _mm512_mask_blend_epi16(cmp_update, y1_v, j1_v);
-            y1_v = _mm512_mask_blend_epi16(score_oob_mask, y_candidate_v, y1_v);
-            max_rs_v = _mm512_mask_blend_epi16(score_oob_mask, max_rs_v, prev_max_rs_v);
+            // cmp_update == (max_rs == h11 OR max_rs > prev_max), simplified to (h11 >= prev_max)
+            // since after max(prev, h11), the value equals h11 iff h11 >= prev_max.
+            let cmp_update = _mm512_cmpge_epi16_mask(h11_v, prev_max_rs_v);
+            let score_oob_mask = _mm512_cmpgt_epi16_mask(j1_v, tail_v) | head_gt_j;
+            // Fused: max_rs_v = !score_oob ? max(prev, h11) : prev. Saves 1 SIMD op vs separate
+            // max + blend.
+            max_rs_v = _mm512_mask_max_epi16(prev_max_rs_v, !score_oob_mask, prev_max_rs_v, h11_v);
+            // y1 := j1 if (cmp_update AND in_band); old y1 otherwise.
+            let y_update_mask = cmp_update & !score_oob_mask;
+            y1_v = _mm512_mask_blend_epi16(y_update_mask, y1_v, j1_v);
 
             if j + 1 >= min_len2 {
                 let edge_mask = _mm512_cmpeq_epi16_mask(j1_v, len2_v);
                 if edge_mask != 0 {
+                    // Original 4-blend chain reduces to: gscore := max_gh when (active & edge &
+                    // !over_tail); max_ie := i1 when also h11 wins (!cmp_gh).
                     let max_gh_v = _mm512_max_epi16(gscore_v, h11_v);
                     let cmp_gh = _mm512_cmpgt_epi16_mask(gscore_v, h11_v);
-                    let mut tmp_ie_v = _mm512_mask_blend_epi16(cmp_gh, i1_v, max_ie_v);
-                    tmp_ie_v = _mm512_mask_blend_epi16(edge_mask, max_ie_v, tmp_ie_v);
                     let mex0 = _mm512_movepi16_mask(exit0_v);
-                    tmp_ie_v = _mm512_mask_blend_epi16(mex0, max_ie_v, tmp_ie_v);
-                    let mut max_gh_masked_v = _mm512_mask_blend_epi16(mex0, gscore_v, max_gh_v);
-                    max_gh_masked_v = _mm512_mask_blend_epi16(edge_mask, gscore_v, max_gh_masked_v);
                     let over_tail = _mm512_cmpgt_epi16_mask(j1_v, tail_v);
-                    max_gh_masked_v = _mm512_mask_blend_epi16(over_tail, max_gh_masked_v, gscore_v);
-                    max_ie_v = _mm512_mask_blend_epi16(over_tail, tmp_ie_v, max_ie_v);
-                    gscore_v = max_gh_masked_v;
+                    let gs_update_mask = edge_mask & mex0 & !over_tail;
+                    let ie_update_mask = gs_update_mask & !cmp_gh;
+                    gscore_v = _mm512_mask_blend_epi16(gs_update_mask, gscore_v, max_gh_v);
+                    max_ie_v = _mm512_mask_blend_epi16(ie_update_mask, max_ie_v, i1_v);
                 }
             }
+            // Increment j_v, j1_v for next iteration to avoid the broadcast.
+            j_v = _mm512_add_epi16(j_v, one_i16_v);
+            j1_v = _mm512_add_epi16(j1_v, one_i16_v);
         }
         // Mirror C++ smithWaterman512_16 (bandedSWA.cpp:3197-3202): after the j loop, store h10
         // at H_h[end*32], zeroed for lanes where end is outside [head, tail]. F[end*32] is also
@@ -742,30 +744,30 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
         exit0_v = _mm512_mask_blend_epi16(zero_row_mask, exit0_v, zero_v);
 
         let old_max_score_v = max_score_v;
-        let score_v = _mm512_max_epi16(max_score_v, max_rs_v);
         let mex0 = _mm512_movepi16_mask(exit0_v);
-        max_score_v = _mm512_mask_blend_epi16(mex0, max_score_v, score_v);
-        let max_improved = _mm512_cmpgt_epi16_mask(max_score_v, old_max_score_v);
+        // Fused max+blend: max_score_v = (mex0 ? max(prev, max_rs) : prev).
+        max_score_v = _mm512_mask_max_epi16(max_score_v, mex0, max_score_v, max_rs_v);
+        // max_improved iff (mex0 && max_rs > prev). Breaks the dep chain through max_score_v.
+        let max_improved = mex0 & _mm512_cmpgt_epi16_mask(max_rs_v, old_max_score_v);
         y_v = _mm512_mask_blend_epi16(max_improved, y_v, y1_v);
         x_v = _mm512_mask_blend_epi16(max_improved, x_v, i1_v);
 
         let diag_delta_v = _mm512_abs_epi16(_mm512_sub_epi16(y1_v, i1_v));
-        let old_max_off_v = max_off_v;
-        let next_max_off_v = _mm512_max_epi16(max_off_v, diag_delta_v);
-        max_off_v = _mm512_mask_blend_epi16(max_improved, old_max_off_v, next_max_off_v);
+        // Fused max+blend: max_off_v = (max_improved ? max(prev, diag) : prev).
+        max_off_v = _mm512_mask_max_epi16(max_off_v, max_improved, max_off_v, diag_delta_v);
 
         let tmp_i_v = _mm512_sub_epi16(i1_v, x_v);
         let tmp_j_v = _mm512_sub_epi16(y1_v, y_v);
-        let ij_cmp = _mm512_cmpgt_epi16_mask(tmp_i_v, tmp_j_v);
         let score_drop_v = _mm512_sub_epi16(max_score_v, max_rs_v);
-        let sub_a_v = _mm512_sub_epi16(tmp_i_v, tmp_j_v);
-        let sub_b_v = _mm512_sub_epi16(tmp_j_v, tmp_i_v);
-        let mut z_v = _mm512_mask_blend_epi16(ij_cmp, sub_b_v, sub_a_v);
-        z_v = _mm512_sub_epi16(score_drop_v, z_v);
+        // |tmp_i - tmp_j| via abs; the prior 4-op sub_a/sub_b + cmpgt + blend dance is equivalent.
+        let abs_diff_v = _mm512_abs_epi16(_mm512_sub_epi16(tmp_i_v, tmp_j_v));
+        let z_v = _mm512_sub_epi16(score_drop_v, abs_diff_v);
         let z_mask = _mm512_cmpgt_epi16_mask(z_v, zdrop_v);
         exit0_v = _mm512_mask_blend_epi16(z_mask, exit0_v, zero_v);
 
         let active_mask = _mm512_movepi16_mask(exit0_v);
+        let h_h_ptr = h_h.as_ptr();
+        let f_buf_ptr = f_buf.as_ptr();
         for lane in 0..n {
             if ((active_mask >> lane) & 1) == 0 {
                 continue;
@@ -773,16 +775,16 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
             let qlen_lane = len2_lanes[lane] as i16;
             let mut jb = head_lane[lane] as usize;
             while (jb as i16) < tail_lane[lane]
-                && h_h[jb * SIMD_WIDTH16_AVX512 + lane] == 0
-                && f_buf[jb * SIMD_WIDTH16_AVX512 + lane] == 0
+                && unsafe { *h_h_ptr.add(jb * SIMD_WIDTH16_AVX512 + lane) } == 0
+                && unsafe { *f_buf_ptr.add(jb * SIMD_WIDTH16_AVX512 + lane) } == 0
             {
                 jb += 1;
             }
             head_lane[lane] = jb as i16;
             let mut je = tail_lane[lane] as usize;
             while (je as i16) >= head_lane[lane]
-                && h_h[je * SIMD_WIDTH16_AVX512 + lane] == 0
-                && f_buf[je * SIMD_WIDTH16_AVX512 + lane] == 0
+                && unsafe { *h_h_ptr.add(je * SIMD_WIDTH16_AVX512 + lane) } == 0
+                && unsafe { *f_buf_ptr.add(je * SIMD_WIDTH16_AVX512 + lane) } == 0
             {
                 if je == 0 {
                     break;
@@ -1027,9 +1029,11 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
         let mut max_rs_v = zero_v;
         let mut y1_v = zero_v;
 
+        // Avoid the per-iteration broadcast of j and j+1 by carrying them and incrementing.
+        let one_i8_v = _mm512_set1_epi8(1);
+        let mut j_v = _mm512_set1_epi8(beg as i8);
+        let mut j1_v = _mm512_set1_epi8((beg + 1) as i8);
         for j in beg..end {
-            let j_v = _mm512_set1_epi8(j as i8);
-            let j1_v = _mm512_set1_epi8((j + 1) as i8);
             let s2_col_v =
                 _mm512_loadu_si512(s2_soa.as_ptr().add(j * SIMD_WIDTH8_AVX512) as *const __m512i);
             let h00_v =
@@ -1042,9 +1046,10 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
                 oe_ins_v, e_del_v, oe_del_v,
             );
 
-            // in_band = j >= head && j <= tail.
-            let in_band_mask: u64 =
-                _mm512_cmpge_epi8_mask(j_v, head_v) & _mm512_cmple_epi8_mask(j_v, tail_v);
+            // Compute head>j mask once; in_band uses its negation, score_oob reuses it.
+            let head_gt_j: u64 = _mm512_cmpgt_epi8_mask(head_v, j_v);
+            // in_band = j >= head && j <= tail = !(head > j) && j <= tail.
+            let in_band_mask: u64 = !head_gt_j & _mm512_cmple_epi8_mask(j_v, tail_v);
 
             // Masked store: in-band lanes write prev h10 / f21, out-of-band write 0.
             let h10_to_store = _mm512_mask_blend_epi8(in_band_mask, zero_v, h10_v);
@@ -1059,14 +1064,15 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
             );
 
             let prev_max_rs_v = max_rs_v;
-            max_rs_v = _mm512_max_epi8(max_rs_v, h11_v);
-            let mut cmp_update = _mm512_cmpgt_epi8_mask(max_rs_v, prev_max_rs_v);
-            cmp_update |= _mm512_cmpeq_epi8_mask(max_rs_v, h11_v);
-            let score_oob_mask =
-                _mm512_cmpgt_epi8_mask(j1_v, tail_v) | _mm512_cmpgt_epi8_mask(head_v, j_v);
-            let y_candidate_v = _mm512_mask_blend_epi8(cmp_update, y1_v, j1_v);
-            y1_v = _mm512_mask_blend_epi8(score_oob_mask, y_candidate_v, y1_v);
-            max_rs_v = _mm512_mask_blend_epi8(score_oob_mask, max_rs_v, prev_max_rs_v);
+            // (max_rs > prev_max) || (max_rs == h11) simplifies to (h11 >= prev_max).
+            let cmp_update = _mm512_cmpge_epi8_mask(h11_v, prev_max_rs_v);
+            let score_oob_mask = _mm512_cmpgt_epi8_mask(j1_v, tail_v) | head_gt_j;
+            // Fused: max_rs_v = !score_oob ? max(prev, h11) : prev. Saves 1 SIMD op vs separate
+            // max + blend.
+            max_rs_v = _mm512_mask_max_epi8(prev_max_rs_v, !score_oob_mask, prev_max_rs_v, h11_v);
+            // y1 := j1 if (cmp_update AND in_band); old y1 otherwise.
+            let y_update_mask = cmp_update & !score_oob_mask;
+            y1_v = _mm512_mask_blend_epi8(y_update_mask, y1_v, j1_v);
 
             // Carry e11/h10 to next column.
             e11_v = e11_new_v;
@@ -1075,20 +1081,21 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
             if j + 1 >= min_len2 {
                 let edge_mask = _mm512_cmpeq_epi8_mask(j1_v, len2_v);
                 if edge_mask != 0 {
+                    // Original 4-blend chain reduces to: gscore := max_gh when (active & edge &
+                    // !over_tail); max_ie := i1 when also h11 wins (!cmp_gh).
                     let max_gh_v = _mm512_max_epi8(gscore_v, h11_v);
                     let cmp_gh = _mm512_cmpgt_epi8_mask(gscore_v, h11_v);
-                    let mut tmp_ie_v = _mm512_mask_blend_epi8(cmp_gh, i1_v, max_ie_v);
-                    tmp_ie_v = _mm512_mask_blend_epi8(edge_mask, max_ie_v, tmp_ie_v);
                     let mex0 = _mm512_movepi8_mask(exit0_v);
-                    tmp_ie_v = _mm512_mask_blend_epi8(mex0, max_ie_v, tmp_ie_v);
-                    let mut max_gh_masked_v = _mm512_mask_blend_epi8(mex0, gscore_v, max_gh_v);
-                    max_gh_masked_v = _mm512_mask_blend_epi8(edge_mask, gscore_v, max_gh_masked_v);
                     let over_tail = _mm512_cmpgt_epi8_mask(j1_v, tail_v);
-                    max_gh_masked_v = _mm512_mask_blend_epi8(over_tail, max_gh_masked_v, gscore_v);
-                    max_ie_v = _mm512_mask_blend_epi8(over_tail, tmp_ie_v, max_ie_v);
-                    gscore_v = max_gh_masked_v;
+                    let gs_update_mask = edge_mask & mex0 & !over_tail;
+                    let ie_update_mask = gs_update_mask & !cmp_gh;
+                    gscore_v = _mm512_mask_blend_epi8(gs_update_mask, gscore_v, max_gh_v);
+                    max_ie_v = _mm512_mask_blend_epi8(ie_update_mask, max_ie_v, i1_v);
                 }
             }
+            // Increment j_v, j1_v for next iteration.
+            j_v = _mm512_add_epi8(j_v, one_i8_v);
+            j1_v = _mm512_add_epi8(j1_v, one_i8_v);
         }
         let end_v = _mm512_set1_epi8(end as i8);
         let end_oob_mask =
@@ -1110,26 +1117,24 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
         exit0_v = _mm512_mask_blend_epi8(zero_row_mask, exit0_v, zero_v);
 
         let old_max_score_v = max_score_v;
-        let score_v = _mm512_max_epi8(max_score_v, max_rs_v);
         let mex0 = _mm512_movepi8_mask(exit0_v);
-        max_score_v = _mm512_mask_blend_epi8(mex0, max_score_v, score_v);
-        let max_improved = _mm512_cmpgt_epi8_mask(max_score_v, old_max_score_v);
+        // Fused max+blend: max_score_v = (mex0 ? max(prev, max_rs) : prev).
+        max_score_v = _mm512_mask_max_epi8(max_score_v, mex0, max_score_v, max_rs_v);
+        // max_improved iff (mex0 && max_rs > prev). Breaks the dep chain through max_score_v.
+        let max_improved = mex0 & _mm512_cmpgt_epi8_mask(max_rs_v, old_max_score_v);
         y_v = _mm512_mask_blend_epi8(max_improved, y_v, y1_v);
         x_v = _mm512_mask_blend_epi8(max_improved, x_v, i1_v);
 
         let diag_delta_v = _mm512_abs_epi8(_mm512_sub_epi8(y1_v, i1_v));
-        let old_max_off_v = max_off_v;
-        let next_max_off_v = _mm512_max_epi8(max_off_v, diag_delta_v);
-        max_off_v = _mm512_mask_blend_epi8(max_improved, old_max_off_v, next_max_off_v);
+        // Fused max+blend: max_off_v = (max_improved ? max(prev, diag) : prev).
+        max_off_v = _mm512_mask_max_epi8(max_off_v, max_improved, max_off_v, diag_delta_v);
 
         let tmp_i_v = _mm512_sub_epi8(i1_v, x_v);
         let tmp_j_v = _mm512_sub_epi8(y1_v, y_v);
-        let ij_cmp = _mm512_cmpgt_epi8_mask(tmp_i_v, tmp_j_v);
         let score_drop_v = _mm512_sub_epi8(max_score_v, max_rs_v);
-        let sub_a_v = _mm512_sub_epi8(tmp_i_v, tmp_j_v);
-        let sub_b_v = _mm512_sub_epi8(tmp_j_v, tmp_i_v);
-        let mut z_v = _mm512_mask_blend_epi8(ij_cmp, sub_b_v, sub_a_v);
-        z_v = _mm512_sub_epi8(score_drop_v, z_v);
+        // |tmp_i - tmp_j| via abs; saves the 4-op cmpgt + double-sub + blend.
+        let abs_diff_v = _mm512_abs_epi8(_mm512_sub_epi8(tmp_i_v, tmp_j_v));
+        let z_v = _mm512_sub_epi8(score_drop_v, abs_diff_v);
         let z_mask = _mm512_cmpgt_epi8_mask(z_v, zdrop_v);
         exit0_v = _mm512_mask_blend_epi8(z_mask, exit0_v, zero_v);
 
@@ -1137,6 +1142,8 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
         // for lanes where end is outside [head, tail]. This is row-local band state; writing
         // max_l2 unconditionally leaves stale diagonal state when end < max_l2.
         let active_mask = _mm512_movepi8_mask(exit0_v);
+        let h_h_ptr = h_h.as_ptr();
+        let f_buf_ptr = f_buf.as_ptr();
         for lane in 0..n {
             if ((active_mask >> lane) & 1) == 0 {
                 continue;
@@ -1144,16 +1151,16 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
             let qlen_lane = len2_lanes[lane] as i32;
             let mut jb = head_lane[lane] as usize;
             while (jb as i32) < tail_lane[lane]
-                && h_h[jb * SIMD_WIDTH8_AVX512 + lane] == 0
-                && f_buf[jb * SIMD_WIDTH8_AVX512 + lane] == 0
+                && unsafe { *h_h_ptr.add(jb * SIMD_WIDTH8_AVX512 + lane) } == 0
+                && unsafe { *f_buf_ptr.add(jb * SIMD_WIDTH8_AVX512 + lane) } == 0
             {
                 jb += 1;
             }
             head_lane[lane] = jb as i32;
             let mut je = tail_lane[lane] as usize;
             while (je as i32) >= head_lane[lane]
-                && h_h[je * SIMD_WIDTH8_AVX512 + lane] == 0
-                && f_buf[je * SIMD_WIDTH8_AVX512 + lane] == 0
+                && unsafe { *h_h_ptr.add(je * SIMD_WIDTH8_AVX512 + lane) } == 0
+                && unsafe { *f_buf_ptr.add(je * SIMD_WIDTH8_AVX512 + lane) } == 0
             {
                 if je == 0 {
                     break;
@@ -1383,6 +1390,7 @@ impl SimdBatchState {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512bw,avx512f")]
 #[allow(dead_code)]
+#[inline]
 unsafe fn main_code16_avx512(
     s1_v: core::arch::x86_64::__m512i,
     s2_v: core::arch::x86_64::__m512i,
@@ -1438,6 +1446,7 @@ unsafe fn main_code16_avx512(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512bw,avx512f")]
 #[allow(dead_code)]
+#[inline]
 unsafe fn main_code8_avx512(
     s1_v: core::arch::x86_64::__m512i,
     s2_v: core::arch::x86_64::__m512i,
@@ -1623,6 +1632,37 @@ pub(crate) fn init_h_v_soa_avx512_16_into(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw,avx512f")]
+unsafe fn init_h_v_soa_avx512_16_into_simd(
+    h0_lanes: &[i16; SIMD_WIDTH16_AVX512],
+    max_len1: usize,
+    o_del: i16,
+    e_del: i16,
+    h_v: &mut [i16],
+) {
+    use core::arch::x86_64::*;
+
+    debug_assert!(h_v.len() >= max_len1.max(1) * SIMD_WIDTH16_AVX512);
+    let h0_v = _mm512_loadu_si512(h0_lanes.as_ptr() as *const __m512i);
+    _mm512_storeu_si512(h_v.as_mut_ptr() as *mut __m512i, h0_v);
+    if max_len1 == 0 {
+        return;
+    }
+    let zero_v = _mm512_setzero_si512();
+    let o_del_v = _mm512_set1_epi16(o_del);
+    let e_del_v = _mm512_set1_epi16(e_del);
+    let mut tmp_v = _mm512_sub_epi16(h0_v, o_del_v);
+    for k in 1..max_len1 {
+        tmp_v = _mm512_sub_epi16(tmp_v, e_del_v);
+        let row_v = _mm512_max_epi16(tmp_v, zero_v);
+        _mm512_storeu_si512(
+            h_v.as_mut_ptr().add(k * SIMD_WIDTH16_AVX512) as *mut __m512i,
+            row_v,
+        );
+    }
+}
+
 // i16 H_h initializer — mirrors init_h_h_soa_avx512.
 #[allow(dead_code)]
 pub(crate) fn init_h_h_soa_avx512_16(
@@ -1666,6 +1706,40 @@ pub(crate) fn init_h_h_soa_avx512_16_into(
             tmp[lane] = next;
             h_h[k * SIMD_WIDTH16_AVX512 + lane] = next;
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512bw,avx512f")]
+unsafe fn init_h_h_soa_avx512_16_into_simd(
+    h0_lanes: &[i16; SIMD_WIDTH16_AVX512],
+    max_len2: usize,
+    oe_ins: i16,
+    e_ins: i16,
+    h_h: &mut [i16],
+) {
+    use core::arch::x86_64::*;
+
+    debug_assert!(h_h.len() >= max_len2.max(1) * SIMD_WIDTH16_AVX512);
+    let h0_v = _mm512_loadu_si512(h0_lanes.as_ptr() as *const __m512i);
+    _mm512_storeu_si512(h_h.as_mut_ptr() as *mut __m512i, h0_v);
+    if max_len2 < 2 {
+        return;
+    }
+    let zero_v = _mm512_setzero_si512();
+    let oe_ins_v = _mm512_set1_epi16(oe_ins);
+    let e_ins_v = _mm512_set1_epi16(e_ins);
+    let mut tmp_v = _mm512_max_epi16(_mm512_sub_epi16(h0_v, oe_ins_v), zero_v);
+    _mm512_storeu_si512(
+        h_h.as_mut_ptr().add(SIMD_WIDTH16_AVX512) as *mut __m512i,
+        tmp_v,
+    );
+    for k in 2..max_len2 {
+        tmp_v = _mm512_max_epi16(_mm512_sub_epi16(tmp_v, e_ins_v), zero_v);
+        _mm512_storeu_si512(
+            h_h.as_mut_ptr().add(k * SIMD_WIDTH16_AVX512) as *mut __m512i,
+            tmp_v,
+        );
     }
 }
 
@@ -3944,9 +4018,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper8__L436(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:436"]
@@ -3959,7 +4031,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman256_8:713"]
@@ -3997,9 +4069,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper16__L1143(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:1143"]
@@ -4012,7 +4082,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman256_16:1412"]
@@ -4050,9 +4120,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper8__L1997(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:1997"]
@@ -4065,7 +4133,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman512_8:2263"]
@@ -4103,9 +4171,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper16__L2690(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:2690"]
@@ -4118,7 +4184,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman512_16:2962"]
@@ -4156,9 +4222,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper16__L3492(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:3492"]
@@ -4171,7 +4235,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman128_16:3757"]
@@ -4209,9 +4273,7 @@ impl BandedPairWiseSW {
         numThreads: u16,
         w: i32,
     ) {
-        self.smithWatermanBatchWrapper8__L4223(
-            pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w,
-        );
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:4223"]
@@ -4224,7 +4286,7 @@ impl BandedPairWiseSW {
         _numThreads: u16,
         w: i32,
     ) {
-        self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
+        self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
     #[doc = "Original function: BandedPairWiseSW::smithWaterman128_8:4485"]

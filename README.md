@@ -125,6 +125,17 @@ Interpretation:
 - Older benchmark notes used a smaller/different setup and should not be compared directly to this full-fixture result.
 - Re-run locally with `scripts/benchmark-real-data.sh`; it emits `.tmp/real_bench/report.tsv` when the upstream C++ binary is available.
 
+## Index Generation Speed Comparison
+
+Index construction benchmark on the first approximately 50 MB of HOVD FASTA records from `/husky/henriksson/atrandi/kraken_ref/hovd/rep2/HOVD-geneseqences.fasta`, written to `.tmp/index_bench_hovd50/hovd_first_records_50mb.fa`.
+
+| Command | Wall time | Max RSS |
+|---|---:|---:|
+| `bwa-mem2-rs index` | 33.90s | 1,215,016 KB |
+| upstream `bwa-mem2.avx512bw index` | 33.09s | 1,278,304 KB |
+
+The generated `.amb`, `.ann`, `.pac`, `.0123`, and `.bwt.2bit.64` files were md5-identical between Rust and upstream C++ for this fixture.
+
 ## License
 
 MIT (derived from original code)

@@ -79,7 +79,7 @@ pub fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
     if itr.start == itr.len {
         return None;
     }
-    todo!("smem_next requires bwt_smem1a, which is not translated yet")
+    panic!("smem_next is inside #if 0 in upstream bwa-mem2/src/bwamem_extra.cpp")
 }
 
 #[doc = "Original function: mem_align1:107"]
@@ -91,7 +91,7 @@ pub fn mem_align1(
     _arg4: crate::support::Opaque,
     _arg5: crate::support::Opaque,
 ) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("mem_align1")
+    panic!("mem_align1 is inside #if 0 in upstream bwa-mem2/src/bwamem_extra.cpp")
 }
 
 #[doc = "Original function: get_pri_idx:122"]
@@ -107,6 +107,11 @@ pub fn get_pri_idx(XA_drop_ratio: f64, a: &[mem_alnreg_t], i: i32) -> i32 {
     }
 }
 
+thread_local! {
+    static MEM_GEN_ALT_SCRATCH: std::cell::RefCell<(Vec<i32>, Vec<bool>, kstring_t, Vec<i32>)> =
+        std::cell::RefCell::new((Vec::new(), Vec::new(), kstring_t::default(), Vec::new()));
+}
+
 #[doc = "Original function: mem_gen_alt:130"]
 pub fn mem_gen_alt(
     opt: &mem_opt_t,
@@ -116,11 +121,22 @@ pub fn mem_gen_alt(
     l_query: i32,
     query: &str,
 ) -> Vec<Option<String>> {
-    let mut cnt = vec![0_i32; a.n];
-    let mut has_alt = vec![false; a.n];
+    let (cnt_owned, has_alt_owned, mut str_, pri_idx_owned) =
+        MEM_GEN_ALT_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let mut cnt = cnt_owned;
+    let mut has_alt = has_alt_owned;
+    let mut pri_idx = pri_idx_owned;
+    cnt.clear();
+    cnt.resize(a.n, 0_i32);
+    has_alt.clear();
+    has_alt.resize(a.n, false);
+    pri_idx.clear();
+    pri_idx.reserve(a.n);
     let mut tot = 0_i32;
+    let drop_ratio = opt.XA_drop_ratio as f64;
     for i in 0..a.n {
-        let r = get_pri_idx(opt.XA_drop_ratio as f64, &a.a, i32::try_from(i).expect("i"));
+        let r = get_pri_idx(drop_ratio, &a.a, i32::try_from(i).expect("i"));
+        pri_idx.push(r);
         if r >= 0 {
             let r = usize::try_from(r).expect("r");
             cnt[r] += 1;
@@ -131,13 +147,21 @@ pub fn mem_gen_alt(
         }
     }
     if tot == 0 {
+        MEM_GEN_ALT_SCRATCH.with(|c| {
+            let mut scratch = c.borrow_mut();
+            scratch.0 = cnt;
+            scratch.1 = has_alt;
+            scratch.2 = str_;
+            scratch.3 = pri_idx;
+        });
         return vec![None; a.n];
     }
 
     let mut aln = vec![kstring_t::default(); a.n];
-    let mut str_ = kstring_t::default();
+    // Reset only the logical length; keep the buffer (Vec<u8>) so its capacity is reused.
+    str_.l = 0;
     for i in 0..a.n {
-        let r = get_pri_idx(opt.XA_drop_ratio as f64, &a.a, i32::try_from(i).expect("i"));
+        let r = pri_idx[i];
         if r < 0 {
             continue;
         }
@@ -179,7 +203,8 @@ pub fn mem_gen_alt(
         );
     }
 
-    aln.into_iter()
+    let result: Vec<Option<String>> = aln
+        .into_iter()
         .map(|s| {
             if s.l == 0 {
                 None
@@ -189,14 +214,22 @@ pub fn mem_gen_alt(
                 Some(String::from_utf8(bytes).expect("XA tag contains invalid UTF-8"))
             }
         })
-        .collect()
+        .collect();
+    MEM_GEN_ALT_SCRATCH.with(|c| {
+        let mut scratch = c.borrow_mut();
+        scratch.0 = cnt;
+        scratch.1 = has_alt;
+        scratch.2 = str_;
+        scratch.3 = pri_idx;
+    });
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        get_pri_idx, mem_gen_alt, smem_config, smem_itr_destroy, smem_itr_init, smem_next,
-        smem_set_query,
+        get_pri_idx, mem_align1, mem_gen_alt, smem_config, smem_itr_destroy, smem_itr_init,
+        smem_next, smem_set_query,
     };
     use crate::generated::bntseq_h::{bntann1_t, bntseq_t};
     use crate::generated::bwamem_cpp::mem_opt_init;
@@ -314,5 +347,20 @@ mod tests {
         smem_set_query(&mut itr, 3, &[4, 4, 4]);
         assert!(smem_next(&mut itr).is_none());
         assert_eq!(itr.start, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "#if 0")]
+    fn smem_next_panics_for_upstream_disabled_active_search_path() {
+        let bwt = bwt_t::default();
+        let mut itr = smem_itr_init(&bwt);
+        smem_set_query(&mut itr, 1, &[0]);
+        let _ = smem_next(&mut itr);
+    }
+
+    #[test]
+    #[should_panic(expected = "#if 0")]
+    fn mem_align1_panics_because_upstream_excludes_it() {
+        let _ = mem_align1(0, 0, 0, 0, 0, 0);
     }
 }

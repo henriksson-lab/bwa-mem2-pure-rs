@@ -101,6 +101,31 @@ fn clear_vec_with_cap<T>(v: &mut Vec<T>, keep_cap: usize) {
 const KEEP_REG_CAP: usize = 16;
 const KEEP_CHAIN_CAP: usize = 16;
 
+fn debug_rss(label: &str) {
+    if std::env::var_os("BWA_DEBUG_RSS").is_none() {
+        return;
+    }
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        let rss = status
+            .lines()
+            .find(|line| line.starts_with("VmRSS:"))
+            .unwrap_or("VmRSS:\t?");
+        let hwm = status
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .unwrap_or("VmHWM:\t?");
+        eprintln!("[rss::{label}] {rss}; {hwm}");
+    }
+}
+
+#[inline]
+fn trim_allocator_rss() {
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 #[inline]
 pub fn nt4_cow(seq: &crate::generated::bwa_h::bseq1_t) -> std::borrow::Cow<'_, [u8]> {
     if !seq.seq_nt4.is_empty() || seq.l_seq == 0 {
@@ -238,6 +263,48 @@ fn run_worker_chunks_parallel(
     } else {
         let pool = compute_pool(nthreads);
         pool.install(run_chunks);
+    }
+}
+
+fn ensure_mem_cache_thread_slots(mmc: &mut mem_cache, nthreads: usize) {
+    mmc.seqBufLeftRef.resize_with(nthreads, Vec::new);
+    mmc.seqBufLeftQer.resize_with(nthreads, Vec::new);
+    mmc.seqBufRightRef.resize_with(nthreads, Vec::new);
+    mmc.seqBufRightQer.resize_with(nthreads, Vec::new);
+    mmc.wsize_buf_ref.resize(nthreads, 0);
+    mmc.wsize_buf_qer.resize(nthreads, 0);
+
+    mmc.seqPairArrayAux.resize_with(nthreads, Vec::new);
+    mmc.seqPairArrayLeft128.resize_with(nthreads, Vec::new);
+    mmc.seqPairArrayRight128.resize_with(nthreads, Vec::new);
+    mmc.wsize.resize(nthreads, 0);
+
+    mmc.wsize_mem.resize(nthreads, 0);
+    mmc.wsize_mem_s.resize(nthreads, 0);
+    mmc.wsize_mem_r.resize(nthreads, 0);
+    mmc.matchArray.resize_with(nthreads, Vec::new);
+    mmc.min_intv_ar.resize_with(nthreads, Vec::new);
+    mmc.query_pos_ar.resize_with(nthreads, Vec::new);
+    mmc.enc_qdb.resize_with(nthreads, Vec::new);
+    mmc.rid.resize_with(nthreads, Vec::new);
+    mmc.lim.resize_with(nthreads, || vec![0; BATCH_SIZE + 32]);
+}
+
+fn run_worker_bwt_aln_chunks_serial(worker: &mut worker_t, n: i32) {
+    let n_usize = usize::try_from(n.max(0)).expect("n");
+    if n_usize == 0 {
+        return;
+    }
+    let chunk_size = BATCH_SIZE;
+    let nchunks = n_usize.div_ceil(chunk_size);
+    for chunk_idx in 0..nchunks {
+        let start = chunk_idx * chunk_size;
+        let end = (start + chunk_size).min(n_usize);
+        let start_i32 = i32::try_from(start).expect("chunk start");
+        let len_i32 = i32::try_from(end - start).expect("chunk len");
+        worker_bwt(worker, start_i32, len_i32, 0);
+        worker_aln(worker, start_i32, len_i32, 0);
+        trim_allocator_rss();
     }
 }
 
@@ -467,8 +534,8 @@ fn ks_introsort_mem_ars2(a: &mut [mem_alnreg_t]) {
     }
     d <<= 1;
 
-    let mut stack: Vec<(usize, usize, usize)> =
-        Vec::with_capacity((std::mem::size_of::<usize>() * d) + 2);
+    let mut stack = [(0_usize, 0_usize, 0_usize); 128];
+    let mut stack_len = 0_usize;
     let mut s = 0usize;
     let mut t = a.len() - 1;
 
@@ -518,16 +585,22 @@ fn ks_introsort_mem_ars2(a: &mut [mem_alnreg_t]) {
 
             if i - s > t - i {
                 if i - s > 16 {
-                    stack.push((s, i - 1, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (s, i - 1, d);
+                    stack_len += 1;
                 }
                 s = if t - i > 16 { i + 1 } else { t };
             } else {
                 if t - i > 16 {
-                    stack.push((i + 1, t, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (i + 1, t, d);
+                    stack_len += 1;
                 }
                 t = if i - s > 16 { i - 1 } else { s };
             }
-        } else if let Some((left, right, depth)) = stack.pop() {
+        } else if stack_len != 0 {
+            stack_len -= 1;
+            let (left, right, depth) = stack[stack_len];
             s = left;
             t = right;
             d = depth;
@@ -555,8 +628,8 @@ fn ks_introsort_mem_ars(a: &mut [mem_alnreg_t]) {
     }
     d <<= 1;
 
-    let mut stack: Vec<(usize, usize, usize)> =
-        Vec::with_capacity((std::mem::size_of::<usize>() * d) + 2);
+    let mut stack = [(0_usize, 0_usize, 0_usize); 128];
+    let mut stack_len = 0_usize;
     let mut s = 0usize;
     let mut t = a.len() - 1;
 
@@ -606,16 +679,22 @@ fn ks_introsort_mem_ars(a: &mut [mem_alnreg_t]) {
 
             if i - s > t - i {
                 if i - s > 16 {
-                    stack.push((s, i - 1, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (s, i - 1, d);
+                    stack_len += 1;
                 }
                 s = if t - i > 16 { i + 1 } else { t };
             } else {
                 if t - i > 16 {
-                    stack.push((i + 1, t, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (i + 1, t, d);
+                    stack_len += 1;
                 }
                 t = if i - s > 16 { i - 1 } else { s };
             }
-        } else if let Some((left, right, depth)) = stack.pop() {
+        } else if stack_len != 0 {
+            stack_len -= 1;
+            let (left, right, depth) = stack[stack_len];
             s = left;
             t = right;
             d = depth;
@@ -863,19 +942,18 @@ pub fn test_and_merge(
         && y - i64::from(last.len) < i64::from(opt.max_chain_gap)
     {
         if c.n == c.m {
-            let prev_m = c.m;
             c.m <<= 1;
-            if prev_m == i32::try_from(SEEDS_PER_CHAIN).expect("SEEDS_PER_CHAIN") {
-                let mut new_seeds = vec![mem_seed_t::default(); usize::try_from(c.m).expect("c.m")];
-                let used = usize::try_from(c.n).expect("c.n");
-                new_seeds[..used].copy_from_slice(&c.seeds[..used]);
-                c.seeds = new_seeds;
-            } else {
-                c.seeds
-                    .resize(usize::try_from(c.m).expect("c.m"), mem_seed_t::default());
+            let want = usize::try_from(c.m).expect("c.m");
+            if c.seeds.capacity() < want {
+                c.seeds.reserve(want - c.seeds.capacity());
             }
         }
-        c.seeds[usize::try_from(c.n).expect("c.n")] = *p;
+        let used = usize::try_from(c.n).expect("c.n");
+        if used == c.seeds.len() {
+            c.seeds.push(*p);
+        } else {
+            c.seeds[used] = *p;
+        }
         c.n += 1;
         return 1;
     }
@@ -958,6 +1036,29 @@ pub fn mem_seed_sw(
 thread_local! {
     static MEM_SEED_SW_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<u8>)> =
         const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
+// Thread-local scratch for the per-chunk `aln` Vec in worker_sam (PE path). Sized to pcnt+256
+// (kswr_t = 28 bytes). Avoids zeroing 30-60KB on every chunk; the Vec grows and is reused across
+// chunks.
+thread_local! {
+    static WORKER_SAM_ALN_SCRATCH: std::cell::RefCell<Vec<crate::generated::ksw_h::kswr_t>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// Thread-local scratch for mem_mark_primary_se. `z` is the working set of primary candidates; `rank`
+// is the post-sort permutation. Both are sized by per-read n_alnreg (~3-10 typically).
+thread_local! {
+    static MEM_MARK_PRIMARY_SE_SCRATCH: std::cell::RefCell<(Vec<usize>, Vec<usize>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
+// Thread-local scratch for mem_reg2sam: `aa` is the per-read accumulator of mem_aln_t's that get
+// emitted as SAM. Pooling the outer Vec saves the per-read alloc; the inner mem_aln_t's still
+// allocate via mem_reg2aln.
+thread_local! {
+    static MEM_REG2SAM_AA_SCRATCH: std::cell::RefCell<Vec<crate::generated::bwamem_h::mem_aln_t>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[doc = "Original function: mem_chain_weight:429"]
@@ -1048,8 +1149,8 @@ fn ks_introsort_mem_flt(a: &mut [mem_chain_t]) {
     }
     d <<= 1;
 
-    let mut stack: Vec<(usize, usize, usize)> =
-        Vec::with_capacity((std::mem::size_of::<usize>() * d) + 2);
+    let mut stack = [(0_usize, 0_usize, 0_usize); 128];
+    let mut stack_len = 0_usize;
     let mut s = 0usize;
     let mut t = a.len() - 1;
 
@@ -1099,16 +1200,22 @@ fn ks_introsort_mem_flt(a: &mut [mem_chain_t]) {
 
             if i - s > t - i {
                 if i - s > 16 {
-                    stack.push((s, i - 1, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (s, i - 1, d);
+                    stack_len += 1;
                 }
                 s = if t - i > 16 { i + 1 } else { t };
             } else {
                 if t - i > 16 {
-                    stack.push((i + 1, t, d));
+                    debug_assert!(stack_len < stack.len());
+                    stack[stack_len] = (i + 1, t, d);
+                    stack_len += 1;
                 }
                 t = if i - s > 16 { i - 1 } else { s };
             }
-        } else if let Some((left, right, depth)) = stack.pop() {
+        } else if stack_len != 0 {
+            stack_len -= 1;
+            let (left, right, depth) = stack[stack_len];
             s = left;
             t = right;
             d = depth;
@@ -1229,11 +1336,8 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
         ranges.clear();
         result.clear();
 
-        for mut c in a_
-            .iter()
-            .take(usize::try_from(n_chn_).expect("n_chn"))
-            .cloned()
-        {
+        let take_n = usize::try_from(n_chn_).expect("n_chn").min(a_.len());
+        for mut c in a_.drain(..take_n) {
             c.first = -1;
             c.kept = 0;
             c.w = u32::try_from(mem_chain_weight(&c)).expect("chain weight");
@@ -1241,8 +1345,8 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
                 filtered.push(c);
             }
         }
+        a_.clear();
         if filtered.is_empty() {
-            a_.clear();
             return 0;
         }
 
@@ -1330,7 +1434,6 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
             result.extend(group.drain(..).filter(|c| c.kept != 0));
         }
 
-        a_.clear();
         a_.append(result);
         i32::try_from(a_.len()).expect("num chains")
     })
@@ -1511,7 +1614,7 @@ pub fn mem_chain_seeds(
     nseq: i32,
     tid: i32,
     chain_ar: &mut [mem_chain_v],
-    seedBuf: &mut [mem_seed_t],
+    _seedBuf: &mut [mem_seed_t],
     _seedBufSize: i64,
     matchArray: &[SMEM],
     num_smem: i64,
@@ -1520,30 +1623,102 @@ pub fn mem_chain_seeds(
     // gives B-tree degree 5; duplicate-key lookup depends on the node split shape.
     const CHAIN_TREE_T: usize = 5;
 
-    #[derive(Default)]
     struct ChainTreeNode {
         is_internal: bool,
-        keys: Vec<mem_chain_t>,
-        children: Vec<usize>,
+        key_len: usize,
+        keys: [mem_chain_t; 2 * CHAIN_TREE_T - 1],
+        child_len: usize,
+        children: [usize; 2 * CHAIN_TREE_T],
+    }
+
+    impl ChainTreeNode {
+        #[inline]
+        fn new(is_internal: bool) -> Self {
+            Self {
+                is_internal,
+                key_len: 0,
+                keys: std::array::from_fn(|_| mem_chain_t::default()),
+                child_len: 0,
+                children: [0; 2 * CHAIN_TREE_T],
+            }
+        }
+
+        #[inline]
+        fn keys(&self) -> &[mem_chain_t] {
+            &self.keys[..self.key_len]
+        }
+
+        #[inline]
+        fn key_mut(&mut self, idx: usize) -> &mut mem_chain_t {
+            &mut self.keys[idx]
+        }
+
+        #[inline]
+        fn insert_key(&mut self, idx: usize, key: mem_chain_t) {
+            debug_assert!(self.key_len < self.keys.len());
+            debug_assert!(idx <= self.key_len);
+            for pos in (idx..self.key_len).rev() {
+                self.keys[pos + 1] = std::mem::take(&mut self.keys[pos]);
+            }
+            self.keys[idx] = key;
+            self.key_len += 1;
+        }
+
+        #[inline]
+        fn insert_child(&mut self, idx: usize, child: usize) {
+            debug_assert!(self.child_len < self.children.len());
+            debug_assert!(idx <= self.child_len);
+            for pos in (idx..self.child_len).rev() {
+                self.children[pos + 1] = self.children[pos];
+            }
+            self.children[idx] = child;
+            self.child_len += 1;
+        }
     }
 
     struct ChainTree {
         nodes: Vec<ChainTreeNode>,
         root: usize,
+        len: usize,
     }
 
     impl ChainTree {
+        #[inline]
+        fn new_node(is_internal: bool) -> ChainTreeNode {
+            ChainTreeNode::new(is_internal)
+        }
+
         fn new() -> Self {
+            Self::with_capacity(16)
+        }
+
+        fn with_capacity(capacity: usize) -> Self {
+            let mut nodes = Vec::with_capacity(capacity.max(1));
+            nodes.push(Self::new_node(false));
             Self {
-                nodes: vec![ChainTreeNode::default()],
+                nodes,
                 root: 0,
+                len: 0,
             }
         }
 
-        fn len(&self) -> usize {
-            self.nodes.iter().map(|n| n.keys.len()).sum()
+        fn reset(&mut self, capacity: usize) {
+            self.nodes.clear();
+            let want = capacity.max(1);
+            if self.nodes.capacity() < want {
+                self.nodes.reserve(want - self.nodes.capacity());
+            }
+            self.nodes.push(Self::new_node(false));
+            self.root = 0;
+            self.len = 0;
         }
 
+        #[inline]
+        fn len(&self) -> usize {
+            self.len
+        }
+
+        #[inline]
         fn getp_aux(keys: &[mem_chain_t], pos: i64) -> (isize, i32) {
             if keys.is_empty() {
                 return (-1, 0);
@@ -1575,12 +1750,13 @@ pub fn mem_chain_seeds(
             }
         }
 
+        #[inline]
         fn interval_index(&self, pos: i64) -> Option<(usize, usize)> {
             let mut x = self.root;
             let mut lower = None;
             loop {
                 let node = &self.nodes[x];
-                let (i, r) = Self::getp_aux(&node.keys, pos);
+                let (i, r) = Self::getp_aux(node.keys(), pos);
                 if i >= 0 && r == 0 {
                     return Some((x, usize::try_from(i).expect("tree index")));
                 }
@@ -1594,11 +1770,12 @@ pub fn mem_chain_seeds(
             }
         }
 
+        #[inline]
         fn interval_mut(&mut self, pos: i64) -> Option<&mut mem_chain_t> {
             let (node_idx, key_idx) = self.interval_index(pos)?;
             self.nodes
                 .get_mut(node_idx)
-                .and_then(|node| node.keys.get_mut(key_idx))
+                .map(|node| node.key_mut(key_idx))
         }
 
         fn split_child(&mut self, parent_idx: usize, child_slot: usize) {
@@ -1606,56 +1783,57 @@ pub fn mem_chain_seeds(
             let z_idx = self.nodes.len();
             let (median, z_node) = {
                 let child = &mut self.nodes[child_idx];
-                let mut right_keys = child.keys.split_off(CHAIN_TREE_T);
-                let median = child.keys.pop().expect("full child median");
-                let right_children = if child.is_internal {
-                    child.children.split_off(CHAIN_TREE_T)
-                } else {
-                    Vec::new()
-                };
-                (
-                    median,
-                    ChainTreeNode {
-                        is_internal: child.is_internal,
-                        keys: std::mem::take(&mut right_keys),
-                        children: right_children,
-                    },
-                )
+                debug_assert_eq!(child.key_len, 2 * CHAIN_TREE_T - 1);
+                let mut z_node = ChainTreeNode::new(child.is_internal);
+                for idx in 0..(CHAIN_TREE_T - 1) {
+                    z_node.keys[idx] = std::mem::take(&mut child.keys[CHAIN_TREE_T + idx]);
+                }
+                z_node.key_len = CHAIN_TREE_T - 1;
+                let median = std::mem::take(&mut child.keys[CHAIN_TREE_T - 1]);
+                child.key_len = CHAIN_TREE_T - 1;
+                if child.is_internal {
+                    for idx in 0..CHAIN_TREE_T {
+                        z_node.children[idx] = child.children[CHAIN_TREE_T + idx];
+                    }
+                    z_node.child_len = CHAIN_TREE_T;
+                    child.child_len = CHAIN_TREE_T;
+                }
+                (median, z_node)
             };
             self.nodes.push(z_node);
             let parent = &mut self.nodes[parent_idx];
-            parent.children.insert(child_slot + 1, z_idx);
-            parent.keys.insert(child_slot, median);
+            parent.insert_child(child_slot + 1, z_idx);
+            parent.insert_key(child_slot, median);
         }
 
+        #[inline]
         fn insert(&mut self, key: mem_chain_t) {
-            if self.nodes[self.root].keys.len() == 2 * CHAIN_TREE_T - 1 {
+            if self.nodes[self.root].key_len == 2 * CHAIN_TREE_T - 1 {
                 let old_root = self.root;
                 let new_root = self.nodes.len();
-                self.nodes.push(ChainTreeNode {
-                    is_internal: true,
-                    keys: Vec::new(),
-                    children: vec![old_root],
-                });
+                let mut new_node = Self::new_node(true);
+                new_node.children[0] = old_root;
+                new_node.child_len = 1;
+                self.nodes.push(new_node);
                 self.root = new_root;
                 self.split_child(new_root, 0);
             }
             self.insert_nonfull(self.root, key);
+            self.len += 1;
         }
 
+        #[inline]
         fn insert_nonfull(&mut self, node_idx: usize, key: mem_chain_t) {
             if !self.nodes[node_idx].is_internal {
-                let (i, _) = Self::getp_aux(&self.nodes[node_idx].keys, key.pos);
-                self.nodes[node_idx]
-                    .keys
-                    .insert(usize::try_from(i + 1).expect("insert index"), key);
+                let (i, _) = Self::getp_aux(self.nodes[node_idx].keys(), key.pos);
+                self.nodes[node_idx].insert_key(usize::try_from(i + 1).expect("insert index"), key);
                 return;
             }
 
-            let (i_raw, _) = Self::getp_aux(&self.nodes[node_idx].keys, key.pos);
+            let (i_raw, _) = Self::getp_aux(self.nodes[node_idx].keys(), key.pos);
             let mut child_slot = usize::try_from(i_raw + 1).expect("child slot");
             let child_idx = self.nodes[node_idx].children[child_slot];
-            if self.nodes[child_idx].keys.len() == 2 * CHAIN_TREE_T - 1 {
+            if self.nodes[child_idx].key_len == 2 * CHAIN_TREE_T - 1 {
                 self.split_child(node_idx, child_slot);
                 if key.pos > self.nodes[node_idx].keys[child_slot].pos {
                     child_slot += 1;
@@ -1665,22 +1843,27 @@ pub fn mem_chain_seeds(
             self.insert_nonfull(next_idx, key);
         }
 
-        fn traverse_into(self) -> Vec<mem_chain_t> {
-            fn visit(tree: &ChainTree, node_idx: usize, out: &mut Vec<mem_chain_t>) {
-                let node = &tree.nodes[node_idx];
-                for i in 0..node.keys.len() {
-                    if node.is_internal {
-                        visit(tree, node.children[i], out);
+        fn traverse_into(&mut self, mut out: Vec<mem_chain_t>) -> Vec<mem_chain_t> {
+            fn visit(tree: &mut ChainTree, node_idx: usize, out: &mut Vec<mem_chain_t>) {
+                let is_internal = tree.nodes[node_idx].is_internal;
+                let key_count = tree.nodes[node_idx].key_len;
+                let children = tree.nodes[node_idx].children;
+                for i in 0..key_count {
+                    if is_internal {
+                        visit(tree, children[i], out);
                     }
-                    out.push(node.keys[i].clone());
+                    out.push(std::mem::take(&mut tree.nodes[node_idx].keys[i]));
                 }
-                if node.is_internal {
-                    visit(tree, node.children[node.keys.len()], out);
+                if is_internal {
+                    visit(tree, children[key_count], out);
                 }
             }
 
-            let mut out = Vec::with_capacity(self.len());
-            visit(&self, self.root, &mut out);
+            out.clear();
+            let extra = self.len().saturating_sub(out.capacity());
+            out.reserve(extra);
+            let root = self.root;
+            visit(self, root, &mut out);
             out
         }
     }
@@ -1695,7 +1878,7 @@ pub fn mem_chain_seeds(
     if sa_coord.capacity() < initial_sa_cap {
         sa_coord.reserve(initial_sa_cap - sa_coord.capacity());
     }
-    let mut seed_buf_count = 0_usize;
+    let mut chains = ChainTree::new();
 
     for chain in chain_ar
         .iter_mut()
@@ -1721,9 +1904,8 @@ pub fn mem_chain_seeds(
         }
         assert_eq!(usize::try_from(matchArray[smem_ptr].rid).expect("rid"), l);
 
-        let mut chains = ChainTree::new();
         let chain = &mut chain_ar[l];
-
+        let chain_out = std::mem::take(&mut chain.a);
         let mut b = 0_i32;
         let mut e = 0_i32;
         let mut l_rep = 0_i32;
@@ -1767,6 +1949,9 @@ pub fn mem_chain_seeds(
             tid,
             &mut id,
         );
+        let node_cap =
+            (usize::try_from(cnt_.max(1)).expect("cnt") / CHAIN_TREE_T).saturating_add(2);
+        chains.reset(node_cap);
 
         let mut mypos = 0_usize;
         for p in &matchArray[smem_ptr..=usize::try_from(pos).expect("pos")] {
@@ -1796,26 +1981,18 @@ pub fn mem_chain_seeds(
                 let rid = bns_intv2rid(bns, s.rbeg, s.rbeg + i64::from(s.len));
                 if rid >= 0 {
                     let mut to_add = true;
-                    if let Some(lower) = chains.interval_mut(tmp.pos) {
-                        if test_and_merge(opt, l_pac, lower, &s, rid, tid) != 0 {
-                            to_add = false;
+                    if chains.len() != 0 {
+                        if let Some(lower) = chains.interval_mut(tmp.pos) {
+                            if test_and_merge(opt, l_pac, lower, &s, rid, tid) != 0 {
+                                to_add = false;
+                            }
                         }
                     }
                     if to_add {
                         tmp.n = 1;
                         tmp.m = i32::try_from(SEEDS_PER_CHAIN).expect("SEEDS_PER_CHAIN");
-                        if seed_buf_count + usize::try_from(tmp.m).expect("tmp.m") <= seedBuf.len()
-                        {
-                            tmp.seeds = seedBuf[seed_buf_count
-                                ..seed_buf_count + usize::try_from(tmp.m).expect("tmp.m")]
-                                .to_vec();
-                            seed_buf_count += usize::try_from(tmp.m).expect("tmp.m");
-                        } else {
-                            tmp.m += 1;
-                            tmp.seeds =
-                                vec![mem_seed_t::default(); usize::try_from(tmp.m).expect("tmp.m")];
-                        }
-                        tmp.seeds[0] = s;
+                        tmp.seeds = Vec::with_capacity(1);
+                        tmp.seeds.push(s);
                         tmp.rid = rid;
                         tmp.seqid = i32::try_from(l).expect("l");
                         tmp.is_alt =
@@ -1829,7 +2006,7 @@ pub fn mem_chain_seeds(
         }
 
         smem_ptr = usize::try_from(pos + 1).expect("smem_ptr");
-        let mut chains = chains.traverse_into();
+        let mut chains = chains.traverse_into(chain_out);
         for c in &mut chains {
             c.frac_rep = l_rep as f32 / seq_[l].l_seq as f32;
         }
@@ -1925,6 +2102,7 @@ pub fn mem_kernel1_core(
         &mut num_smem,
         tid,
     );
+    debug_rss("kernel1_after_collect_smem");
 
     mem_chain_seeds(
         fmi,
@@ -1939,6 +2117,7 @@ pub fn mem_kernel1_core(
         &matchArray,
         num_smem,
     );
+    debug_rss("kernel1_after_chain_seeds");
 
     for chn in chain_ar
         .iter_mut()
@@ -1953,6 +2132,7 @@ pub fn mem_kernel1_core(
         .expect("filtered chain count");
         chn.m = chn.a.len();
     }
+    debug_rss("kernel1_after_chain_flt");
 
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
@@ -1969,6 +2149,7 @@ pub fn mem_kernel1_core(
             &mut chn.a,
         );
     }
+    debug_rss("kernel1_after_flt_chained");
 
     mmc.matchArray[tid_usize] = matchArray;
     mmc.min_intv_ar[tid_usize] = min_intv_ar;
@@ -2135,8 +2316,6 @@ pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     let fmi = data.fmi.as_ref().expect("worker fmi");
     let seq_start = usize::try_from(seq_id).expect("seq_id");
     let batch = usize::try_from(batch_size).expect("batch_size");
-    let tid_usize = usize::try_from(tid).expect("tid");
-    let seed_offset = tid_usize * BATCH_SIZE * AVG_SEEDS_PER_READ;
     for seq in data.seqs[seq_start..seq_start + batch].iter_mut() {
         if seq.seq_nt4.is_empty() {
             if let Some(text) = seq.seq.as_deref() {
@@ -2150,7 +2329,7 @@ pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
         &data.seqs[seq_start..seq_start + batch],
         batch_size,
         &mut data.chain_ar[seq_start..seq_start + batch],
-        &mut data.seedBuf[seed_offset..],
+        &mut [],
         data.seedBufSize,
         &mut data.mmc,
         tid,
@@ -2242,60 +2421,69 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
 
         let pcnt8 =
             i32::try_from(sort_classify(&mut data.mmc, i64::from(pcnt), tid)).expect("pcnt8");
-        let mut aln = vec![kswr_t::default(); usize::try_from(pcnt + 256).expect("aln len")];
-        mem_sam_pe_batch(
-            opt,
-            &mut data.mmc,
-            pcnt,
-            pcnt8,
-            &mut aln,
-            maxRefLen,
-            maxQerLen,
-            tid_usize,
-        );
+        let aln_len = usize::try_from(pcnt + 256).expect("aln len");
+        WORKER_SAM_ALN_SCRATCH.with(|cell| {
+            let mut aln = cell.borrow_mut();
+            aln.clear();
+            aln.resize(aln_len, kswr_t::default());
+            mem_sam_pe_batch(
+                opt,
+                &mut data.mmc,
+                pcnt,
+                pcnt8,
+                &mut aln,
+                maxRefLen,
+                maxQerLen,
+                tid_usize,
+            );
+        });
         let t2 = std::time::Instant::now();
 
         gcnt = 0;
         pos = start >> 1;
-        for i in (start..end).step_by(2) {
-            let pair_id = u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos"))
-                .expect("pair id");
-            pos += 1;
-            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
-                .try_into()
-                .expect("paired seq slice");
-            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
-                .try_into()
-                .expect("paired reg slice");
-            mem_sam_pe_batch_post(
-                opt,
-                bns,
-                pac,
-                &data.pes,
-                pair_id,
-                seq_pair,
-                reg_pair,
-                &aln,
-                &mut data.mmc,
-                &mut gcnt,
-                tid_usize,
-            );
-            for regs in reg_pair.iter_mut() {
-                clear_vec_with_cap(&mut regs.a, KEEP_REG_CAP);
-                regs.n = 0;
-                regs.m = 0;
+        WORKER_SAM_ALN_SCRATCH.with(|cell| {
+            let aln = cell.borrow();
+            for i in (start..end).step_by(2) {
+                let pair_id =
+                    u64::try_from((data.n_processed >> 1) + i64::try_from(pos).expect("pos"))
+                        .expect("pair id");
+                pos += 1;
+                let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
+                    .try_into()
+                    .expect("paired seq slice");
+                let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
+                    .try_into()
+                    .expect("paired reg slice");
+                mem_sam_pe_batch_post(
+                    opt,
+                    bns,
+                    pac,
+                    &data.pes,
+                    pair_id,
+                    seq_pair,
+                    reg_pair,
+                    &aln,
+                    &mut data.mmc,
+                    &mut gcnt,
+                    tid_usize,
+                );
+                for regs in reg_pair.iter_mut() {
+                    clear_vec_with_cap(&mut regs.a, KEEP_REG_CAP);
+                    regs.n = 0;
+                    regs.m = 0;
+                }
+                seq_pair[0].name = None;
+                seq_pair[0].comment = None;
+                seq_pair[0].seq = None;
+                seq_pair[0].qual = None;
+                seq_pair[1].name = None;
+                seq_pair[1].comment = None;
+                seq_pair[1].seq = None;
+                seq_pair[1].qual = None;
+                seq_pair[0].seq_nt4 = Vec::new();
+                seq_pair[1].seq_nt4 = Vec::new();
             }
-            seq_pair[0].name = None;
-            seq_pair[0].comment = None;
-            seq_pair[0].seq = None;
-            seq_pair[0].qual = None;
-            seq_pair[1].name = None;
-            seq_pair[1].comment = None;
-            seq_pair[1].seq = None;
-            seq_pair[1].qual = None;
-            seq_pair[0].seq_nt4 = Vec::new();
-            seq_pair[1].seq_nt4 = Vec::new();
-        }
+        });
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -2358,6 +2546,10 @@ pub fn mem_process_seqs(
     w.opt = Some(Box::new(opt.clone()));
     w.n_processed = n_processed;
     w.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
+    ensure_mem_cache_thread_slots(
+        &mut w.mmc,
+        usize::try_from(w.nthreads.max(1)).expect("nthreads"),
+    );
     w.seqs = std::mem::take(seqs);
     let n_usize = usize::try_from(n.max(0)).expect("n");
     if w.regs.len() < n_usize {
@@ -2366,13 +2558,8 @@ pub fn mem_process_seqs(
     if w.chain_ar.len() < n_usize {
         w.chain_ar.resize(n_usize, mem_chain_v::default());
     }
-    let want_seed_buf = usize::try_from(w.nthreads.max(1))
-        .expect("nthreads")
-        .saturating_mul(BATCH_SIZE)
-        .saturating_mul(AVG_SEEDS_PER_READ);
-    if w.seedBuf.len() < want_seed_buf {
-        w.seedBuf.resize(want_seed_buf, mem_seed_t::default());
-    }
+    w.seedBuf.clear();
+    w.seedBufSize = 0;
     w.nreads = n;
     if w.ref_string.is_empty() {
         let fmi = w.fmi.as_ref().expect("worker fmi missing");
@@ -2384,9 +2571,21 @@ pub fn mem_process_seqs(
     if opt.flag & MEM_F_PE != 0 {
         let timing = debug_timings();
         let t0 = std::time::Instant::now();
-        run_worker_chunks_parallel(w, n_, worker_bwt);
-        let t1 = std::time::Instant::now();
-        run_worker_chunks_parallel(w, n_, worker_aln);
+        let t1 = if w.nthreads <= 1 {
+            run_worker_bwt_aln_chunks_serial(w, n_);
+            trim_allocator_rss();
+            debug_rss("after_worker_bwt_aln_serial");
+            std::time::Instant::now()
+        } else {
+            run_worker_chunks_parallel(w, n_, worker_bwt);
+            trim_allocator_rss();
+            debug_rss("after_worker_bwt");
+            let t1 = std::time::Instant::now();
+            run_worker_chunks_parallel(w, n_, worker_aln);
+            trim_allocator_rss();
+            debug_rss("after_worker_aln");
+            t1
+        };
         let t2 = std::time::Instant::now();
         if let Some(pes0) = pes0 {
             w.pes = *pes0;
@@ -2428,6 +2627,8 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         }
         let t3 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_sam);
+        trim_allocator_rss();
+        debug_rss("after_worker_sam");
         if timing {
             let t4 = std::time::Instant::now();
             eprintln!(
@@ -2444,11 +2645,25 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
     } else {
         let timing = debug_timings();
         let t0 = std::time::Instant::now();
-        run_worker_chunks_parallel(w, n_, worker_bwt);
-        let t1 = std::time::Instant::now();
-        run_worker_chunks_parallel(w, n_, worker_aln);
-        let t2 = std::time::Instant::now();
+        let (t1, t2) = if w.nthreads <= 1 {
+            run_worker_bwt_aln_chunks_serial(w, n_);
+            trim_allocator_rss();
+            debug_rss("after_worker_bwt_aln_serial");
+            let t = std::time::Instant::now();
+            (t, t)
+        } else {
+            run_worker_chunks_parallel(w, n_, worker_bwt);
+            trim_allocator_rss();
+            debug_rss("after_worker_bwt");
+            let t1 = std::time::Instant::now();
+            run_worker_chunks_parallel(w, n_, worker_aln);
+            trim_allocator_rss();
+            debug_rss("after_worker_aln");
+            (t1, std::time::Instant::now())
+        };
         run_worker_chunks_parallel(w, n_, worker_sam);
+        trim_allocator_rss();
+        debug_rss("after_worker_sam");
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -2538,69 +2753,73 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
             .then_with(|| lhs.is_alt.cmp(&rhs.is_alt))
             .then_with(|| lhs.hash.cmp(&rhs.hash))
     });
-    let mut z = Vec::new();
-    mem_mark_primary_se_core(opt, n, a, &mut z);
-    for i in 0..usize::try_from(n).expect("n") {
-        // C++ bwamem.cpp:1437-1438: assigns alt_sc unconditionally when the secondary points
-        // to an ALT hit (regardless of whether sec.score is zero). Match that structure.
-        let secondary = a[i].secondary;
-        let assign_alt_sc = a[i].is_alt == 0
-            && secondary >= 0
-            && a[usize::try_from(secondary).expect("secondary")].is_alt != 0;
-        let alt_score = if assign_alt_sc {
-            a[usize::try_from(secondary).expect("secondary")].score
-        } else {
-            0
-        };
-        let p = &mut a[i];
-        p.secondary_all = i32::try_from(i).expect("i");
-        if assign_alt_sc {
-            p.alt_sc = alt_score;
-        }
-    }
-    if n_pri >= 0 && n_pri < n {
-        if n_pri > 0 {
-            a[..usize::try_from(n).expect("n")].sort_by(|lhs, rhs| {
-                lhs.is_alt
-                    .cmp(&rhs.is_alt)
-                    .then_with(|| rhs.score.cmp(&lhs.score))
-                    .then_with(|| lhs.hash.cmp(&rhs.hash))
-            });
-        }
-        let mut rank = vec![0_usize; usize::try_from(n).expect("n")];
-        for (i, p) in a.iter().take(usize::try_from(n).expect("n")).enumerate() {
-            rank[usize::try_from(p.secondary_all).expect("secondary_all")] = i;
-        }
+    MEM_MARK_PRIMARY_SE_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        let (z, rank) = &mut *scratch;
+        mem_mark_primary_se_core(opt, n, a, z);
         for i in 0..usize::try_from(n).expect("n") {
-            if a[i].secondary >= 0 {
-                a[i].secondary_all =
-                    i32::try_from(rank[usize::try_from(a[i].secondary).expect("secondary")])
-                        .expect("secondary_all");
-                if a[i].is_alt != 0 {
-                    a[i].secondary = i32::MAX;
-                }
+            // C++ bwamem.cpp:1437-1438: assigns alt_sc unconditionally when the secondary points
+            // to an ALT hit (regardless of whether sec.score is zero). Match that structure.
+            let secondary = a[i].secondary;
+            let assign_alt_sc = a[i].is_alt == 0
+                && secondary >= 0
+                && a[usize::try_from(secondary).expect("secondary")].is_alt != 0;
+            let alt_score = if assign_alt_sc {
+                a[usize::try_from(secondary).expect("secondary")].score
             } else {
-                a[i].secondary_all = -1;
+                0
+            };
+            let p = &mut a[i];
+            p.secondary_all = i32::try_from(i).expect("i");
+            if assign_alt_sc {
+                p.alt_sc = alt_score;
             }
         }
-        if n_pri > 0 {
-            for p in a.iter_mut().take(usize::try_from(n_pri).expect("n_pri")) {
-                p.sub = 0;
-                p.secondary = -1;
+        if n_pri >= 0 && n_pri < n {
+            if n_pri > 0 {
+                a[..usize::try_from(n).expect("n")].sort_by(|lhs, rhs| {
+                    lhs.is_alt
+                        .cmp(&rhs.is_alt)
+                        .then_with(|| rhs.score.cmp(&lhs.score))
+                        .then_with(|| lhs.hash.cmp(&rhs.hash))
+                });
             }
-            z.clear();
-            mem_mark_primary_se_core(
-                opt,
-                n_pri,
-                &mut a[..usize::try_from(n_pri).expect("n_pri")],
-                &mut z,
-            );
+            rank.clear();
+            rank.resize(usize::try_from(n).expect("n"), 0_usize);
+            for (i, p) in a.iter().take(usize::try_from(n).expect("n")).enumerate() {
+                rank[usize::try_from(p.secondary_all).expect("secondary_all")] = i;
+            }
+            for i in 0..usize::try_from(n).expect("n") {
+                if a[i].secondary >= 0 {
+                    a[i].secondary_all =
+                        i32::try_from(rank[usize::try_from(a[i].secondary).expect("secondary")])
+                            .expect("secondary_all");
+                    if a[i].is_alt != 0 {
+                        a[i].secondary = i32::MAX;
+                    }
+                } else {
+                    a[i].secondary_all = -1;
+                }
+            }
+            if n_pri > 0 {
+                for p in a.iter_mut().take(usize::try_from(n_pri).expect("n_pri")) {
+                    p.sub = 0;
+                    p.secondary = -1;
+                }
+                z.clear();
+                mem_mark_primary_se_core(
+                    opt,
+                    n_pri,
+                    &mut a[..usize::try_from(n_pri).expect("n_pri")],
+                    z,
+                );
+            }
+        } else {
+            for p in a.iter_mut().take(usize::try_from(n).expect("n")) {
+                p.secondary_all = p.secondary;
+            }
         }
-    } else {
-        for p in a.iter_mut().take(usize::try_from(n).expect("n")) {
-            p.secondary_all = p.secondary;
-        }
-    }
+    });
     n_pri
 }
 
@@ -2697,7 +2916,8 @@ pub fn mem_reg2sam(
     } else {
         vec![None; a.n]
     };
-    let mut aa = Vec::<mem_aln_t>::new();
+    // Take aa from thread-local; restored cleared at function end.
+    let mut aa = MEM_REG2SAM_AA_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
     let mut str_ = kstring_t::default();
     let mut l = 0_i32;
 
@@ -2782,6 +3002,9 @@ pub fn mem_reg2sam(
             .expect("SAM record contains invalid UTF-8")
             .into(),
     );
+    // Drop inner mem_aln_t's (each owns Vec<u32>/Vec<u8>/Option<String>) and return aa to scratch.
+    aa.clear();
+    MEM_REG2SAM_AA_SCRATCH.with(|c| *c.borrow_mut() = aa);
 }
 
 #[doc = "Original function: add_cigar:1579"]
@@ -2792,17 +3015,28 @@ pub fn add_cigar(
     str_: &mut crate::generated::kstring_h::kstring_t,
     which: i32,
 ) {
-    if p.n_cigar > 0 {
-        for &cigar in p
-            .cigar
+    add_cigar_fields(opt, p.n_cigar, &p.cigar, p.is_alt, str_, which);
+}
+
+#[inline]
+pub fn add_cigar_fields(
+    opt: &mem_opt_t,
+    n_cigar: i32,
+    cigar: &[u32],
+    is_alt: u32,
+    str_: &mut crate::generated::kstring_h::kstring_t,
+    which: i32,
+) {
+    if n_cigar > 0 {
+        for &c_op in cigar
             .iter()
-            .take(usize::try_from(p.n_cigar).expect("n_cigar"))
+            .take(usize::try_from(n_cigar).expect("n_cigar"))
         {
-            let mut c = i32::try_from(cigar & 0xf).expect("op");
-            if (opt.flag & 0x200) == 0 && p.is_alt == 0 && (c == 3 || c == 4) {
+            let mut c = i32::try_from(c_op & 0xf).expect("op");
+            if (opt.flag & 0x200) == 0 && is_alt == 0 && (c == 3 || c == 4) {
                 c = if which != 0 { 4 } else { 3 };
             }
-            kputw(i32::try_from(cigar >> 4).expect("len"), str_);
+            kputw(i32::try_from(c_op >> 4).expect("len"), str_);
             kputc(i32::from(b"MIDSH"[usize::try_from(c).expect("c")]), str_);
         }
     } else {
@@ -2827,40 +3061,38 @@ pub fn mem_aln2sam(
     }
 
     let which_usize = usize::try_from(which).expect("which");
-    let mut p = list[which_usize].clone();
-    let mut m = m_.cloned();
+    // Avoid cloning p (cigar/md Vecs + Option<String> XA per call). Track mutated Copy fields in
+    // shadow vars; read non-mutated heap fields (cigar, md, XA) directly from list[which_usize].
+    let p_ref = &list[which_usize];
+    let mut p_flag = p_ref.flag;
+    let mut p_rid = p_ref.rid;
+    let mut p_pos = p_ref.pos;
+    let mut p_is_rev = p_ref.is_rev;
+    let mut p_n_cigar = p_ref.n_cigar;
+    // Avoid cloning the mate's cigar/md/XA. Track mutated mate fields in shadow vars; read
+    // non-mutated fields (cigar, md) directly from m_ when needed.
+    let mut mate_rid = m_.map_or(-1, |m| m.rid);
+    let mut mate_pos = m_.map_or(0, |m| m.pos);
+    let mut mate_is_rev = m_.map_or(0, |m| m.is_rev);
+    let mut mate_n_cigar = m_.map_or(0, |m| m.n_cigar);
 
-    p.flag |= if m.is_some() { 0x1 } else { 0 };
-    p.flag |= if p.rid < 0 { 0x4 } else { 0 };
-    p.flag |= if m.as_ref().is_some_and(|mate| mate.rid < 0) {
-        0x8
-    } else {
-        0
-    };
-    if p.rid < 0 {
-        if let Some(mate) = m.as_ref() {
-            if mate.rid >= 0 {
-                p.rid = mate.rid;
-                p.pos = mate.pos;
-                p.is_rev = mate.is_rev;
-                p.n_cigar = 0;
-                p.cigar.clear();
-                p.md.clear();
-            }
-        }
+    p_flag |= if m_.is_some() { 0x1 } else { 0 };
+    p_flag |= if p_rid < 0 { 0x4 } else { 0 };
+    p_flag |= if m_.is_some() && mate_rid < 0 { 0x8 } else { 0 };
+    if p_rid < 0 && m_.is_some() && mate_rid >= 0 {
+        p_rid = mate_rid;
+        p_pos = mate_pos;
+        p_is_rev = mate_is_rev;
+        p_n_cigar = 0;
     }
-    if let Some(mate) = m.as_mut() {
-        if mate.rid < 0 && p.rid >= 0 {
-            mate.rid = p.rid;
-            mate.pos = p.pos;
-            mate.is_rev = p.is_rev;
-            mate.n_cigar = 0;
-            mate.cigar.clear();
-            mate.md.clear();
-        }
+    if m_.is_some() && mate_rid < 0 && p_rid >= 0 {
+        mate_rid = p_rid;
+        mate_pos = p_pos;
+        mate_is_rev = p_is_rev;
+        mate_n_cigar = 0;
     }
-    p.flag |= if p.is_rev != 0 { 0x10 } else { 0 };
-    p.flag |= if m.as_ref().is_some_and(|mate| mate.is_rev != 0) {
+    p_flag |= if p_is_rev != 0 { 0x10 } else { 0 };
+    p_flag |= if m_.is_some() && mate_is_rev != 0 {
         0x20
     } else {
         0
@@ -2882,52 +3114,55 @@ pub fn mem_aln2sam(
     );
     kputc(i32::from(b'\t'), str_);
     kputw(
-        (p.flag & 0xffff) | if (p.flag & 0x10000) != 0 { 0x100 } else { 0 },
+        (p_flag & 0xffff) | if (p_flag & 0x10000) != 0 { 0x100 } else { 0 },
         str_,
     );
     kputc(i32::from(b'\t'), str_);
 
-    if p.rid >= 0 {
-        let ann = &bns.anns[usize::try_from(p.rid).expect("rid")];
+    if p_rid >= 0 {
+        let ann = &bns.anns[usize::try_from(p_rid).expect("rid")];
         kputs(&ann.name, str_);
         kputc(i32::from(b'\t'), str_);
-        kputl(p.pos + 1, str_);
+        kputl(p_pos + 1, str_);
         kputc(i32::from(b'\t'), str_);
-        kputw(i32::try_from(p.mapq).expect("mapq"), str_);
+        kputw(i32::try_from(p_ref.mapq).expect("mapq"), str_);
         kputc(i32::from(b'\t'), str_);
-        add_cigar(opt, &p, str_, which);
+        add_cigar_fields(opt, p_n_cigar, &p_ref.cigar, p_ref.is_alt, str_, which);
     } else {
         kputsn(b"*\t0\t0\t*", 7, str_);
     }
     kputc(i32::from(b'\t'), str_);
 
-    if let Some(mate) = m.as_ref() {
-        if mate.rid >= 0 {
-            if p.rid == mate.rid {
+    if m_.is_some() {
+        if mate_rid >= 0 {
+            if p_rid == mate_rid {
                 kputc(i32::from(b'='), str_);
             } else {
                 kputs(
-                    &bns.anns[usize::try_from(mate.rid).expect("mate rid")].name,
+                    &bns.anns[usize::try_from(mate_rid).expect("mate rid")].name,
                     str_,
                 );
             }
             kputc(i32::from(b'\t'), str_);
-            kputl(mate.pos + 1, str_);
+            kputl(mate_pos + 1, str_);
             kputc(i32::from(b'\t'), str_);
-            if p.rid == mate.rid {
-                let p0 = p.pos
-                    + if p.is_rev != 0 {
-                        i64::from(get_rlen(p.n_cigar, &p.cigar) - 1)
+            if p_rid == mate_rid {
+                let p0 = p_pos
+                    + if p_is_rev != 0 && p_n_cigar > 0 {
+                        i64::from(get_rlen(p_n_cigar, &p_ref.cigar) - 1)
                     } else {
                         0
                     };
-                let p1 = mate.pos
-                    + if mate.is_rev != 0 {
-                        i64::from(get_rlen(mate.n_cigar, &mate.cigar) - 1)
+                // Note: when mate_n_cigar was zeroed by the mutation path, mate.cigar isn't read
+                // (the n_cigar==0 branch below catches it). Otherwise the original mate.cigar is
+                // intact from m_.
+                let p1 = mate_pos
+                    + if mate_is_rev != 0 && mate_n_cigar > 0 {
+                        i64::from(get_rlen(mate_n_cigar, &m_.expect("mate present").cigar) - 1)
                     } else {
                         0
                     };
-                if mate.n_cigar == 0 || p.n_cigar == 0 {
+                if mate_n_cigar == 0 || p_n_cigar == 0 {
                     kputc(i32::from(b'0'), str_);
                 } else {
                     let tlen = -(p0 - p1
@@ -2951,17 +3186,17 @@ pub fn mem_aln2sam(
     }
     kputc(i32::from(b'\t'), str_);
 
-    if (p.flag & 0x100) != 0 {
+    if (p_flag & 0x100) != 0 {
         kputsn(b"*\t*", 3, str_);
     } else {
         let mut qb = 0_usize;
         let mut qe = l_seq;
-        if p.n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p.is_alt == 0 {
-            if cigar_end_clip(p.cigar[0]) {
-                qb += usize::try_from(p.cigar[0] >> 4).expect("clip");
+        if p_n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p_ref.is_alt == 0 {
+            if cigar_end_clip(p_ref.cigar[0]) {
+                qb += usize::try_from(p_ref.cigar[0] >> 4).expect("clip");
             }
-            if cigar_end_clip(*p.cigar.last().expect("non-empty cigar")) {
-                qe -= usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
+            if cigar_end_clip(*p_ref.cigar.last().expect("non-empty cigar")) {
+                qe -= usize::try_from(p_ref.cigar.last().expect("cigar") >> 4).expect("clip");
             }
         }
         // Reuse s.seq_nt4 if populated (worker_bwt fills it); otherwise encode on the fly.
@@ -2975,7 +3210,7 @@ pub fn mem_aln2sam(
         };
         let _ = &seq_nt4_owned; // suppress unused warning when populated path is taken
         ks_resize(str_, str_.l + (qe - qb) + 1);
-        if p.is_rev == 0 {
+        if p_is_rev == 0 {
             let dst = str_.l;
             let src = &seq_nt4[qb..qe];
             let n = src.len();
@@ -2987,14 +3222,15 @@ pub fn mem_aln2sam(
         } else {
             let mut rq_b = qb;
             let mut rq_e = qe;
-            if p.n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p.is_alt == 0 {
+            if p_n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p_ref.is_alt == 0
+            {
                 rq_e = l_seq;
                 rq_b = 0;
-                if cigar_end_clip(p.cigar[0]) {
-                    rq_e -= usize::try_from(p.cigar[0] >> 4).expect("clip");
+                if cigar_end_clip(p_ref.cigar[0]) {
+                    rq_e -= usize::try_from(p_ref.cigar[0] >> 4).expect("clip");
                 }
-                if cigar_end_clip(*p.cigar.last().expect("non-empty cigar")) {
-                    rq_b += usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
+                if cigar_end_clip(*p_ref.cigar.last().expect("non-empty cigar")) {
+                    rq_b += usize::try_from(p_ref.cigar.last().expect("cigar") >> 4).expect("clip");
                 }
             }
             let dst = str_.l;
@@ -3010,7 +3246,7 @@ pub fn mem_aln2sam(
         kputc(i32::from(b'\t'), str_);
         if let Some(qual) = qual_text {
             ks_resize(str_, str_.l + (qe - qb) + 1);
-            if p.is_rev == 0 {
+            if p_is_rev == 0 {
                 let dst = str_.l;
                 let src = &qual.as_bytes()[qb..qe];
                 let n = src.len();
@@ -3019,15 +3255,19 @@ pub fn mem_aln2sam(
             } else {
                 let mut rq_b = qb;
                 let mut rq_e = qe;
-                if p.n_cigar > 0 && which != 0 && (opt.flag & MEM_F_SOFTCLIP) == 0 && p.is_alt == 0
+                if p_n_cigar > 0
+                    && which != 0
+                    && (opt.flag & MEM_F_SOFTCLIP) == 0
+                    && p_ref.is_alt == 0
                 {
                     rq_e = l_seq;
                     rq_b = 0;
-                    if cigar_end_clip(p.cigar[0]) {
-                        rq_e -= usize::try_from(p.cigar[0] >> 4).expect("clip");
+                    if cigar_end_clip(p_ref.cigar[0]) {
+                        rq_e -= usize::try_from(p_ref.cigar[0] >> 4).expect("clip");
                     }
-                    if cigar_end_clip(*p.cigar.last().expect("non-empty cigar")) {
-                        rq_b += usize::try_from(p.cigar.last().expect("cigar") >> 4).expect("clip");
+                    if cigar_end_clip(*p_ref.cigar.last().expect("non-empty cigar")) {
+                        rq_b +=
+                            usize::try_from(p_ref.cigar.last().expect("cigar") >> 4).expect("clip");
                     }
                 }
                 let dst = str_.l;
@@ -3045,26 +3285,27 @@ pub fn mem_aln2sam(
         }
     }
 
-    if p.n_cigar > 0 {
+    if p_n_cigar > 0 {
         kputsn(b"\tNM:i:", 6, str_);
-        kputw(i32::try_from(p.NM).expect("NM"), str_);
+        kputw(i32::try_from(p_ref.NM).expect("NM"), str_);
         kputsn(b"\tMD:Z:", 6, str_);
-        let md = std::str::from_utf8(&p.md).expect("md utf8");
+        let md = std::str::from_utf8(&p_ref.md).expect("md utf8");
         kputs(md, str_);
     }
-    if let Some(mate) = m.as_ref() {
-        if mate.n_cigar > 0 {
+    if let Some(mate) = m_ {
+        // Use shadow mate_n_cigar (may be 0 from the mutation path even if original > 0).
+        if mate_n_cigar > 0 {
             kputsn(b"\tMC:Z:", 6, str_);
             add_cigar(opt, mate, str_, which);
         }
     }
-    if p.score >= 0 {
+    if p_ref.score >= 0 {
         kputsn(b"\tAS:i:", 6, str_);
-        kputw(p.score, str_);
+        kputw(p_ref.score, str_);
     }
-    if p.sub >= 0 {
+    if p_ref.sub >= 0 {
         kputsn(b"\tXS:i:", 6, str_);
-        kputw(p.sub, str_);
+        kputw(p_ref.sub, str_);
     }
     {
         let rg_id = crate::generated::bwa_cpp::BWA_RG_ID
@@ -3075,7 +3316,7 @@ pub fn mem_aln2sam(
             kputs(rg_id.as_str(), str_);
         }
     }
-    if (p.flag & 0x100) == 0 {
+    if (p_flag & 0x100) == 0 {
         let has_other_primary = list
             .iter()
             .enumerate()
@@ -3111,14 +3352,14 @@ pub fn mem_aln2sam(
                 kputc(i32::from(b';'), str_);
             }
         }
-        if p.alt_sc > 0 {
+        if p_ref.alt_sc > 0 {
             let _ = ksprintf(
                 str_,
-                format_args!("\tpa:f:{:.3}", (p.score as f64) / (p.alt_sc as f64)),
+                format_args!("\tpa:f:{:.3}", (p_ref.score as f64) / (p_ref.alt_sc as f64)),
             );
         }
     }
-    if let Some(xa) = p.XA.as_deref() {
+    if let Some(xa) = p_ref.XA.as_deref() {
         kputsn(b"\tXA:Z:", 6, str_);
         kputs(xa, str_);
     }
@@ -3126,8 +3367,8 @@ pub fn mem_aln2sam(
         kputc(i32::from(b'\t'), str_);
         kputs(comment, str_);
     }
-    if (opt.flag & MEM_F_REF_HDR) != 0 && p.rid >= 0 {
-        let anno = &bns.anns[usize::try_from(p.rid).expect("rid")].anno;
+    if (opt.flag & MEM_F_REF_HDR) != 0 && p_rid >= 0 {
+        let anno = &bns.anns[usize::try_from(p_rid).expect("rid")].anno;
         if !anno.is_empty() {
             kputsn(b"\tXR:Z:", 6, str_);
             let tmp = str_.l;
@@ -3519,8 +3760,16 @@ pub fn sortPairsLen(
 
     hist[..=MAX_SEQ_LEN16].fill(0);
 
+    // First pass: validate sp.len1 fits and bump bucket counts. After this pass, sum of all
+    // hist[..MAX_SEQ_LEN16+1] entries equals count, so the cumsum below produces positions in
+    // [0, count). That bounds the unchecked tempArray[pos] writes in the third pass.
+    let pair_ptr = pairArray.as_ptr();
+    let temp_ptr = tempArray.as_mut_ptr();
+    let hist_ptr = hist.as_mut_ptr();
     for sp in pairArray.iter().take(count).copied() {
-        hist[usize::try_from(sp.len1).expect("len1")] += 1;
+        let idx = usize::try_from(sp.len1).expect("len1");
+        assert!(idx <= MAX_SEQ_LEN16);
+        unsafe { *hist_ptr.add(idx) += 1 };
     }
     let mut cumul_sum = 0_i32;
     for item in hist.iter_mut().take(MAX_SEQ_LEN16 + 1) {
@@ -3528,11 +3777,14 @@ pub fn sortPairsLen(
         *item = cumul_sum;
         cumul_sum += cur;
     }
-    for sp in pairArray.iter().take(count).copied() {
-        let idx = usize::try_from(sp.len1).expect("len1");
-        let pos = usize::try_from(hist[idx]).expect("pos");
-        tempArray[pos] = sp;
-        hist[idx] += 1;
+    for k in 0..count {
+        let sp = unsafe { *pair_ptr.add(k) };
+        let idx = sp.len1 as usize;
+        let pos = unsafe { *hist_ptr.add(idx) } as usize;
+        unsafe {
+            *temp_ptr.add(pos) = sp;
+            *hist_ptr.add(idx) += 1;
+        }
     }
     pairArray[..count].copy_from_slice(&tempArray[..count]);
 }
@@ -3548,7 +3800,8 @@ struct Chain2alnScratch {
     hist: Vec<i32>,
     temp_pairs: Vec<SeqPair>,
     lim: Vec<i32>,
-    sorted_seed_indices: Vec<Vec<Vec<u32>>>,
+    sorted_seed_ranges: Vec<Vec<(usize, usize)>>,
+    sorted_seed_indices: Vec<u64>,
     work_pairs: Vec<SeqPair>,
 }
 
@@ -3589,6 +3842,7 @@ pub fn mem_chain2aln_across_reads_V2(
         mut hist,
         mut temp_pairs,
         mut lim,
+        mut sorted_seed_ranges,
         mut sorted_seed_indices,
         mut work_pairs,
     } = scratch;
@@ -3599,10 +3853,11 @@ pub fn mem_chain2aln_across_reads_V2(
     left_qer_buf.clear();
     right_qer_buf.clear();
     let nseq_usize = usize::try_from(nseq).expect("nseq");
-    sorted_seed_indices.resize_with(nseq_usize, Vec::new);
-    for per_read in sorted_seed_indices.iter_mut().take(nseq_usize) {
+    sorted_seed_ranges.resize_with(nseq_usize, Vec::new);
+    for per_read in sorted_seed_ranges.iter_mut().take(nseq_usize) {
         per_read.clear();
     }
+    sorted_seed_indices.clear();
 
     for l in 0..nseq_usize {
         // Cow::Borrowed in production (seq_nt4 pre-populated by worker_bwt).
@@ -3621,26 +3876,25 @@ pub fn mem_chain2aln_across_reads_V2(
         // Reuse the previous Vec's capacity instead of dropping + reallocating per read.
         av.a.clear();
         av.a.resize(av.m, mem_alnreg_t::default());
-        sorted_seed_indices[l].clear();
+        sorted_seed_ranges[l].clear();
 
         for (j, c) in chn.a.iter_mut().enumerate().take(chn.n) {
             if c.n == 0 {
-                sorted_seed_indices[l].push(Vec::new());
+                sorted_seed_ranges[l].push((sorted_seed_indices.len(), 0));
                 continue;
             }
 
             let mut rmax0 = l_pac << 1;
             let mut rmax1 = 0_i64;
-            sorted_seed_indices[l].push(Vec::new());
-            let seed_order = sorted_seed_indices[l].last_mut().expect("just pushed");
-            seed_order.clear();
-            seed_order.extend(0..u32::try_from(c.n).expect("c.n"));
-            seed_order.sort_by_key(|&idx| {
-                let score = u32::try_from(c.seeds[usize::try_from(idx).expect("idx")].score)
-                    .expect("seed score");
-                (u64::from(score) << 32) | u64::from(idx)
-            });
-            let seed_order: &Vec<u32> = seed_order;
+            let seed_order_start = sorted_seed_indices.len();
+            let seed_count = usize::try_from(c.n).expect("c.n");
+            sorted_seed_indices.extend((0..seed_count).map(|idx| {
+                let score = u32::try_from(c.seeds[idx].score).expect("seed score");
+                (u64::from(score) << 32) | u64::try_from(idx).expect("idx")
+            }));
+            sorted_seed_indices[seed_order_start..seed_order_start + seed_count].sort_unstable();
+            sorted_seed_ranges[l].push((seed_order_start, seed_count));
+            let seed_order = &sorted_seed_indices[seed_order_start..seed_order_start + seed_count];
 
             for t in c.seeds.iter().take(usize::try_from(c.n).expect("c.n")) {
                 let b = t.rbeg - i64::from(t.qbeg + cal_max_gap(opt, t.qbeg));
@@ -3677,7 +3931,8 @@ pub fn mem_chain2aln_across_reads_V2(
             );
             assert_eq!(c.rid, rid);
 
-            for &seed_idx in seed_order.iter().rev() {
+            for &seed_key in seed_order.iter().rev() {
+                let seed_idx = seed_key as u32;
                 let s = &mut c.seeds[usize::try_from(seed_idx).expect("seed idx")];
                 let aln_idx = av.n;
                 av.n += 1;
@@ -4138,12 +4393,14 @@ pub fn mem_chain2aln_across_reads_V2(
         let chn = &chain_ar[l];
         let av = &mut av_v[l];
         for (j, c) in chn.a.iter().enumerate().take(chn.n) {
-            let srt2 = &mut sorted_seed_indices[l][j];
+            let (seed_order_start, seed_count) = sorted_seed_ranges[l][j];
+            let srt2 = &mut sorted_seed_indices[seed_order_start..seed_order_start + seed_count];
             for k in (0..srt2.len()).rev() {
-                let seed_idx = srt2[k];
-                if seed_idx == u32::MAX {
+                let seed_key = srt2[k];
+                if seed_key == u64::MAX {
                     continue;
                 }
+                let seed_idx = seed_key as u32;
                 let s = &c.seeds[usize::try_from(seed_idx).expect("seed_idx")];
                 let mut v = 0_i32;
                 for p in av.a.iter().take(av.n) {
@@ -4183,11 +4440,12 @@ pub fn mem_chain2aln_across_reads_V2(
                 }
                 if v < lim[l] {
                     let mut overlap = false;
-                    for v_idx in k + 1..usize::try_from(c.n).expect("c.n") {
-                        let next_seed_idx = srt2[v_idx];
-                        if next_seed_idx == u32::MAX {
+                    for v_idx in k + 1..srt2.len() {
+                        let next_seed_key = srt2[v_idx];
+                        if next_seed_key == u64::MAX {
                             continue;
                         }
+                        let next_seed_idx = next_seed_key as u32;
                         let t = &c.seeds[usize::try_from(next_seed_idx).expect("next_seed_idx")];
                         if f64::from(t.len) < f64::from(s.len) * 0.95 {
                             continue;
@@ -4226,7 +4484,7 @@ pub fn mem_chain2aln_across_reads_V2(
                         let ar = &mut av.a[aln_idx];
                         ar.qb = -1;
                         ar.qe = -1;
-                        srt2[k] = u32::MAX;
+                        srt2[k] = u64::MAX;
                         continue;
                     }
                 }
@@ -4260,6 +4518,7 @@ pub fn mem_chain2aln_across_reads_V2(
             hist,
             temp_pairs,
             lim,
+            sorted_seed_ranges,
             sorted_seed_indices,
             work_pairs,
         };
@@ -4831,6 +5090,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(30, 30, 30), (30, 40, 10), (30, 40, 20), (20, 50, 10)]
         );
+    }
+
+    #[test]
+    fn sort_alnreg_helpers_handle_larger_partitions() {
+        let mut regs: Vec<mem_alnreg_t> = (0..80)
+            .rev()
+            .map(|i| mem_alnreg_t {
+                rid: 0,
+                rb: i64::from((i * 37) % 80),
+                re: i64::from((i * 53) % 80),
+                qb: (i * 11) % 17,
+                score: (i * 7) % 23,
+                ..Default::default()
+            })
+            .collect();
+
+        sort_alnreg_re(regs.len() as i32, &mut regs);
+        for i in 1..regs.len() {
+            assert!(regs[i - 1].re <= regs[i].re);
+        }
+
+        sort_alnreg_score(regs.len() as i32, &mut regs);
+        for i in 1..regs.len() {
+            assert!(
+                regs[i - 1].score > regs[i].score
+                    || (regs[i - 1].score == regs[i].score
+                        && (regs[i - 1].rb < regs[i].rb
+                            || (regs[i - 1].rb == regs[i].rb && regs[i - 1].qb <= regs[i].qb)))
+            );
+        }
     }
 
     #[test]

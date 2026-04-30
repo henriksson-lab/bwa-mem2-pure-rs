@@ -8,12 +8,13 @@
 //! Generated scaffold for `bwa-mem2/src/FMI_search.cpp`.
 
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 use crate::generated::bwa_h::bseq1_t;
 use crate::generated::fmi_search_h::SMEM;
 use crate::generated::read_index_ele_h::indexEle;
 use crate::generated::read_index_ele_h::BWA_IDX_ALL;
+use crate::generated::sais_h::sais_suffixes_i64_upstream_port_mapped;
 
 thread_local! {
     // Reused across all calls to getSMEMsOnePosOneThread on a given Rayon worker.
@@ -42,6 +43,7 @@ const CP_MASK: usize = 63;
 const SA_COMPX: usize = 3;
 const SA_COMPX_MASK: usize = 0x7;
 
+#[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CP_OCC {
     pub cp_count: [i64; 4],
@@ -77,6 +79,52 @@ fn read_u32<R: Read>(reader: &mut R) -> u32 {
     let mut buf = [0_u8; 4];
     reader.read_exact(&mut buf).expect("read u32");
     u32::from_le_bytes(buf)
+}
+
+fn write_i8_slice<W: Write>(writer: &mut W, values: &[i8]) {
+    let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), values.len()) };
+    writer.write_all(bytes).expect("write i8 slice");
+}
+
+#[cfg(target_endian = "little")]
+fn write_u32_slice_le<W: Write>(writer: &mut W, values: &[u32]) {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    };
+    writer.write_all(bytes).expect("write u32 slice");
+}
+
+#[cfg(not(target_endian = "little"))]
+fn write_u32_slice_le<W: Write>(writer: &mut W, values: &[u32]) {
+    for value in values {
+        writer
+            .write_all(&value.to_le_bytes())
+            .expect("write u32 slice");
+    }
+}
+
+#[cfg(target_endian = "little")]
+fn write_cp_occ_slice_le<W: Write>(writer: &mut W, values: &[CP_OCC]) {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    };
+    writer.write_all(bytes).expect("write cp_occ slice");
+}
+
+#[cfg(not(target_endian = "little"))]
+fn write_cp_occ_slice_le<W: Write>(writer: &mut W, values: &[CP_OCC]) {
+    for cpo in values {
+        for value in cpo.cp_count {
+            writer
+                .write_all(&value.to_le_bytes())
+                .expect("write cp_count");
+        }
+        for value in cpo.one_hot_bwt_str {
+            writer
+                .write_all(&value.to_le_bytes())
+                .expect("write one_hot");
+        }
+    }
 }
 
 #[inline(always)]
@@ -225,8 +273,11 @@ impl FMI_search {
         count: &[i64; 5],
     ) -> i32 {
         let outname = format!("{ref_file_name}{CP_FILENAME_SUFFIX}");
-        let mut outstream = File::create(&outname)
-            .unwrap_or_else(|e| panic!("fail to open file '{outname}' : {e}"));
+        let mut outstream = BufWriter::with_capacity(
+            1 << 20,
+            File::create(&outname)
+                .unwrap_or_else(|e| panic!("fail to open file '{outname}' : {e}")),
+        );
 
         let ref_seq_len_with_sentinel = ref_seq_len + 1;
         outstream
@@ -277,18 +328,7 @@ impl FMI_search {
             }
             cp_count[usize::from(bwt[i])] += 1;
         }
-        for cpo in &cp_occ {
-            for value in cpo.cp_count {
-                outstream
-                    .write_all(&value.to_le_bytes())
-                    .expect("write cp_count");
-            }
-            for value in cpo.one_hot_bwt_str {
-                outstream
-                    .write_all(&value.to_le_bytes())
-                    .expect("write one_hot");
-            }
-        }
+        write_cp_occ_slice_le(&mut outstream, &cp_occ);
         self.cp_occ = cp_occ.clone();
 
         let sa_len = (usize::try_from(ref_seq_len_with_sentinel).expect("sa len") >> SA_COMPX) + 1;
@@ -302,16 +342,108 @@ impl FMI_search {
                 pos += 1;
             }
         }
-        for value in &sa_ms_byte {
+        write_i8_slice(&mut outstream, &sa_ms_byte);
+        write_u32_slice_le(&mut outstream, &sa_ls_word);
+        outstream
+            .write_all(&sentinel_index.to_le_bytes())
+            .expect("write sentinel");
+
+        self.reference_seq_len = ref_seq_len_with_sentinel;
+        self.sentinel_index = sentinel_index;
+        self.count = *count;
+        self.sa_ms_byte = sa_ms_byte;
+        self.sa_ls_word = sa_ls_word;
+        0
+    }
+
+    fn build_fm_index_from_suffixes<T>(
+        &mut self,
+        ref_file_name: &str,
+        binary_seq: &[u8],
+        ref_seq_len: i64,
+        suffixes: Vec<T>,
+        count: &[i64; 5],
+    ) -> i32
+    where
+        T: Copy + Into<i64>,
+    {
+        let outname = format!("{ref_file_name}{CP_FILENAME_SUFFIX}");
+        let mut outstream = BufWriter::with_capacity(
+            1 << 20,
+            File::create(&outname)
+                .unwrap_or_else(|e| panic!("fail to open file '{outname}' : {e}")),
+        );
+
+        let ref_seq_len_with_sentinel = ref_seq_len + 1;
+        outstream
+            .write_all(&ref_seq_len_with_sentinel.to_le_bytes())
+            .expect("write ref len");
+        for value in count {
             outstream
                 .write_all(&value.to_le_bytes())
-                .expect("write sa ms");
+                .expect("write count");
         }
-        for value in &sa_ls_word {
-            outstream
-                .write_all(&value.to_le_bytes())
-                .expect("write sa ls");
+
+        let ref_seq_len_aligned =
+            (((usize::try_from(ref_seq_len_with_sentinel).expect("len") + CP_BLOCK_SIZE - 1)
+                / CP_BLOCK_SIZE)
+                * CP_BLOCK_SIZE) as i64;
+        let ref_seq_len_with_sentinel_usize =
+            usize::try_from(ref_seq_len_with_sentinel).expect("sa len");
+        let mut bwt = vec![DUMMY_CHAR; usize::try_from(ref_seq_len_aligned).expect("aligned len")];
+        let sa_len = (ref_seq_len_with_sentinel_usize >> SA_COMPX) + 1;
+        let mut sa_ls_word = vec![0_u32; sa_len];
+        let mut sa_ms_byte = vec![0_i8; sa_len];
+        let mut sentinel_index = -1_i64;
+        let mut pos = 0_usize;
+        for i in 0..ref_seq_len_with_sentinel_usize {
+            let sai = if i == 0 {
+                ref_seq_len
+            } else {
+                suffixes[i - 1].into()
+            };
+            if (i & SA_COMPX_MASK) == 0 {
+                sa_ls_word[pos] = (sai & 0xffff_ffff) as u32;
+                sa_ms_byte[pos] = ((sai >> 32) & 0xff) as i8;
+                pos += 1;
+            };
+            if sai == 0 {
+                bwt[i] = 4;
+                sentinel_index = i as i64;
+            } else {
+                let c = binary_seq[usize::try_from(sai - 1).expect("binary idx")];
+                assert!(c < 4, "ERROR! i = {i}, c = {c}");
+                bwt[i] = c;
+            }
         }
+        drop(suffixes);
+
+        let cp_occ_size =
+            (usize::try_from(ref_seq_len_with_sentinel).expect("cp len") >> CP_SHIFT) + 1;
+        let mut cp_occ = vec![CP_OCC::default(); cp_occ_size];
+        let mut cp_count = [0_i64; 16];
+        for i in 0..usize::try_from(ref_seq_len_with_sentinel).expect("loop len") {
+            if (i & CP_MASK) == 0 {
+                let mut cpo = CP_OCC::default();
+                cpo.cp_count.copy_from_slice(&cp_count[..4]);
+                for j in 0..CP_BLOCK_SIZE {
+                    for slot in &mut cpo.one_hot_bwt_str {
+                        *slot <<= 1;
+                    }
+                    let c = bwt[i + j];
+                    if c < 4 {
+                        cpo.one_hot_bwt_str[usize::from(c)] += 1;
+                    }
+                }
+                cp_occ[i >> CP_SHIFT] = cpo;
+            }
+            cp_count[usize::from(bwt[i])] += 1;
+        }
+        write_cp_occ_slice_le(&mut outstream, &cp_occ);
+        self.cp_occ = cp_occ;
+
+        write_i8_slice(&mut outstream, &sa_ms_byte);
+        write_u32_slice_le(&mut outstream, &sa_ls_word);
         outstream
             .write_all(&sentinel_index.to_le_bytes())
             .expect("write sentinel");
@@ -356,18 +488,21 @@ impl FMI_search {
         let binary_ref_name = format!("{prefix}.0123");
         std::fs::write(&binary_ref_name, &binary_ref_seq).expect("write binary ref");
 
-        let mut suffixes: Vec<i64> = (0..pac_len).collect();
-        suffixes.sort_by(|&a, &b| {
-            let sa = &reference_seq.as_bytes()[usize::try_from(a).expect("a")..];
-            let sb = &reference_seq.as_bytes()[usize::try_from(b).expect("b")..];
-            sa.cmp(sb)
-        });
-        let mut sa_bwt = Vec::with_capacity(suffixes.len() + 1);
-        sa_bwt.push(pac_len);
-        sa_bwt.extend(suffixes);
-
         let counts5 = [count[0], count[1], count[2], count[3], count[4]];
-        self.build_fm_index(&prefix, &binary_ref_seq, pac_len, &sa_bwt, &counts5)
+        if pac_len < i64::from(i32::MAX) {
+            let suffixes = sais_suffixes_i64_upstream_port_mapped(reference_seq.as_bytes());
+            drop(reference_seq);
+            self.build_fm_index_from_suffixes(&prefix, &binary_ref_seq, pac_len, suffixes, &counts5)
+        } else {
+            let mut suffixes: Vec<i64> = (0..pac_len).collect();
+            suffixes.sort_by(|&a, &b| {
+                let sa = &reference_seq.as_bytes()[usize::try_from(a).expect("a")..];
+                let sb = &reference_seq.as_bytes()[usize::try_from(b).expect("b")..];
+                sa.cmp(sb)
+            });
+            drop(reference_seq);
+            self.build_fm_index_from_suffixes(&prefix, &binary_ref_seq, pac_len, suffixes, &counts5)
+        }
     }
 
     #[doc = "Original function: FMI_search::load_index:384"]
@@ -564,6 +699,27 @@ impl FMI_search {
                             break;
                         }
                         smem = new_smem;
+                        // Mirror upstream's ENABLE_PREFETCH: warm cp_occ for next-iter k/l reads.
+                        // Next iteration will read cp_occ[smem.l>>CP_SHIFT] and
+                        // cp_occ[(smem.l+smem.s)>>CP_SHIFT] (after the k/l swap inside backwardExt).
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                            let k_idx = (smem.l >> CP_SHIFT) as usize;
+                            let l_idx = ((smem.l + smem.s) >> CP_SHIFT) as usize;
+                            if k_idx < self.cp_occ.len() {
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(k_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                            }
+                            if l_idx < self.cp_occ.len() {
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(l_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                            }
+                        }
                     } else {
                         break;
                     }
@@ -1704,6 +1860,41 @@ mod tests {
                 loaded.get_sa_entry(i64::try_from(pos >> 3).expect("compressed idx")),
                 sa_bwt[pos],
                 "direct compressed slot mismatch at pos {pos}"
+            );
+        }
+
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn build_index_sorts_ambiguous_reference_by_ascii_sequence() {
+        let mut dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        dir.push(format!("bwa_mem2_rs_fmi_ambiguous_sa_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let prefix = dir.join("ref");
+        let fasta = b">chr1\nTNGCATNA\n";
+        let _ = bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
+
+        let mut built = FMI_search::ctor(prefix.to_str().expect("utf8"));
+        assert_eq!(built.build_index(), 0);
+
+        let (_reference_seq, sa_bwt) = reference_and_sa(&prefix);
+        let mut loaded = FMI_search::ctor(prefix.to_str().expect("utf8"));
+        loaded.load_index();
+
+        for (pos, expected) in sa_bwt.iter().enumerate() {
+            assert_eq!(
+                loaded.get_sa_entry_compressed(i64::try_from(pos).expect("pos"), 0),
+                *expected,
+                "ambiguous reference SA mismatch at BWT pos {pos}"
             );
         }
 

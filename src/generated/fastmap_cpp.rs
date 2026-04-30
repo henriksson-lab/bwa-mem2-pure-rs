@@ -25,9 +25,7 @@ use crate::generated::bwa_cpp::{
     bseq_classify, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg,
 };
 use crate::generated::bwamem_cpp::mem_process_seqs;
-use crate::generated::bwamem_h::{
-    mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, mem_seed_t, worker_t,
-};
+use crate::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, worker_t};
 use crate::generated::fastmap_h::{ktp_aux_t, ktp_data_t};
 use crate::generated::fmi_search_cpp::FMI_search;
 use crate::generated::kseq_h::kseq_t;
@@ -498,13 +496,12 @@ pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32
 
     w.regs = vec![mem_alnreg_v::default(); mem_size];
     w.chain_ar = vec![mem_chain_v::default(); mem_size];
-    w.seedBufSize = i64::try_from(crate::generated::macro_h::BATCH_SIZE * AVG_SEEDS_PER_READ)
-        .expect("seedBufSize");
+    // The faithful Rust chaining path stores seeds in each mem_chain_t. The old C++ seedBuf
+    // backing allocation is no longer read by mem_chain_seeds, so allocating it only inflates RSS.
+    w.seedBufSize = 0;
+    w.seedBuf.clear();
 
     let nthreads_usize = usize::try_from(nthreads.max(1)).expect("nthreads");
-    let seed_buf_len = (mem_size * AVG_SEEDS_PER_READ)
-        .max(nthreads_usize * crate::generated::macro_h::BATCH_SIZE * AVG_SEEDS_PER_READ);
-    w.seedBuf = vec![mem_seed_t::default(); seed_buf_len];
     let wsize = crate::generated::macro_h::BATCH_SIZE * SEEDS_PER_READ;
 
     w.mmc.seqBufLeftRef = vec![Vec::new(); nthreads_usize];
@@ -1055,7 +1052,7 @@ fn usage_text(opt: &mem_opt_t) -> String {
 mod tests {
     use super::{
         cpuid, kt_pipeline, main_mem, memoryAlloc, process, read_text_input, update_a, usage_text,
-        HTStatus, AVG_SEEDS_PER_READ,
+        HTStatus,
     };
     use crate::generated::bntseq_cpp::bns_fasta2bntseq;
     use crate::generated::bwa_cpp::BWA_VERBOSE;
@@ -1076,9 +1073,16 @@ mod tests {
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::atomic::Ordering;
+    use std::sync::{atomic::Ordering, LazyLock, Mutex};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static MAIN_MEM_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn run_main_mem(argv: &[String]) -> i32 {
+        let _guard = MAIN_MEM_TEST_LOCK.lock().expect("main_mem test lock");
+        main_mem(argv)
+    }
 
     fn tutorial_fixture_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1167,7 +1171,7 @@ mod tests {
             reads1.to_str().expect("utf8").to_string(),
             reads2.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let lines = fs::read_to_string(&out)
             .expect("read sam")
             .lines()
@@ -1213,7 +1217,7 @@ mod tests {
             reads1.to_str().expect("utf8").to_string(),
             reads2.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let body = fs::read_to_string(&out)
             .expect("read sam")
             .lines()
@@ -1353,11 +1357,8 @@ mod tests {
 
         assert_eq!(w.regs.len(), 3);
         assert_eq!(w.chain_ar.len(), 3);
-        assert_eq!(w.seedBuf.len(), 2 * BATCH_SIZE * AVG_SEEDS_PER_READ);
-        assert_eq!(
-            w.seedBufSize,
-            i64::try_from(BATCH_SIZE * AVG_SEEDS_PER_READ).expect("seedBufSize")
-        );
+        assert_eq!(w.seedBuf.len(), 0);
+        assert_eq!(w.seedBufSize, 0);
 
         assert_eq!(w.mmc.seqBufLeftRef.len(), 2);
         assert_eq!(w.mmc.seqBufLeftRef[0].len(), 0);
@@ -1614,7 +1615,7 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("@SQ\tSN:chr1\tLN:12\n"), "{sam}");
         assert!(sam.contains("mm0\t"), "{sam}");
@@ -1665,7 +1666,7 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("mmgz\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
@@ -1771,7 +1772,7 @@ mod tests {
             reads1.to_str().expect("utf8").to_string(),
             reads2.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("pair0\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
@@ -1821,7 +1822,7 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("smart0\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
@@ -1885,8 +1886,8 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv1), 0);
-        assert_eq!(main_mem(&argv2), 0);
+        assert_eq!(run_main_mem(&argv1), 0);
+        assert_eq!(run_main_mem(&argv2), 0);
         let sam1 = fs::read_to_string(&out1).expect("sam1");
         let sam2 = fs::read_to_string(&out2).expect("sam2");
         assert_eq!(sam1, sam2);
@@ -1943,7 +1944,7 @@ mod tests {
             reads1.to_str().expect("utf8").to_string(),
             reads2.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main_mem(&argv), 0);
+        assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam");
         let record_count = sam.lines().filter(|line| !line.starts_with('@')).count();
         assert_eq!(record_count, 520 * 2, "{sam}");

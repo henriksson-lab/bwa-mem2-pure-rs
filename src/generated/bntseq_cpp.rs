@@ -423,6 +423,7 @@ pub fn bwa_fa2pac(argv: &[String]) -> i32 {
 }
 
 #[doc = "Original function: bns_pos2rid:378"]
+#[inline(always)]
 pub fn bns_pos2rid(bns: &bntseq_t, pos_f: i64) -> i32 {
     if pos_f >= bns.l_pac {
         return -1;
@@ -450,6 +451,7 @@ pub fn bns_pos2rid(bns: &bntseq_t, pos_f: i64) -> i32 {
 }
 
 #[doc = "Original function: bns_intv2rid:394"]
+#[inline(always)]
 pub fn bns_intv2rid(bns: &bntseq_t, rb: i64, re: i64) -> i32 {
     let mut is_rev = 0;
     if rb < bns.l_pac && re > bns.l_pac {
@@ -535,15 +537,69 @@ pub fn bns_get_seq_into(
             let beg_f = (l_pac << 1) - 1 - end;
             let end_f = (l_pac << 1) - 1 - beg;
             // Walk backward over (beg_f, end_f] complementing each base.
-            out.extend((beg_f + 1..=end_f).rev().map(|k| 3 - get_pac(pac, k)));
+            decode_pac_reverse_complement_into(pac, beg_f + 1, end_f + 1, out);
         } else {
             // Forward walk over [beg, end).
-            out.extend((beg..end).map(|k| get_pac(pac, k)));
+            decode_pac_forward_into(pac, beg, end, out);
         }
         true
     } else {
         *len = 0;
         false
+    }
+}
+
+/// Decode 4 bases per byte for a forward range [beg, end) and append to `out`.
+/// pac is the bit-packed reference (4 bases per byte, bit-position 6,4,2,0 for offsets 0,1,2,3).
+#[inline]
+fn decode_pac_forward_into(pac: &[u8], beg: i64, end: i64, out: &mut Vec<u8>) {
+    let mut k = beg;
+    // Prefix: bring k to a 4-byte boundary
+    while k < end && (k & 3) != 0 {
+        out.push(get_pac(pac, k));
+        k += 1;
+    }
+    // Middle: read each byte once, emit 4 bases
+    while k + 4 <= end {
+        let byte = unsafe { *pac.get_unchecked((k >> 2) as usize) };
+        out.push((byte >> 6) & 3);
+        out.push((byte >> 4) & 3);
+        out.push((byte >> 2) & 3);
+        out.push(byte & 3);
+        k += 4;
+    }
+    // Suffix
+    while k < end {
+        out.push(get_pac(pac, k));
+        k += 1;
+    }
+}
+
+/// Decode 4 bases per byte for a reverse-complement walk over (beg, end] reversed and append.
+/// We emit `3 - base` for each k from end-1 down to beg.
+#[inline]
+fn decode_pac_reverse_complement_into(pac: &[u8], beg: i64, end: i64, out: &mut Vec<u8>) {
+    // Walk k from end-1 down to beg, outputting 3 - get_pac(pac, k).
+    let mut k = end - 1;
+    // Suffix (high-k side): align k+1 down to a 4-byte boundary
+    while k >= beg && (k & 3) != 3 {
+        out.push(3 - get_pac(pac, k));
+        k -= 1;
+    }
+    // Middle: read each byte once, emit 4 complemented bases in reverse
+    while k - 3 >= beg {
+        let byte = unsafe { *pac.get_unchecked((k >> 2) as usize) };
+        // For this byte, k corresponds to offset 3 (lowest 2 bits), then offsets 2, 1, 0.
+        out.push(3 - (byte & 3));
+        out.push(3 - ((byte >> 2) & 3));
+        out.push(3 - ((byte >> 4) & 3));
+        out.push(3 - ((byte >> 6) & 3));
+        k -= 4;
+    }
+    // Prefix (low-k side)
+    while k >= beg {
+        out.push(3 - get_pac(pac, k));
+        k -= 1;
     }
 }
 
