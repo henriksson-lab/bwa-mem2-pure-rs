@@ -2,6 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
+* 2026-04-30: Index generation now as fast as original
 * 2026-04-26: Passing all tests so far, speed on par with original. More testing needed though - use on your own risk!
 
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code! 

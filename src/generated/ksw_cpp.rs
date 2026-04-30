@@ -1507,18 +1507,15 @@ pub fn ksw_global2(
         } else {
             z.clear();
         }
+        // Skip the resize-with-zero step: every qp byte is overwritten by extend below.
         qp.clear();
-        qp.resize(qlen_usize * m_usize, 0);
+        qp.reserve(qlen_usize * m_usize);
         eh.clear();
         eh.resize(qlen_usize + 1, eh_t::default());
 
-        let mut idx = 0_usize;
         for k in 0..m_usize {
             let p = &mat[k * m_usize..(k + 1) * m_usize];
-            for &q in query.iter().take(qlen_usize) {
-                qp[idx] = p[usize::from(q)];
-                idx += 1;
-            }
+            qp.extend(query.iter().take(qlen_usize).map(|&q| p[usize::from(q)]));
         }
 
         eh[0].h = 0;
