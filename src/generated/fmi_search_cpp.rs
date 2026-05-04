@@ -138,17 +138,18 @@ fn decode_bwt_base(cp_occ: &[CP_OCC], sp: i64) -> u8 {
     let y = CP_BLOCK_SIZE - ((sp & CP_MASK as i64) as usize) - 1;
     debug_assert!(occ_id < cp_occ.len());
     let one_hot_bwt_str = unsafe { &cp_occ.get_unchecked(occ_id).one_hot_bwt_str };
-    // Branchless: bit b of (one_hot[b] >> y) tells us which base; combine into a result.
-    if ((one_hot_bwt_str[0] >> y) & 1) != 0 {
-        0
-    } else if ((one_hot_bwt_str[1] >> y) & 1) != 0 {
-        1
-    } else if ((one_hot_bwt_str[2] >> y) & 1) != 0 {
-        2
-    } else if ((one_hot_bwt_str[3] >> y) & 1) != 0 {
-        3
-    } else {
+    // Branchless: pack the y-th bit of each lane into a 4-bit nibble, then trailing_zeros gives
+    // the base index (0..3). Sentinel value 4 when no lane bit is set. Avoids the chain of 4
+    // mispredict-prone branches in the if/else-if version.
+    let bit0 = ((one_hot_bwt_str[0] >> y) & 1) as u32;
+    let bit1 = ((one_hot_bwt_str[1] >> y) & 1) as u32;
+    let bit2 = ((one_hot_bwt_str[2] >> y) & 1) as u32;
+    let bit3 = ((one_hot_bwt_str[3] >> y) & 1) as u32;
+    let packed = bit0 | (bit1 << 1) | (bit2 << 2) | (bit3 << 3);
+    if packed == 0 {
         4
+    } else {
+        packed.trailing_zeros() as u8
     }
 }
 
@@ -173,25 +174,19 @@ fn occ(cp_occ: &[CP_OCC], one_hot_mask_array: &[u64], sp: i64, b: u8) -> i64 {
 #[doc = "Original function: compare_smem:987"]
 #[inline]
 pub fn compare_smem(a: &SMEM, b: &SMEM) -> i32 {
-    if a.rid < b.rid {
-        return -1;
+    match compare_smem_ord(a, b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
     }
-    if a.rid > b.rid {
-        return 1;
-    }
-    if a.m < b.m {
-        return -1;
-    }
-    if a.m > b.m {
-        return 1;
-    }
-    if a.n > b.n {
-        return -1;
-    }
-    if a.n < b.n {
-        return 1;
-    }
-    0
+}
+
+#[inline]
+pub fn compare_smem_ord(a: &SMEM, b: &SMEM) -> std::cmp::Ordering {
+    a.rid
+        .cmp(&b.rid)
+        .then_with(|| a.m.cmp(&b.m))
+        .then_with(|| b.n.cmp(&a.n))
 }
 
 impl FMI_search {
@@ -601,7 +596,7 @@ impl FMI_search {
         let mut total = *num_total_smem;
         SMEM_PREV_SCRATCH.with(|cell| {
             let mut prev_array = cell.borrow_mut();
-            let need = usize::try_from(max_readlength).expect("max_readlength");
+            let need = max_readlength.max(0) as usize;
             if prev_array.len() < need {
                 prev_array.resize(need, SMEM::default());
             }
@@ -646,28 +641,28 @@ impl FMI_search {
         let _ = max_readlength;
         let _ = num_total_smem;
         let limit = usize::min(
-            usize::try_from(numReads).expect("numReads"),
+            numReads as usize,
             usize::min(
                 query_pos_array.len(),
                 usize::min(min_intv_array.len(), rid_array.len()),
             ),
         );
 
-        let min_seed_len_u32 = u32::try_from(minSeedLen).expect("minSeedLen");
+        let min_seed_len_u32 = minSeedLen as u32;
         for i in 0..limit {
-            let x = usize::try_from(query_pos_array[i]).expect("query_pos");
-            let rid = usize::try_from(rid_array[i]).expect("rid");
-            let mut next_x = i32::try_from(x + 1).expect("next_x");
-            let readlength = usize::try_from(seq_[rid].l_seq).expect("readlength");
-            let offset = usize::try_from(query_cum_len_ar[rid]).expect("offset");
+            let x = query_pos_array[i] as usize;
+            let rid = rid_array[i] as usize;
+            let mut next_x = (x + 1) as i32;
+            let readlength = seq_[rid].l_seq as usize;
+            let offset = query_cum_len_ar[rid] as usize;
             let min_intv = i64::from(min_intv_array[i]);
             let mut a = enc_qdb[offset + x];
 
             if a < 4 {
                 let mut smem = SMEM {
-                    rid: u32::try_from(rid).expect("rid"),
-                    m: u32::try_from(x).expect("m"),
-                    n: u32::try_from(x).expect("n"),
+                    rid: rid as u32,
+                    m: x as u32,
+                    n: x as u32,
                     k: self.count[usize::from(a)],
                     l: self.count[usize::from(3 - a)],
                     s: self.count[usize::from(a + 1)] - self.count[usize::from(a)],
@@ -676,7 +671,8 @@ impl FMI_search {
 
                 for j in (x + 1)..readlength {
                     a = enc_qdb[offset + j];
-                    next_x = i32::try_from(j + 1).expect("next_x");
+                    // j < readlength which fits in i32/u32 for typical sequencing reads.
+                    next_x = (j + 1) as i32;
                     if a < 4 {
                         let mut smem_ = smem;
                         smem_.k = smem.l;
@@ -685,7 +681,7 @@ impl FMI_search {
                         let mut new_smem = new_smem_;
                         new_smem.k = new_smem_.l;
                         new_smem.l = new_smem_.k;
-                        new_smem.n = u32::try_from(j).expect("n");
+                        new_smem.n = j as u32;
 
                         let s_neq_mask = if new_smem.s != smem.s {
                             1_usize
@@ -695,30 +691,28 @@ impl FMI_search {
                         prev_array[num_prev] = smem;
                         num_prev += s_neq_mask;
                         if new_smem.s < min_intv {
-                            next_x = i32::try_from(j).expect("next_x");
+                            next_x = j as i32;
                             break;
                         }
                         smem = new_smem;
                         // Mirror upstream's ENABLE_PREFETCH: warm cp_occ for next-iter k/l reads.
                         // Next iteration will read cp_occ[smem.l>>CP_SHIFT] and
                         // cp_occ[(smem.l+smem.s)>>CP_SHIFT] (after the k/l swap inside backwardExt).
+                        // _mm_prefetch on invalid addresses is a silent no-op (no fault) so the
+                        // bounds checks are unnecessary; smem.l is already within valid BWT range.
                         #[cfg(target_arch = "x86_64")]
                         unsafe {
                             use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                             let k_idx = (smem.l >> CP_SHIFT) as usize;
                             let l_idx = ((smem.l + smem.s) >> CP_SHIFT) as usize;
-                            if k_idx < self.cp_occ.len() {
-                                _mm_prefetch(
-                                    self.cp_occ.as_ptr().add(k_idx) as *const i8,
-                                    _MM_HINT_T0,
-                                );
-                            }
-                            if l_idx < self.cp_occ.len() {
-                                _mm_prefetch(
-                                    self.cp_occ.as_ptr().add(l_idx) as *const i8,
-                                    _MM_HINT_T0,
-                                );
-                            }
+                            _mm_prefetch(
+                                self.cp_occ.as_ptr().add(k_idx) as *const i8,
+                                _MM_HINT_T0,
+                            );
+                            _mm_prefetch(
+                                self.cp_occ.as_ptr().add(l_idx) as *const i8,
+                                _MM_HINT_T0,
+                            );
                         }
                     } else {
                         break;
@@ -741,10 +735,54 @@ impl FMI_search {
                     }
 
                     let mut p = 0_usize;
+                    let j_u32 = j as u32; // j < x < readlength fits in u32.
+                    // Each backwardExt call reads cp_occ[smem.k>>CP_SHIFT] and
+                    // cp_occ[(smem.k+smem.s)>>CP_SHIFT]. The next iter's smem is prev_array[p+1]
+                    // (or [0] when first while breaks into second), known up-front. Warming those
+                    // lines hides the DRAM latency that dominates the SMEM hot loop.
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                        if num_prev > 0 {
+                            let smem0 = prev_array[0];
+                            let k_idx = (smem0.k >> CP_SHIFT) as usize;
+                            let l_idx = ((smem0.k + smem0.s) >> CP_SHIFT) as usize;
+                            unsafe {
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(k_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(l_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                            }
+                        }
+                    }
+
                     while p < num_prev {
                         let smem = prev_array[p];
+                        // Prefetch next iter's cp_occ (whichever path we take, p+1 is consumed
+                        // either by this loop or the next).
+                        #[cfg(target_arch = "x86_64")]
+                        if p + 1 < num_prev {
+                            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                            let next_smem = prev_array[p + 1];
+                            let k_idx = (next_smem.k >> CP_SHIFT) as usize;
+                            let l_idx = ((next_smem.k + next_smem.s) >> CP_SHIFT) as usize;
+                            unsafe {
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(k_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(l_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                            }
+                        }
                         let mut new_smem = self.backwardExt(smem, a);
-                        new_smem.m = u32::try_from(j).expect("m");
+                        new_smem.m = j_u32;
 
                         if (new_smem.s < min_intv) && (smem.n - smem.m + 1 >= min_seed_len_u32) {
                             match_array.push(smem);
@@ -763,8 +801,25 @@ impl FMI_search {
 
                     while p < num_prev {
                         let smem = prev_array[p];
+                        #[cfg(target_arch = "x86_64")]
+                        if p + 1 < num_prev {
+                            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                            let next_smem = prev_array[p + 1];
+                            let k_idx = (next_smem.k >> CP_SHIFT) as usize;
+                            let l_idx = ((next_smem.k + next_smem.s) >> CP_SHIFT) as usize;
+                            unsafe {
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(k_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                                _mm_prefetch(
+                                    self.cp_occ.as_ptr().add(l_idx) as *const i8,
+                                    _MM_HINT_T0,
+                                );
+                            }
+                        }
                         let mut new_smem = self.backwardExt(smem, a);
-                        new_smem.m = u32::try_from(j).expect("m");
+                        new_smem.m = j_u32;
                         if (new_smem.s >= min_intv) && (new_smem.s != curr_s) {
                             curr_s = new_smem.s;
                             prev_array[num_curr] = new_smem;
@@ -788,7 +843,7 @@ impl FMI_search {
                 }
             }
 
-            query_pos_array[i] = i16::try_from(next_x).expect("next_x");
+            query_pos_array[i] = next_x as i16;
         }
     }
 
@@ -807,7 +862,7 @@ impl FMI_search {
         match_array: &mut Vec<SMEM>,
         num_total_smem: &mut i64,
     ) {
-        let num_reads = usize::try_from(numReads).expect("numReads");
+        let num_reads = numReads as usize;
         let mut num_active = numReads;
         *num_total_smem = 0;
 
@@ -818,9 +873,8 @@ impl FMI_search {
 
             loop {
                 let mut tail = 0_usize;
-                for head in 0..usize::try_from(num_active).expect("num_active") {
-                    let readlength =
-                        seq_[usize::try_from(rid_array[head]).expect("rid head")].l_seq;
+                for head in 0..(num_active as usize) {
+                    let readlength = seq_[rid_array[head] as usize].l_seq;
                     if i32::from(query_pos_array[head]) < readlength {
                         rid_array[tail] = rid_array[head];
                         query_pos_array[tail] = query_pos_array[head];
@@ -834,7 +888,7 @@ impl FMI_search {
                     &mut query_pos_array[..tail],
                     &mut min_intv_array[..tail],
                     &mut rid_array[..tail],
-                    i32::try_from(tail).expect("tail"),
+                    tail as i32,
                     batch_size,
                     seq_,
                     query_cum_len_ar,
@@ -843,7 +897,7 @@ impl FMI_search {
                     match_array,
                     num_total_smem,
                 );
-                num_active = i32::try_from(tail).expect("tail");
+                num_active = tail as i32;
                 if num_active <= 0 {
                     break;
                 }
@@ -864,7 +918,7 @@ impl FMI_search {
     ) -> i64 {
         let mut num_total_seed = 0_i64;
         let limit = usize::min(
-            usize::try_from(numReads).expect("numReads"),
+            numReads as usize,
             usize::min(
                 seq_.len(),
                 usize::min(max_intv_array.len(), query_cum_len_ar.len()),
@@ -874,25 +928,25 @@ impl FMI_search {
         for i in 0..limit {
             let readlength = seq_[i].l_seq;
             let mut x = 0_i16;
-            while x < i16::try_from(readlength).expect("readlength") {
+            while x < readlength as i16 {
                 let mut next_x = x + 1;
                 let mut smem = SMEM {
-                    rid: u32::try_from(i).expect("rid"),
-                    m: u32::try_from(x).expect("m"),
-                    n: u32::try_from(x).expect("n"),
+                    rid: i as u32,
+                    m: x as u32,
+                    n: x as u32,
                     ..Default::default()
                 };
 
-                let offset = usize::try_from(query_cum_len_ar[i]).expect("query offset");
-                let a = enc_qdb[offset + usize::try_from(x).expect("x")];
+                let offset = query_cum_len_ar[i] as usize;
+                let a = enc_qdb[offset + x as usize];
                 if a < 4 {
                     smem.k = self.count[usize::from(a)];
                     smem.l = self.count[usize::from(3 - a)];
                     smem.s = self.count[usize::from(a + 1)] - self.count[usize::from(a)];
 
                     for j in (i32::from(x) + 1)..readlength {
-                        next_x = i16::try_from(j + 1).expect("next_x");
-                        let a = enc_qdb[offset + usize::try_from(j).expect("j")];
+                        next_x = (j + 1) as i16;
+                        let a = enc_qdb[offset + j as usize];
                         if a < 4 {
                             let mut smem_ = smem;
                             smem_.k = smem.l;
@@ -901,14 +955,11 @@ impl FMI_search {
                             let mut new_smem = new_smem_;
                             new_smem.k = new_smem_.l;
                             new_smem.l = new_smem_.k;
-                            new_smem.n = u32::try_from(j).expect("n");
+                            new_smem.n = j as u32;
                             smem = new_smem;
 
                             if (smem.s < i64::from(max_intv_array[i]))
-                                && ((i32::try_from(smem.n).expect("n")
-                                    - i32::try_from(smem.m).expect("m")
-                                    + 1)
-                                    >= minSeedLen)
+                                && ((smem.n as i32 - smem.m as i32 + 1) >= minSeedLen)
                             {
                                 if smem.s > 0 {
                                     match_array.push(smem);
@@ -1117,12 +1168,12 @@ impl FMI_search {
         nthreads: i32,
     ) {
         let per_thread_quota = (num_reads + (nthreads - 1)) / nthreads;
-        for tid in 0..usize::try_from(nthreads).expect("nthreads") {
-            let first = i32::try_from(tid).expect("tid") * per_thread_quota;
-            let base = usize::try_from(first * readlength).expect("slice base");
-            let len = usize::try_from(num_total_smem[tid]).expect("sort len");
+        for tid in 0..nthreads as usize {
+            let first = tid as i32 * per_thread_quota;
+            let base = (first * readlength) as usize;
+            let len = num_total_smem[tid] as usize;
             let end = base + len;
-            match_array[base..end].sort_by(|a, b| compare_smem(a, b).cmp(&0));
+            match_array[base..end].sort_by(compare_smem_ord);
         }
     }
 
@@ -1238,7 +1289,7 @@ impl FMI_search {
         count: u32,
         _nthreads: i32,
     ) {
-        let limit = usize::min(pos_array.len(), usize::try_from(count).expect("count"));
+        let limit = usize::min(pos_array.len(), count as usize);
         if coord_array.len() < limit {
             coord_array.resize(limit, 0);
         }
@@ -1257,7 +1308,7 @@ impl FMI_search {
         max_occ: i32,
     ) {
         let mut total_coord_count = 0_usize;
-        let limit = usize::min(smem_array.len(), usize::try_from(count).expect("count"));
+        let limit = usize::min(smem_array.len(), count as usize);
         if coord_count_array.len() < limit {
             coord_count_array.resize(limit, 0);
         }
@@ -1272,7 +1323,7 @@ impl FMI_search {
             let mut j = smem.k;
             while j < hi && c < max_occ {
                 let sa_entry = self.get_sa_entry(j);
-                let target = total_coord_count + usize::try_from(c).expect("coord idx");
+                let target = total_coord_count + c as usize;
                 if coord_array.len() <= target {
                     coord_array.push(sa_entry);
                 } else {
@@ -1282,7 +1333,7 @@ impl FMI_search {
                 c += 1;
             }
             coord_count_array[i] = c;
-            total_coord_count += usize::try_from(c).expect("total coord count");
+            total_coord_count += c as usize;
         }
     }
 
@@ -1334,7 +1385,7 @@ impl FMI_search {
         tid: i32,
     ) {
         let mut total_coord_count = 0_usize;
-        let limit = usize::min(smem_array.len(), usize::try_from(count).expect("count"));
+        let limit = usize::min(smem_array.len(), count as usize);
         if coord_array.is_empty() {
             coord_array.reserve(limit);
         }
@@ -1349,7 +1400,7 @@ impl FMI_search {
             let mut j = smem.k;
             while j < hi && c < max_occ {
                 let sa_entry = self.get_sa_entry_compressed(j, tid);
-                let target = total_coord_count + usize::try_from(c).expect("coord idx");
+                let target = total_coord_count + c as usize;
                 if coord_array.len() <= target {
                     coord_array.push(sa_entry);
                 } else {
@@ -1359,7 +1410,7 @@ impl FMI_search {
                 c += 1;
             }
             *coord_count_array += c;
-            total_coord_count += usize::try_from(c).expect("total coord count");
+            total_coord_count += c as usize;
         }
     }
 
@@ -1419,7 +1470,7 @@ impl FMI_search {
             pos_ar.clear();
             map_ar.clear();
             let mut total_coord_count = 0_usize;
-            let limit = usize::min(smem_array.len(), usize::try_from(count).expect("count"));
+            let limit = usize::min(smem_array.len(), count as usize);
 
             for smem in &smem_array[..limit] {
                 let mut c = 0_i32;
@@ -1432,20 +1483,35 @@ impl FMI_search {
                 let mut j = smem.k;
                 while j < hi && c < max_occ {
                     pos_ar.push(j);
-                    map_ar.push(total_coord_count + usize::try_from(c).expect("coord idx"));
+                    map_ar.push(total_coord_count + c as usize);
                     j += step;
                     c += 1;
                 }
                 *coord_count_array += i64::from(c);
-                total_coord_count += usize::try_from(c).expect("total coord count");
+                total_coord_count += c as usize;
             }
 
-            *id_ += i64::try_from(pos_ar.len()).expect("id len");
+            *id_ += pos_ar.len() as i64;
             if coord_array.len() < total_coord_count {
                 coord_array.resize(total_coord_count, 0);
             }
 
             for (idx, &pos) in pos_ar.iter().enumerate() {
+                // Prefetch cp_occ for the NEXT pos_ar entry while we walk the current one.
+                // Each call_one_step does cp_occ[pos>>CP_SHIFT] if the position isn't at a
+                // compressed SA slot — i.e., 7 of 8 cases. The walks are independent, so
+                // pre-loading the next pos's cp_occ entry hides DRAM latency.
+                #[cfg(target_arch = "x86_64")]
+                if let Some(&next_pos) = pos_ar.get(idx + 1) {
+                    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                    let next_idx = (next_pos >> CP_SHIFT) as usize;
+                    unsafe {
+                        _mm_prefetch(
+                            self.cp_occ.as_ptr().add(next_idx) as *const i8,
+                            _MM_HINT_T0,
+                        );
+                    }
+                }
                 let mut working = pos;
                 let mut sp = 0_i64;
                 let mut offset = 0_i64;

@@ -433,13 +433,12 @@ pub fn bns_pos2rid(bns: &bntseq_t, pos_f: i64) -> i32 {
     let mut right = bns.n_seqs;
     while left < right {
         mid = (left + right) >> 1;
-        let mid_usize = usize::try_from(mid).expect("mid");
+        let mid_usize = mid as usize;
         if pos_f >= bns.anns[mid_usize].offset {
             if mid == bns.n_seqs - 1 {
                 break;
             }
-            let next = usize::try_from(mid + 1).expect("mid+1");
-            if pos_f < bns.anns[next].offset {
+            if pos_f < bns.anns[mid_usize + 1].offset {
                 break;
             }
             left = mid + 1;
@@ -481,7 +480,7 @@ pub fn bns_cnt_ambi(bns: &bntseq_t, pos_f: i64, len: i32, ref_id: Option<&mut i3
     let mut nn = 0_i32;
     while left < right {
         let mid = (left + right) >> 1;
-        let amb = &bns.ambs[usize::try_from(mid).expect("mid")];
+        let amb = &bns.ambs[mid as usize];
         if pos_f >= amb.offset + i64::from(amb.len) {
             left = mid + 1;
         } else if pos_f + i64::from(len) <= amb.offset {
@@ -489,10 +488,10 @@ pub fn bns_cnt_ambi(bns: &bntseq_t, pos_f: i64, len: i32, ref_id: Option<&mut i3
         } else {
             if pos_f >= amb.offset {
                 let overlap_end = (amb.offset + i64::from(amb.len)).min(pos_f + i64::from(len));
-                nn += i32::try_from(overlap_end - pos_f).expect("overlap");
+                nn += (overlap_end - pos_f) as i32;
             } else {
                 let overlap_end = (amb.offset + i64::from(amb.len)).min(pos_f + i64::from(len));
-                nn += i32::try_from(overlap_end - amb.offset).expect("overlap");
+                nn += (overlap_end - amb.offset) as i32;
             }
             break;
         }
@@ -532,7 +531,7 @@ pub fn bns_get_seq_into(
     if beg >= l_pac || end <= l_pac {
         *len = end - beg;
         out.clear();
-        out.reserve(usize::try_from(end - beg + 64).expect("seq capacity"));
+        out.reserve((end - beg + 64) as usize);
         if beg >= l_pac {
             let beg_f = (l_pac << 1) - 1 - end;
             let end_f = (l_pac << 1) - 1 - beg;
@@ -559,13 +558,15 @@ fn decode_pac_forward_into(pac: &[u8], beg: i64, end: i64, out: &mut Vec<u8>) {
         out.push(get_pac(pac, k));
         k += 1;
     }
-    // Middle: read each byte once, emit 4 bases
+    // Middle: read each byte once, emit 4 bases via extend_from_slice (single bounds check).
     while k + 4 <= end {
         let byte = unsafe { *pac.get_unchecked((k >> 2) as usize) };
-        out.push((byte >> 6) & 3);
-        out.push((byte >> 4) & 3);
-        out.push((byte >> 2) & 3);
-        out.push(byte & 3);
+        out.extend_from_slice(&[
+            (byte >> 6) & 3,
+            (byte >> 4) & 3,
+            (byte >> 2) & 3,
+            byte & 3,
+        ]);
         k += 4;
     }
     // Suffix
@@ -586,14 +587,16 @@ fn decode_pac_reverse_complement_into(pac: &[u8], beg: i64, end: i64, out: &mut 
         out.push(3 - get_pac(pac, k));
         k -= 1;
     }
-    // Middle: read each byte once, emit 4 complemented bases in reverse
+    // Middle: read each byte once, emit 4 complemented bases in reverse via extend_from_slice.
     while k - 3 >= beg {
         let byte = unsafe { *pac.get_unchecked((k >> 2) as usize) };
         // For this byte, k corresponds to offset 3 (lowest 2 bits), then offsets 2, 1, 0.
-        out.push(3 - (byte & 3));
-        out.push(3 - ((byte >> 2) & 3));
-        out.push(3 - ((byte >> 4) & 3));
-        out.push(3 - ((byte >> 6) & 3));
+        out.extend_from_slice(&[
+            3 - (byte & 3),
+            3 - ((byte >> 2) & 3),
+            3 - ((byte >> 4) & 3),
+            3 - ((byte >> 6) & 3),
+        ]);
         k -= 4;
     }
     // Prefix (low-k side)
@@ -634,7 +637,7 @@ pub fn bns_fetch_seq_into(
 
     let mut is_rev = 0;
     *rid = bns_pos2rid(bns, bns_depos(bns, mid, &mut is_rev));
-    let ann = &bns.anns[usize::try_from(*rid).expect("rid")];
+    let ann = &bns.anns[*rid as usize];
     let mut far_beg = ann.offset;
     let mut far_end = far_beg + i64::from(ann.len);
     if is_rev != 0 {

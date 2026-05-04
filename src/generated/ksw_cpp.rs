@@ -22,6 +22,10 @@ pub struct eh_t {
 thread_local! {
     static KSW_GLOBAL_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<i8>, Vec<eh_t>)> =
         const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+    // Reused across ksw_extend2 calls. eh/qp grow to ~qlen*m bytes per call. With chain
+    // extension scalar fallback hitting this path, pooling avoids per-pair Vec allocations.
+    static KSW_EXTEND_SCRATCH: std::cell::RefCell<(Vec<eh_t>, Vec<i8>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 
 const MINUS_INF: i32 = -0x4000_0000;
@@ -43,7 +47,7 @@ pub fn ksw_qinit(size: i32, qlen: i32, query: &[u8], m: i32, mat: &[i8]) -> _ksw
     let slen = (qlen + p - 1) / p;
     let mut shift = i8::MAX;
     let mut mdiff = i8::MIN;
-    for &score in mat.iter().take(usize::try_from(m * m).expect("m*m")) {
+    for &score in mat.iter().take((m * m) as usize) {
         if score < shift {
             shift = score;
         }
@@ -58,8 +62,8 @@ pub fn ksw_qinit(size: i32, qlen: i32, query: &[u8], m: i32, mat: &[i8]) -> _ksw
         shift: (0_i16).wrapping_sub(i16::from(shift)) as u8,
         mdiff: mdiff.wrapping_add((0_i16).wrapping_sub(i16::from(shift)) as i8) as u8,
         max,
-        size: u8::try_from(size).expect("size"),
-        query: query[..usize::try_from(qlen).expect("qlen")].to_vec(),
+        size: size as u8,
+        query: query[..qlen as usize].to_vec(),
         m,
         mat: mat.to_vec(),
     }
@@ -76,7 +80,7 @@ pub fn ksw_u8(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
+    let tlen_usize = tlen as usize;
     let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
         xtra & 0xffff
     } else {
@@ -140,7 +144,7 @@ pub fn ksw_i16(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
+    let tlen_usize = tlen as usize;
     let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
         xtra & 0xffff
     } else {
@@ -806,7 +810,7 @@ fn ksw_u8_slices_scalar(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
+    let tlen_usize = tlen as usize;
     let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
         xtra & 0xffff
     } else {
@@ -897,7 +901,7 @@ fn ksw_i16_slices_scalar(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
+    let tlen_usize = tlen as usize;
     let endsc_in = if (xtra & crate::generated::ksw_h::KSW_XSTOP) != 0 {
         xtra & 0xffff
     } else {
@@ -949,7 +953,7 @@ fn ksw_i16_slices_scalar(
 // Compute `q->max` from a scoring matrix (mirrors ksw_qinit's mdiff calculation).
 pub(crate) fn ksw_qmax(m: i32, mat: &[i8]) -> u8 {
     let mut mdiff = i8::MIN;
-    for &score in mat.iter().take(usize::try_from(m * m).expect("m*m")) {
+    for &score in mat.iter().take((m * m) as usize) {
         if score > mdiff {
             mdiff = score;
         }
@@ -970,7 +974,7 @@ fn build_score_peaks(row_maxes: &[i32], minsc: i32) -> Vec<(i32, i32)> {
         if imax < minsc {
             continue;
         }
-        let i = i32::try_from(i).expect("row idx");
+        let i = i as i32;
         if let Some(last) = b.last_mut() {
             if last.1 + 1 == i {
                 if last.0 < imax {
@@ -989,8 +993,7 @@ fn build_score_peaks(row_maxes: &[i32], minsc: i32) -> Vec<(i32, i32)> {
 #[doc = "Original function: revseq:340"]
 #[inline]
 pub fn revseq(l: i32, s: &mut [u8]) {
-    let l = usize::try_from(l).expect("revseq length");
-    s[..l].reverse();
+    s[..l as usize].reverse();
 }
 
 fn local_align_affine(
@@ -1032,7 +1035,7 @@ fn local_align_affine_with_rows_endsc(
 ) -> (kswr_t, Vec<i32>) {
     let qlen = query.len();
     let tlen = target.len();
-    let m_usize = usize::try_from(m).expect("m");
+    let m_usize = m as usize;
     let mut h_prev = vec![0_i32; qlen + 1];
     let mut h_curr = vec![0_i32; qlen + 1];
     let mut e_prev = vec![MINUS_INF; qlen + 1];
@@ -1072,8 +1075,8 @@ fn local_align_affine_with_rows_endsc(
                 }
                 if h_ij > best.score {
                     best.score = h_ij;
-                    best.te = i32::try_from(i - 1).expect("te");
-                    best.qe = i32::try_from(j - 1).expect("qe");
+                    best.te = (i - 1) as i32;
+                    best.qe = (j - 1) as i32;
                 }
             }
         }
@@ -1107,26 +1110,16 @@ pub fn ksw_align2(
     qry: Option<&mut Option<_kswq_t>>,
 ) -> kswr_t {
     let size = if (xtra & KSW_XBYTE) != 0 { 1 } else { 2 };
+    let qlen_us = qlen as usize;
+    let tlen_us = tlen as usize;
     let owned_q = if qry.is_none() {
-        Some(ksw_qinit(
-            size,
-            qlen,
-            &query[..usize::try_from(qlen).expect("qlen")],
-            m,
-            mat,
-        ))
+        Some(ksw_qinit(size, qlen, &query[..qlen_us], m, mat))
     } else {
         None
     };
     let q_ref: &_kswq_t = if let Some(qry_slot) = qry {
         if qry_slot.is_none() {
-            *qry_slot = Some(ksw_qinit(
-                size,
-                qlen,
-                &query[..usize::try_from(qlen).expect("qlen")],
-                m,
-                mat,
-            ));
+            *qry_slot = Some(ksw_qinit(size, qlen, &query[..qlen_us], m, mat));
         }
         qry_slot.as_ref().expect("qry slot initialized")
     } else {
@@ -1134,27 +1127,9 @@ pub fn ksw_align2(
     };
 
     let func_result = if q_ref.size == 2 {
-        ksw_i16(
-            q_ref,
-            tlen,
-            &target[..usize::try_from(tlen).expect("tlen")],
-            o_del,
-            e_del,
-            o_ins,
-            e_ins,
-            xtra,
-        )
+        ksw_i16(q_ref, tlen, &target[..tlen_us], o_del, e_del, o_ins, e_ins, xtra)
     } else {
-        ksw_u8(
-            q_ref,
-            tlen,
-            &target[..usize::try_from(tlen).expect("tlen")],
-            o_del,
-            e_del,
-            o_ins,
-            e_ins,
-            xtra,
-        )
+        ksw_u8(q_ref, tlen, &target[..tlen_us], o_del, e_del, o_ins, e_ins, xtra)
     };
     let mut r = func_result;
     if (xtra & KSW_XSTART) == 0 || ((xtra & KSW_XSUBO) != 0 && r.score < (xtra & 0xffff)) {
@@ -1163,18 +1138,14 @@ pub fn ksw_align2(
 
     revseq(r.qe + 1, query);
     revseq(r.te + 1, target);
-    let q2 = ksw_qinit(
-        size,
-        r.qe + 1,
-        &query[..usize::try_from(r.qe + 1).expect("qe")],
-        m,
-        mat,
-    );
+    let qe1_us = (r.qe + 1) as usize;
+    let te1_us = (r.te + 1) as usize;
+    let q2 = ksw_qinit(size, r.qe + 1, &query[..qe1_us], m, mat);
     let rr = if q2.size == 2 {
         ksw_i16(
             &q2,
             r.te + 1,
-            &target[..usize::try_from(r.te + 1).expect("te")],
+            &target[..te1_us],
             o_del,
             e_del,
             o_ins,
@@ -1185,7 +1156,7 @@ pub fn ksw_align2(
         ksw_u8(
             &q2,
             r.te + 1,
-            &target[..usize::try_from(r.te + 1).expect("te")],
+            &target[..te1_us],
             o_del,
             e_del,
             o_ins,
@@ -1263,13 +1234,16 @@ pub fn ksw_extend2(
     max_off: Option<&mut i32>,
 ) -> i32 {
     assert!(h0 > 0);
-    let qlen_usize = usize::try_from(qlen).expect("qlen");
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let m_usize = usize::try_from(m).expect("m");
+    let qlen_usize = qlen as usize;
+    let tlen_usize = tlen as usize;
+    let m_usize = m as usize;
     let oe_del = o_del + e_del;
     let oe_ins = o_ins + e_ins;
-    let mut eh = vec![eh_t::default(); qlen_usize + 1];
-    let mut qp = vec![0_i8; qlen_usize * m_usize];
+    let (mut eh, mut qp) = KSW_EXTEND_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    eh.clear();
+    eh.resize(qlen_usize + 1, eh_t::default());
+    qp.clear();
+    qp.resize(qlen_usize * m_usize, 0);
 
     let mut idx = 0_usize;
     for k in 0..m_usize {
@@ -1285,9 +1259,9 @@ pub fn ksw_extend2(
         eh[1].h = if h0 > oe_ins { h0 - oe_ins } else { 0 };
     }
     let mut j = 2_i32;
-    while j <= qlen && eh[usize::try_from(j - 1).expect("j")].h > e_ins {
-        let ju = usize::try_from(j).expect("j");
-        eh[ju].h = eh[usize::try_from(j - 1).expect("j")].h - e_ins;
+    while j <= qlen && eh[(j - 1) as usize].h > e_ins {
+        let ju = j as usize;
+        eh[ju].h = eh[(j - 1) as usize].h - e_ins;
         j += 1;
     }
 
@@ -1317,7 +1291,7 @@ pub fn ksw_extend2(
         let qprof = &qp
             [usize::from(target[i]) * qlen_usize..usize::from(target[i]) * qlen_usize + qlen_usize];
 
-        let i_i32 = i32::try_from(i).expect("i");
+        let i_i32 = i as i32;
         if beg < i_i32 - w {
             beg = i_i32 - w;
         }
@@ -1336,7 +1310,7 @@ pub fn ksw_extend2(
 
         let mut j_i32 = beg;
         while j_i32 < end {
-            let j_usize = usize::try_from(j_i32).expect("j");
+            let j_usize = j_i32 as usize;
             let p = &mut eh[j_usize];
             let mut mm = p.h;
             let mut e = p.e;
@@ -1360,8 +1334,9 @@ pub fn ksw_extend2(
             j_i32 += 1;
         }
 
-        eh[usize::try_from(end).expect("end")].h = h1;
-        eh[usize::try_from(end).expect("end")].e = 0;
+        let end_us = end as usize;
+        eh[end_us].h = h1;
+        eh[end_us].e = 0;
         if j_i32 == qlen {
             // C++ ksw.cpp:504-506 uses `gscore > h1 ? max_ie : i` ternary which updates on TIE.
             if h1 >= best_gscore {
@@ -1391,7 +1366,7 @@ pub fn ksw_extend2(
 
         let mut new_beg = beg;
         while new_beg < end {
-            let p = &eh[usize::try_from(new_beg).expect("beg")];
+            let p = &eh[new_beg as usize];
             if p.h != 0 || p.e != 0 {
                 break;
             }
@@ -1400,7 +1375,7 @@ pub fn ksw_extend2(
         beg = new_beg;
         let mut new_end = end;
         while new_end >= beg {
-            let p = &eh[usize::try_from(new_end).expect("end")];
+            let p = &eh[new_end as usize];
             if p.h != 0 || p.e != 0 {
                 break;
             }
@@ -1424,6 +1399,7 @@ pub fn ksw_extend2(
     if let Some(max_off) = max_off {
         *max_off = best_off;
     }
+    KSW_EXTEND_SCRATCH.with(|c| *c.borrow_mut() = (eh, qp));
     best
 }
 
@@ -1456,15 +1432,12 @@ pub fn ksw_extend(
 #[doc = "Original function: push_cigar:546"]
 #[inline]
 pub fn push_cigar(n_cigar: &mut i32, _m_cigar: &mut i32, cigar: &mut Vec<u32>, op: i32, len: i32) {
-    if *n_cigar == 0
-        || op
-            != i32::try_from(cigar[usize::try_from(*n_cigar - 1).expect("idx")] & 0xf).expect("op")
-    {
-        cigar.push(((u32::try_from(len).expect("len")) << 4) | u32::try_from(op).expect("op"));
+    let idx = (*n_cigar - 1) as usize;
+    if *n_cigar == 0 || op != (cigar[idx] & 0xf) as i32 {
+        cigar.push(((len as u32) << 4) | (op as u32));
         *n_cigar += 1;
     } else {
-        let idx = usize::try_from(*n_cigar - 1).expect("idx");
-        cigar[idx] += (u32::try_from(len).expect("len")) << 4;
+        cigar[idx] += (len as u32) << 4;
     }
 }
 
@@ -1484,9 +1457,9 @@ pub fn ksw_global2(
     n_cigar_: Option<&mut i32>,
     cigar_: Option<&mut Vec<u32>>,
 ) -> i32 {
-    let qlen_usize = usize::try_from(qlen).expect("qlen");
-    let tlen_usize = usize::try_from(tlen).expect("tlen");
-    let m_usize = usize::try_from(m).expect("m");
+    let qlen_usize = qlen as usize;
+    let tlen_usize = tlen as usize;
+    let m_usize = m as usize;
     let oe_del = o_del + e_del;
     let oe_ins = o_ins + e_ins;
     let mut n_cigar_opt = n_cigar_;
@@ -1495,7 +1468,7 @@ pub fn ksw_global2(
     }
 
     let n_col = qlen.min(2 * w + 1);
-    let n_col_usize = usize::try_from(n_col).expect("n_col");
+    let n_col_usize = n_col as usize;
     KSW_GLOBAL_SCRATCH.with(|cell| {
         let mut buf = cell.borrow_mut();
         let (z, qp, eh) = &mut *buf;
@@ -1522,13 +1495,13 @@ pub fn ksw_global2(
         eh[0].e = MINUS_INF;
         let mut j = 1_i32;
         while j <= qlen && j <= w {
-            let ju = usize::try_from(j).expect("j");
+            let ju = j as usize;
             eh[ju].h = -(o_ins + e_ins * j);
             eh[ju].e = MINUS_INF;
             j += 1;
         }
         while j <= qlen {
-            let ju = usize::try_from(j).expect("j");
+            let ju = j as usize;
             eh[ju].h = MINUS_INF;
             eh[ju].e = MINUS_INF;
             j += 1;
@@ -1543,13 +1516,14 @@ pub fn ksw_global2(
             } else {
                 MINUS_INF
             };
-            let q = &qp[usize::from(target[usize::try_from(i).expect("i")]) * qlen_usize..];
+            let i_us = i as usize;
+            let q = &qp[usize::from(target[i_us]) * qlen_usize..];
             // Inner-DP bounds-check elimination: j ∈ [beg, end) ⊆ [0, qlen), eh has qlen+1 entries
             // and q has at least qlen entries, so j and j as usize are in range.
             let beg_us = beg as usize;
             let end_us = end as usize;
             if !z.is_empty() {
-                let zi_base = usize::try_from(i).expect("i") * n_col_usize;
+                let zi_base = i_us * n_col_usize;
                 for j in beg_us..end_us {
                     unsafe {
                         let p = eh.get_unchecked_mut(j);
@@ -1595,7 +1569,7 @@ pub fn ksw_global2(
                     }
                 }
             }
-            let endu = usize::try_from(end).expect("end");
+            let endu = end as usize;
             eh[endu].h = h1;
             eh[endu].e = MINUS_INF;
         }
@@ -1611,8 +1585,8 @@ pub fn ksw_global2(
             let mut i = tlen - 1;
             let mut k = (if i + w + 1 < qlen { i + w + 1 } else { qlen }) - 1;
             while i >= 0 && k >= 0 {
-                let zi = usize::try_from(i).expect("i") * n_col_usize
-                    + usize::try_from(k - if i > w { i - w } else { 0 }).expect("zi");
+                let zi = (i as usize) * n_col_usize
+                    + (k - if i > w { i - w } else { 0 }) as usize;
                 which = (z[zi] >> (which << 1)) & 3;
                 if which == 0 {
                     push_cigar(&mut n_cigar, &mut m_cigar, cigar, 0, 1);

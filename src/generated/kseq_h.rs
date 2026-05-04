@@ -31,12 +31,21 @@ fn trim_cr(line: &str) -> &str {
 }
 
 fn split_header(header: &str) -> (String, Option<String>) {
+    let (name, comment) = split_header_borrow(header);
+    (
+        name.to_string(),
+        comment.map(|c| c.to_string()),
+    )
+}
+
+#[inline]
+fn split_header_borrow(header: &str) -> (&str, Option<&str>) {
     let bytes = header.as_bytes();
     let Some(split_at) = bytes.iter().position(|b| b.is_ascii_whitespace()) else {
-        return (header.to_string(), None);
+        return (header, None);
     };
-    let name = header[..split_at].to_string();
-    let comment = header[split_at + 1..].to_string();
+    let name = &header[..split_at];
+    let comment = &header[split_at + 1..];
     if comment.is_empty() {
         (name, None)
     } else {
@@ -255,7 +264,10 @@ fn read_trimmed_line(
     while matches!(buf.as_bytes().last(), Some(b'\n' | b'\r')) {
         buf.pop();
     }
-    Ok(Some(buf.clone()))
+    // Take buf's allocation rather than cloning. Caller owns the line; next read_line() will
+    // allocate fresh into buf. Saves the memcpy of the line bytes (~600 bytes per FASTQ record
+    // at 4 lines/record × 1.4M records).
+    Ok(Some(std::mem::take(buf)))
 }
 
 fn next_stream_header(ks: &mut kstream_t) -> Option<String> {
@@ -274,83 +286,153 @@ fn next_stream_header(ks: &mut kstream_t) -> Option<String> {
     }
 }
 
-fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
-    let Some(header_line) = next_stream_header(&mut seq.f) else {
-        seq.f.is_eof = 1;
-        return -1;
+// Read next header line into ks.line_buf (preserves capacity across calls instead of
+// mem::take'ing the buffer). Returns false on EOF / error. On success, ks.line_buf holds the
+// header line (without trailing \r\n). Caller can borrow ks.line_buf as &str directly.
+fn next_stream_header_in_place(ks: &mut kstream_t) -> bool {
+    if let Some(header) = ks.pending_header.take() {
+        ks.line_buf.clear();
+        ks.line_buf.push_str(&header);
+        return true;
+    }
+    let Some(reader) = ks.reader.as_mut() else {
+        return false;
     };
-
-    let (name, comment, is_fastq) = if let Some(header) = header_line.strip_prefix('>') {
-        let (name, comment) = split_header(header);
-        (name, comment, false)
-    } else if let Some(header) = header_line.strip_prefix('@') {
-        let (name, comment) = split_header(header);
-        (name, comment, true)
-    } else {
-        seq.f.is_eof = 1;
-        return -1;
-    };
-
-    let reader = seq.f.reader.as_mut().expect("streaming reader");
-    let mut body = String::new();
-    let mut qual = if is_fastq { Some(String::new()) } else { None };
-
-    if !is_fastq {
-        loop {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
-                .ok()
-                .flatten()
-            else {
-                seq.f.is_eof = 1;
-                break;
-            };
-            if line.starts_with('>') || line.starts_with('@') {
-                seq.f.pending_header = Some(line);
-                break;
-            }
-            if !line.is_empty() {
-                body.push_str(&line);
-            }
+    loop {
+        ks.line_buf.clear();
+        let n = match reader.read_line(&mut ks.line_buf) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if n == 0 {
+            return false;
         }
-    } else {
-        loop {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
-                .ok()
-                .flatten()
-            else {
-                seq.f.is_eof = 1;
-                break;
-            };
-            if line.starts_with('+') {
-                break;
-            }
-            if !line.is_empty() {
-                body.push_str(&line);
-            }
+        while matches!(ks.line_buf.as_bytes().last(), Some(b'\n' | b'\r')) {
+            ks.line_buf.pop();
         }
-        let qual_buf = qual.as_mut().expect("fastq qual");
-        while qual_buf.len() < body.len() {
-            let Some(line) = read_trimmed_line(reader.as_mut(), &mut seq.f.line_buf)
-                .ok()
-                .flatten()
-            else {
-                seq.f.is_eof = 1;
-                break;
-            };
-            qual_buf.push_str(&line);
+        if ks.line_buf.is_empty() {
+            continue;
+        }
+        if ks.line_buf.starts_with('>') || ks.line_buf.starts_with('@') {
+            return true;
         }
     }
+}
 
-    set_kstring(&mut seq.name, &name);
-    set_kstring(&mut seq.comment, comment.as_deref().unwrap_or(""));
-    set_kstring(&mut seq.seq, &body);
-    set_kstring(&mut seq.qual, qual.as_deref().unwrap_or(""));
-    if let Some(qual) = qual.as_ref() {
-        if qual.len() != body.len() {
+fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
+    if !next_stream_header_in_place(&mut seq.f) {
+        seq.f.is_eof = 1;
+        return -1;
+    }
+
+    // Determine record type and emit name/comment directly into the kstring buffers,
+    // borrowing into seq.f.line_buf — saves the per-record String allocation that
+    // `next_stream_header` previously produced via mem::take.
+    let is_fastq = {
+        let header_line: &str = seq.f.line_buf.as_str();
+        let (header, is_fastq) = if let Some(h) = header_line.strip_prefix('>') {
+            (h, false)
+        } else if let Some(h) = header_line.strip_prefix('@') {
+            (h, true)
+        } else {
+            seq.f.is_eof = 1;
+            return -1;
+        };
+        let (name, comment) = split_header_borrow(header);
+        // set_kstring copies bytes out of the &str borrow into seq.name/seq.comment so the
+        // borrow into seq.f.line_buf can end before the body reader needs &mut seq.f.
+        set_kstring(&mut seq.name, name);
+        set_kstring(&mut seq.comment, comment.unwrap_or(""));
+        is_fastq
+    };
+    // Build body and qual directly in the destination kstring buffers — saves a per-record
+    // copy round-trip through intermediate Strings + the .clone()/mem::take dance in
+    // read_trimmed_line. read_until appends to a Vec<u8> directly without UTF-8 validation
+    // (FASTQ payload is ASCII by spec).
+    let kseq_t {
+        seq: seq_buf,
+        qual: qual_buf,
+        f: kstream,
+        ..
+    } = seq;
+    seq_buf.s.clear();
+    seq_buf.l = 0;
+    qual_buf.s.clear();
+    qual_buf.l = 0;
+    let reader = kstream.reader.as_mut().expect("streaming reader");
+
+    let body_len: usize;
+    if !is_fastq {
+        loop {
+            let start = seq_buf.s.len();
+            let n = reader.read_until(b'\n', &mut seq_buf.s).unwrap_or(0);
+            if n == 0 {
+                kstream.is_eof = 1;
+                break;
+            }
+            // Trim trailing \r\n / \n / \r from this line.
+            while seq_buf.s.len() > start
+                && matches!(seq_buf.s.last(), Some(b'\n' | b'\r'))
+            {
+                seq_buf.s.pop();
+            }
+            // Header signals end of body — save line into pending_header (as String) and back out.
+            if matches!(seq_buf.s.get(start), Some(b'>' | b'@')) {
+                let header_bytes = seq_buf.s.split_off(start);
+                kstream.pending_header = String::from_utf8(header_bytes).ok();
+                break;
+            }
+        }
+        body_len = seq_buf.s.len();
+    } else {
+        loop {
+            let start = seq_buf.s.len();
+            let n = reader.read_until(b'\n', &mut seq_buf.s).unwrap_or(0);
+            if n == 0 {
+                kstream.is_eof = 1;
+                break;
+            }
+            while seq_buf.s.len() > start
+                && matches!(seq_buf.s.last(), Some(b'\n' | b'\r'))
+            {
+                seq_buf.s.pop();
+            }
+            if matches!(seq_buf.s.get(start), Some(b'+')) {
+                seq_buf.s.truncate(start);
+                break;
+            }
+        }
+        body_len = seq_buf.s.len();
+        // Read qual lines until we have enough bytes to match body_len.
+        while qual_buf.s.len() < body_len {
+            let n = reader.read_until(b'\n', &mut qual_buf.s).unwrap_or(0);
+            if n == 0 {
+                kstream.is_eof = 1;
+                break;
+            }
+            while matches!(qual_buf.s.last(), Some(b'\n' | b'\r')) {
+                qual_buf.s.pop();
+            }
+        }
+        // qual length mismatch → return -2 (matches old contract).
+        if qual_buf.s.len() != body_len {
             return -2;
         }
     }
-    i64::try_from(body.len()).expect("sequence length")
+
+    seq_buf.l = body_len;
+    if !seq_buf.s.is_empty() {
+        seq_buf.s.push(0);
+        seq_buf.m = seq_buf.s.len();
+    }
+    if is_fastq {
+        qual_buf.l = qual_buf.s.len();
+        if !qual_buf.s.is_empty() {
+            qual_buf.s.push(0);
+            qual_buf.m = qual_buf.s.len();
+        }
+    }
+    body_len as i64
 }
 
 pub fn kseq_read(seq: &mut kseq_t) -> i64 {

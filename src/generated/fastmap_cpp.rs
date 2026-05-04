@@ -29,7 +29,7 @@ use crate::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pesta
 use crate::generated::fastmap_h::{ktp_aux_t, ktp_data_t};
 use crate::generated::fmi_search_cpp::FMI_search;
 use crate::generated::kseq_h::kseq_t;
-use crate::generated::utils_cpp::{err_fclose, err_fputs, err_xopen_core, ErrFile};
+use crate::generated::utils_cpp::{err_fclose, err_xopen_core, ErrFile};
 
 const AVG_SEEDS_PER_READ: usize = 64;
 const BATCH_MUL: usize = 20;
@@ -395,8 +395,9 @@ fn process_batch(
         if n_sep[0] > 0 {
             tmp_opt.flag &= !MEM_F_PE;
             mem_process_seqs(&mut tmp_opt, n_processed, n_sep[0], &mut sep[0], None, w);
-            for seq in &sep[0] {
-                batch.seqs[usize::try_from(seq.id).expect("single seq id")].sam = seq.sam.clone();
+            // Move seq.sam (Option<String>) instead of cloning — saves alloc+memcpy per SAM record.
+            for seq in &mut sep[0] {
+                batch.seqs[seq.id as usize].sam = seq.sam.take();
             }
         }
         if n_sep[1] > 0 {
@@ -409,8 +410,8 @@ fn process_batch(
                 pes0,
                 w,
             );
-            for seq in &sep[1] {
-                batch.seqs[usize::try_from(seq.id).expect("paired seq id")].sam = seq.sam.clone();
+            for seq in &mut sep[1] {
+                batch.seqs[seq.id as usize].sam = seq.sam.take();
             }
         }
     } else {
@@ -423,20 +424,31 @@ fn process_batch(
         if let Some(sam) = seq.sam.take() {
             batch.sam_lines.push(sam);
         }
-        seq.name = None;
-        seq.comment = None;
-        seq.seq = None;
-        seq.qual = None;
-        seq.seq_nt4.clear();
     }
+    // batch.seqs is dropped when the ktp_data_t is consumed (end of single-thread loop or after
+    // write_batch in the pipeline path). Drop frees the per-seq Option<String> name/seq/qual.
+    // The previous explicit field clears + shrink_to(0) just hastened the same drops at no win.
     batch.seqs.clear();
-    batch.seqs.shrink_to(0);
+}
+
+thread_local! {
+    static WRITE_BATCH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn write_batch(batch: &ktp_data_t, fp: &mut ErrFile) {
-    for sam in &batch.sam_lines {
-        err_fputs(sam, fp);
-    }
+    // Concatenate all SAM lines into a single err_fwrite to amortize syscall overhead.
+    // For 700K reads each producing one SAM line, this reduces ~700K writes to ~1400 (one per
+    // batch).
+    WRITE_BATCH_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        let total: usize = batch.sam_lines.iter().map(|s| s.len()).sum();
+        buf.reserve(total);
+        for sam in &batch.sam_lines {
+            buf.extend_from_slice(sam.as_bytes());
+        }
+        crate::generated::utils_cpp::err_fwrite(&buf, 1, buf.len(), fp);
+    });
 }
 
 #[doc = "Original function: __cpuid:51"]
@@ -701,6 +713,17 @@ pub fn update_a(opt: &mut mem_opt_t, opt0: &mem_opt_t) {
 pub fn usage(opt: &mem_opt_t) {
     eprint!("{}", usage_text(opt));
 }
+
+/// Test-only lock that serializes any code path which can mutate global state
+/// reached from `main_mem` (BWA_RG_ID, BWA_PG, BWA_VERBOSE, etc). Multiple
+/// independent test modules call `main_mem` (or its CLI dispatcher in
+/// `main_cpp::main`); without a shared lock, those tests race on the globals
+/// and intermittently produce SAM lines that disagree. Production code does not
+/// need this lock — `main_mem` is single-process and the globals are written
+/// once during arg parsing.
+#[cfg(test)]
+pub(crate) static MAIN_MEM_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
 #[doc = "Original function: main_mem:616"]
 pub fn main_mem(argv: &[String]) -> i32 {
@@ -1073,14 +1096,14 @@ mod tests {
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::{atomic::Ordering, LazyLock, Mutex};
+    use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static MAIN_MEM_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
     fn run_main_mem(argv: &[String]) -> i32 {
-        let _guard = MAIN_MEM_TEST_LOCK.lock().expect("main_mem test lock");
+        let _guard = super::MAIN_MEM_TEST_LOCK
+            .lock()
+            .expect("main_mem test lock");
         main_mem(argv)
     }
 
@@ -1442,7 +1465,7 @@ mod tests {
             sam_lines: Vec::new(),
         };
         let ret = kt_pipeline(&mut aux, 1, Some(input), &mut opt, &mut worker).expect("step1 data");
-        let sam = ret.sam_lines[0].as_ref();
+        let sam = ret.sam_lines[0].as_str();
         assert!(sam.starts_with("read-fastmap\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
         assert_eq!(aux.n_processed, 1);
@@ -1886,8 +1909,15 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(run_main_mem(&argv1), 0);
-        assert_eq!(run_main_mem(&argv2), 0);
+        // Hold the test lock across both invocations so other concurrent tests
+        // can't leak global state (e.g. BWA_RG_ID, BWA_PG) between them.
+        {
+            let _guard = super::MAIN_MEM_TEST_LOCK
+                .lock()
+                .expect("main_mem test lock");
+            assert_eq!(main_mem(&argv1), 0);
+            assert_eq!(main_mem(&argv2), 0);
+        }
         let sam1 = fs::read_to_string(&out1).expect("sam1");
         let sam2 = fs::read_to_string(&out2).expect("sam2");
         assert_eq!(sam1, sam2);

@@ -66,24 +66,20 @@ pub fn ks_resize(s: &mut kstring_t, size: usize) {
 #[doc = "Original function: kputsn:62"]
 #[inline]
 pub fn kputsn(p: &[u8], l: i32, s: &mut kstring_t) -> i32 {
-    let l = usize::try_from(l).expect("kputsn length must be non-negative");
+    let l = l as usize;
     if s.l + l + 1 >= s.m {
         s.ensure_allocated(s.l + l + 2);
     }
     s.s[s.l..s.l + l].copy_from_slice(&p[..l]);
     s.l += l;
     s.s[s.l] = 0;
-    i32::try_from(l).expect("kputsn length overflow")
+    l as i32
 }
 
 #[doc = "Original function: kputs:75"]
 #[inline]
 pub fn kputs(p: &str, s: &mut kstring_t) -> i32 {
-    kputsn(
-        p.as_bytes(),
-        i32::try_from(p.len()).expect("kputs length overflow"),
-        s,
-    )
+    kputsn(p.as_bytes(), p.len() as i32, s)
 }
 
 #[doc = "Original function: kputc:80"]
@@ -99,12 +95,26 @@ pub fn kputc(c: i32, s: &mut kstring_t) -> i32 {
 }
 
 #[inline]
-fn append_decimal(text: &str, s: &mut kstring_t) {
-    let len = text.len();
+fn append_u64(mut n: u64, neg: bool, s: &mut kstring_t) {
+    // Up to 20 digits for u64 + 1 sign byte.
+    let mut buf = [0u8; 21];
+    let mut i = buf.len();
+    while n >= 10 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    i -= 1;
+    buf[i] = b'0' + n as u8;
+    if neg {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    let len = buf.len() - i;
     if s.l + len + 1 >= s.m {
         s.ensure_allocated(s.l + len + 2);
     }
-    s.s[s.l..s.l + len].copy_from_slice(text.as_bytes());
+    s.s[s.l..s.l + len].copy_from_slice(&buf[i..]);
     s.l += len;
     s.s[s.l] = 0;
 }
@@ -115,7 +125,12 @@ pub fn kputw(c: i32, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
     }
-    append_decimal(&c.to_string(), s);
+    let (n, neg) = if c < 0 {
+        ((c as i64).unsigned_abs(), true)
+    } else {
+        (c as u64, false)
+    };
+    append_u64(n, neg, s);
     0
 }
 
@@ -125,7 +140,7 @@ pub fn kputuw(c: u32, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
     }
-    append_decimal(&c.to_string(), s);
+    append_u64(c as u64, false, s);
     0
 }
 
@@ -135,7 +150,12 @@ pub fn kputl(c: i64, s: &mut kstring_t) -> i32 {
     if c == 0 {
         return kputc(i32::from(b'0'), s);
     }
-    append_decimal(&c.to_string(), s);
+    let (n, neg) = if c < 0 {
+        (c.unsigned_abs(), true)
+    } else {
+        (c as u64, false)
+    };
+    append_u64(n, neg, s);
     0
 }
 

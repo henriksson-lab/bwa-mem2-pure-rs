@@ -7,8 +7,8 @@
 
 //! Generated scaffold for `bwa-mem2/src/bwa.cpp`.
 
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use crate::generated::bntseq_cpp::bns_get_seq_into;
 use crate::generated::bntseq_h::bntseq_t;
@@ -22,6 +22,36 @@ use crate::generated::utils_cpp::{err_fputc, err_fputs, ErrFile};
 thread_local! {
     static BWA_GEN_CIGAR_RSEQ: std::cell::RefCell<Vec<u8>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    // Pool of reusable cigar/md buffers. bwa_gen_cigar2 takes from these pools and returns the
+    // filled buffers as bwa_cigar_t fields (no per-call clone). After SAM emission, mem_reg2sam
+    // returns each mem_aln_t's cigar/md back to the pool. Per 700K-read run with ~1M alignments
+    // that's ~2M alloc/free cycles eliminated.
+    pub(crate) static CIGAR_OPS_POOL: std::cell::RefCell<Vec<Vec<u32>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    pub(crate) static CIGAR_MD_POOL: std::cell::RefCell<Vec<Vec<u8>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline]
+pub(crate) fn take_cigar_buf() -> Vec<u32> {
+    CIGAR_OPS_POOL.with(|p| p.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+pub(crate) fn return_cigar_buf(mut buf: Vec<u32>) {
+    buf.clear();
+    CIGAR_OPS_POOL.with(|p| p.borrow_mut().push(buf));
+}
+
+#[inline]
+pub(crate) fn take_md_buf() -> Vec<u8> {
+    CIGAR_MD_POOL.with(|p| p.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+pub(crate) fn return_md_buf(mut buf: Vec<u8>) {
+    buf.clear();
+    CIGAR_MD_POOL.with(|p| p.borrow_mut().push(buf));
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -31,7 +61,14 @@ pub struct bwa_cigar_t {
 }
 
 pub static BWA_VERBOSE: AtomicI32 = AtomicI32::new(3);
-pub static BWA_RG_ID: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
+// RwLock instead of Mutex: read-mostly access pattern (set once at startup via bwa_set_rg,
+// then read once per SAM record × 700K records × N threads). Mutex serialized all readers via
+// lock cmpxchg (was ~13% of mem_aln2sam in -t 4 profile). RwLock allows concurrent shared reads.
+pub static BWA_RG_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(String::new()));
+// Hot-path fast skip: when -R is not passed (the common case), every per-record SAM emission
+// would otherwise acquire the RwLock just to discover rg_id is empty. This atomic flag lets us
+// branch-out early with a single relaxed atomic load.
+pub static BWA_RG_ID_NONEMPTY: AtomicBool = AtomicBool::new(false);
 pub static BWA_PG: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 #[doc = "Original function: trim_readno:62"]
@@ -47,20 +84,27 @@ pub fn trim_readno(s: &mut kstring_t) {
 }
 
 #[doc = "Original function: kseq2bseq1:68"]
-pub fn kseq2bseq1(ks: &kseq_t, s: &mut bseq1_t) {
-    s.name = Some(ks.name.as_str().to_string().into_boxed_str());
-    s.comment = if ks.comment.l != 0 {
-        Some(ks.comment.as_str().to_string().into_boxed_str())
-    } else {
-        None
-    };
-    s.seq = Some(ks.seq.as_str().to_string().into_boxed_str());
-    s.qual = if ks.qual.l != 0 {
-        Some(ks.qual.as_str().to_string().into_boxed_str())
-    } else {
-        None
-    };
-    s.l_seq = i32::try_from(ks.seq.l).expect("sequence length");
+pub fn kseq2bseq1(ks: &mut kseq_t, s: &mut bseq1_t) {
+    // Swap kstring buffers into bseq1_t instead of copying. The Vec<u8> in each kstring_t holds
+    // the bytes plus a trailing 0 sentinel — truncate to logical length .l before reinterpreting
+    // as String. Bytes came from FASTQ (printable ASCII by spec), so from_utf8_unchecked is safe.
+    // ks's kstring buffers are left empty (.l = 0 stays consistent with empty .s); next
+    // kseq_read pushes bytes into them via read_until.
+    fn take_kstring_as_string(ks: &mut kstring_t) -> Option<String> {
+        if ks.l == 0 {
+            return None;
+        }
+        let mut bytes = std::mem::take(&mut ks.s);
+        bytes.truncate(ks.l);
+        ks.l = 0;
+        ks.m = 0;
+        Some(unsafe { String::from_utf8_unchecked(bytes) })
+    }
+    s.l_seq = ks.seq.l as i32;
+    s.name = take_kstring_as_string(&mut ks.name);
+    s.comment = take_kstring_as_string(&mut ks.comment);
+    s.seq = take_kstring_as_string(&mut ks.seq);
+    s.qual = take_kstring_as_string(&mut ks.qual);
 }
 
 #[doc = "Original function: bseq_read:78"]
@@ -85,7 +129,10 @@ pub fn bseq_read_orig(
     s: &mut i64,
 ) -> Vec<bseq1_t> {
     let mut size = 0_i64;
-    let mut seqs = Vec::new();
+    // Pre-reserve seqs to a typical batch's record count: chunk_size bytes / ~200 bytes/record
+    // ~= 100K records. Avoids the doubling-realloc churn during batch fill.
+    let initial_cap = ((chunk_size / 200).max(1024) as usize).min(200_000);
+    let mut seqs = Vec::with_capacity(initial_cap);
     let mut ks2 = ks2;
     while kseq_read(ks1) >= 0 {
         if let Some(ks2_) = ks2.as_deref_mut() {
@@ -98,7 +145,7 @@ pub fn bseq_read_orig(
         trim_readno(&mut ks1.name);
         let mut seq = bseq1_t::default();
         kseq2bseq1(ks1, &mut seq);
-        seq.id = i32::try_from(seqs.len()).expect("id");
+        seq.id = seqs.len() as i32;
         size += i64::from(seq.l_seq);
         seqs.push(seq);
 
@@ -106,7 +153,7 @@ pub fn bseq_read_orig(
             trim_readno(&mut ks2_.name);
             let mut seq = bseq1_t::default();
             kseq2bseq1(ks2_, &mut seq);
-            seq.id = i32::try_from(seqs.len()).expect("id");
+            seq.id = seqs.len() as i32;
             size += i64::from(seq.l_seq);
             seqs.push(seq);
         }
@@ -122,7 +169,7 @@ pub fn bseq_read_orig(
             }
         }
     }
-    *n_ = i32::try_from(seqs.len()).expect("n_seqs");
+    *n_ = seqs.len() as i32;
     *s = size;
     seqs
 }
@@ -140,7 +187,7 @@ pub fn bseq_read_one_fasta_file(
 
 #[doc = "Original function: bseq_classify:226"]
 pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<bseq1_t>; 2]) {
-    let limit = usize::try_from(n.max(0)).expect("n");
+    let limit = n.max(0) as usize;
     let seqs = &seqs[..limit.min(seqs.len())];
     let mut single = Vec::new();
     let mut paired = Vec::new();
@@ -171,8 +218,8 @@ pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<
         single.push(seqs[seqs.len() - 1].clone());
     }
 
-    m[0] = i32::try_from(single.len()).expect("single len");
-    m[1] = i32::try_from(paired.len()).expect("paired len");
+    m[0] = single.len() as i32;
+    m[1] = paired.len() as i32;
     sep[0] = single;
     sep[1] = paired;
 }
@@ -233,7 +280,7 @@ pub fn bwa_gen_cigar2(
         return None;
     }
 
-    let l_query_usize = usize::try_from(l_query).expect("l_query");
+    let l_query_usize = l_query as usize;
     if rb >= l_pac {
         query[..l_query_usize].reverse();
         rseq.reverse();
@@ -242,15 +289,24 @@ pub fn bwa_gen_cigar2(
     let mut out_cigar: Option<Vec<u32>> = None;
     if i64::from(l_query) == re - rb && w_ == 0 {
         if n_cigar_slot.is_some() {
-            out_cigar = Some(vec![(u32::try_from(l_query).expect("l_query") << 4)]);
+            out_cigar = Some(vec![(l_query as u32) << 4]);
             if let Some(n_cigar) = n_cigar_slot.as_deref_mut() {
                 *n_cigar = 1;
             }
         }
-        *score = 0;
-        for i in 0..l_query_usize {
-            *score += i32::from(mat[usize::from(rseq[i]) * 5 + usize::from(query[i])]);
+        // Hoist score into a local so the compiler doesn't reload from memory each iter.
+        // Use unchecked indexing on mat (size 25, max index = 4*5+4 = 24) and rseq/query
+        // (bounded by l_query_usize); per-byte load + LUT lookup is the bottleneck.
+        let mut acc = 0_i32;
+        unsafe {
+            for i in 0..l_query_usize {
+                let ref_b = *rseq.get_unchecked(i);
+                let qer_b = *query.get_unchecked(i);
+                let idx = usize::from(ref_b) * 5 + usize::from(qer_b);
+                acc += i32::from(*mat.get_unchecked(idx));
+            }
         }
+        *score = acc;
     } else {
         let half_query = (l_query + 1) >> 1;
         let max_ins =
@@ -259,19 +315,21 @@ pub fn bwa_gen_cigar2(
             (((half_query * i32::from(mat[0]) - o_del) as f64) / e_del as f64 + 1.0) as i32;
         let mut max_gap = max_ins.max(max_del);
         max_gap = max_gap.max(1);
-        let mut w =
-            (max_gap + i32::try_from((rlen - i64::from(l_query)).abs()).expect("band delta") + 1)
-                >> 1;
+        let band_delta = (rlen - i64::from(l_query)).abs() as i32;
+        let mut w = (max_gap + band_delta + 1) >> 1;
         w = w.min(w_);
-        let min_w = i32::try_from((rlen - i64::from(l_query)).abs()).expect("min_w") + 3;
+        let min_w = band_delta + 3;
         w = w.max(min_w);
 
         let mut n_cigar_tmp = 0_i32;
-        let mut cigar_tmp = Vec::new();
+        // Take a cigar buffer from the pool. The buffer (with prior capacity) becomes the
+        // returned bwa_cigar_t.cigar — no clone. mem_reg2sam returns it to the pool after SAM
+        // emission.
+        let mut cigar_tmp = take_cigar_buf();
         *score = ksw_global2(
             l_query,
             &query[..l_query_usize],
-            i32::try_from(rlen).expect("rlen"),
+            rlen as i32,
             &rseq,
             5,
             &mat[..],
@@ -296,13 +354,32 @@ pub fn bwa_gen_cigar2(
                 *n_cigar = n_cigar_tmp;
             }
             out_cigar = Some(cigar_tmp);
+        } else {
+            return_cigar_buf(cigar_tmp);
         }
     }
 
-    let mut md = Vec::new();
+    let mut md = take_md_buf();
     if nm_slot.is_some() && n_cigar_slot.is_some() {
-        let mut str = kstring_t::default();
-        let int2base = if rb < l_pac { b"ACGTN" } else { b"TGCAN" };
+        // Take an md buffer from the pool, wrap in a temp kstring_t for kput* helpers, then
+        // unwrap and truncate to logical length for the returned bwa_cigar_t.md. The kstring
+        // invariant requires s.len() == m; the pool buf has cap but len=0, so resize up so
+        // ensure_allocated sees a valid initial state.
+        let mut buf = std::mem::take(&mut md);
+        let cap = buf.capacity();
+        if buf.len() < cap {
+            buf.resize(cap, 0);
+        }
+        let mut str = kstring_t {
+            l: 0,
+            m: buf.len(),
+            s: buf,
+        };
+        // Const-size LUTs let the compiler elide bounds checks on the per-base index.
+        // rseq is 2-bit-encoded (0..=4); using min(4) to keep get_unchecked sound.
+        const ACGTN_LUT: [u8; 5] = *b"ACGTN";
+        const TGCAN_LUT: [u8; 5] = *b"TGCAN";
+        let int2base: &[u8; 5] = if rb < l_pac { &ACGTN_LUT } else { &TGCAN_LUT };
         let cigar = out_cigar.as_ref().expect("cigar available with n_cigar");
         let mut x = 0_usize;
         let mut y = 0_usize;
@@ -311,12 +388,16 @@ pub fn bwa_gen_cigar2(
         let mut n_gap = 0_i32;
         for (k, cigar_op) in cigar.iter().enumerate() {
             let op = cigar_op & 0xf;
-            let len = usize::try_from(cigar_op >> 4).expect("cigar len");
+            let len = (cigar_op >> 4) as usize;
             if op == 0 {
                 for i in 0..len {
                     if query[x + i] != rseq[y + i] {
                         kputw(u, &mut str);
-                        kputc(i32::from(int2base[usize::from(rseq[y + i])]), &mut str);
+                        let base_idx = usize::from(rseq[y + i].min(4));
+                        kputc(
+                            i32::from(unsafe { *int2base.get_unchecked(base_idx) }),
+                            &mut str,
+                        );
                         n_mm += 1;
                         u = 0;
                     } else {
@@ -330,24 +411,30 @@ pub fn bwa_gen_cigar2(
                     kputw(u, &mut str);
                     kputc(i32::from(b'^'), &mut str);
                     for i in 0..len {
-                        kputc(i32::from(int2base[usize::from(rseq[y + i])]), &mut str);
+                        let base_idx = usize::from(rseq[y + i].min(4));
+                        kputc(
+                            i32::from(unsafe { *int2base.get_unchecked(base_idx) }),
+                            &mut str,
+                        );
                     }
                     u = 0;
-                    n_gap += i32::try_from(len).expect("gap len");
+                    n_gap += len as i32;
                 }
                 y += len;
             } else if op == 1 {
                 x += len;
-                n_gap += i32::try_from(len).expect("gap len");
+                n_gap += len as i32;
             }
         }
         kputw(u, &mut str);
         if let Some(nm) = nm_slot.as_deref_mut() {
             *nm = n_mm + n_gap;
         }
-        // Move the kstring buffer instead of cloning bytes.
-        str.s.truncate(str.l);
         md = str.s;
+        md.truncate(str.l);
+    } else {
+        return_md_buf(md);
+        md = Vec::new();
     }
 
     if rb >= l_pac {
@@ -491,7 +578,8 @@ pub fn bwa_escape(s: &str) -> String {
 
 #[doc = "Original function: bwa_set_rg:583"]
 pub fn bwa_set_rg(s: &str) -> Option<String> {
-    *BWA_RG_ID.lock().expect("bwa_rg_id lock") = String::new();
+    *BWA_RG_ID.write().expect("bwa_rg_id lock") = String::new();
+    BWA_RG_ID_NONEMPTY.store(false, Ordering::Relaxed);
     if !s.starts_with("@RG") {
         if BWA_VERBOSE.load(Ordering::Relaxed) >= 1 {
             eprintln!("[E::bwa_set_rg] the read group line is not started with @RG");
@@ -517,7 +605,8 @@ pub fn bwa_set_rg(s: &str) -> Option<String> {
         }
         return None;
     }
-    *BWA_RG_ID.lock().expect("bwa_rg_id lock") = id.to_string();
+    *BWA_RG_ID.write().expect("bwa_rg_id lock") = id.to_string();
+    BWA_RG_ID_NONEMPTY.store(true, Ordering::Relaxed);
     Some(rg_line)
 }
 
@@ -659,7 +748,7 @@ mod tests {
         let mut ks = kseq_t::from_text("@read0 desc\nACGT\n+\nIIII\n");
         assert_eq!(kseq_read(&mut ks), 4);
         let mut out = bseq1_t::default();
-        kseq2bseq1(&ks, &mut out);
+        kseq2bseq1(&mut ks, &mut out);
         assert_eq!(out.name.as_deref(), Some("read0"));
         assert_eq!(out.comment.as_deref(), Some("desc"));
         assert_eq!(out.seq.as_deref(), Some("ACGT"));
@@ -807,7 +896,7 @@ mod tests {
         BWA_VERBOSE.store(3, Ordering::Relaxed);
         let rg = bwa_set_rg(r"@RG\tID:foo\tSM:bar").expect("rg");
         assert_eq!(rg, "@RG\tID:foo\tSM:bar");
-        assert_eq!(&*BWA_RG_ID.lock().expect("lock"), "foo");
+        assert_eq!(&*BWA_RG_ID.read().expect("lock"), "foo");
     }
 
     #[test]

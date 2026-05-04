@@ -5,12 +5,20 @@ fn main() {
     // pressure this causes __malloc_trim to consume 25%+ of CPU as glibc walks fragmented arenas.
     // With our compute-bound workload, we only need one arena per worker thread. Parse `-t N`
     // (or `--threads N`) from argv; fall back to 4 if not specified.
+    //
+    // Also disable trim by raising M_TRIM_THRESHOLD to its maximum (effectively never returns
+    // memory to the OS via sbrk, just keeps it for reuse). Trim shows up at ~1% on long runs
+    // (700K reads) even after the arena fix; with a long-lived process there's no benefit to
+    // returning memory to the OS, since we'll just allocate again.
     #[cfg(target_os = "linux")]
     unsafe {
         let n_threads = parse_thread_count(&argv).unwrap_or(4).max(1);
         // Skip if user already set MALLOC_ARENA_MAX so they can override.
         if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
             libc::mallopt(libc::M_ARENA_MAX, n_threads as libc::c_int);
+        }
+        if std::env::var_os("MALLOC_TRIM_THRESHOLD_").is_none() {
+            libc::mallopt(libc::M_TRIM_THRESHOLD, libc::c_int::MAX);
         }
     }
 

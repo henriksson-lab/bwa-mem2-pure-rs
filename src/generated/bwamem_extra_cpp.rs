@@ -11,7 +11,7 @@ use crate::generated::bntseq_h::bntseq_t;
 use crate::generated::bwamem_cpp::mem_reg2aln;
 use crate::generated::bwamem_h::{mem_alnreg_t, mem_alnreg_v, mem_opt_t};
 use crate::generated::bwt_h::{bwt_t, bwtintv_v};
-use crate::generated::kstring_h::{kputc, kputl, kputs, kputsn, kputw, kstring_t};
+use crate::generated::kstring_h::{kputc, kputl, kputs, kputw, kstring_t};
 
 #[doc = "Original struct: __smem_i (bwa-mem2/src/bwamem_extra.cpp)"]
 #[derive(Debug, Default, Clone)]
@@ -96,10 +96,10 @@ pub fn mem_align1(
 
 #[doc = "Original function: get_pri_idx:122"]
 pub fn get_pri_idx(XA_drop_ratio: f64, a: &[mem_alnreg_t], i: i32) -> i32 {
-    let i = usize::try_from(i).expect("i");
+    let i = i as usize;
     let k = a[i].secondary_all;
     if k >= 0
-        && (a[i].score as f64) >= (a[usize::try_from(k).expect("k")].score as f64) * XA_drop_ratio
+        && (a[i].score as f64) >= (a[k as usize].score as f64) * XA_drop_ratio
     {
         k
     } else {
@@ -121,7 +121,7 @@ pub fn mem_gen_alt(
     l_query: i32,
     query: &str,
 ) -> Vec<Option<String>> {
-    let (cnt_owned, has_alt_owned, mut str_, pri_idx_owned) =
+    let (cnt_owned, has_alt_owned, str_owned, pri_idx_owned) =
         MEM_GEN_ALT_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
     let mut cnt = cnt_owned;
     let mut has_alt = has_alt_owned;
@@ -135,10 +135,10 @@ pub fn mem_gen_alt(
     let mut tot = 0_i32;
     let drop_ratio = opt.XA_drop_ratio as f64;
     for i in 0..a.n {
-        let r = get_pri_idx(drop_ratio, &a.a, i32::try_from(i).expect("i"));
+        let r = get_pri_idx(drop_ratio, &a.a, i as i32);
         pri_idx.push(r);
         if r >= 0 {
-            let r = usize::try_from(r).expect("r");
+            let r = r as usize;
             cnt[r] += 1;
             tot += 1;
             if a.a[i].is_alt != 0 {
@@ -151,58 +151,49 @@ pub fn mem_gen_alt(
             let mut scratch = c.borrow_mut();
             scratch.0 = cnt;
             scratch.1 = has_alt;
-            scratch.2 = str_;
+            scratch.2 = str_owned;
             scratch.3 = pri_idx;
         });
         return vec![None; a.n];
     }
 
+    // Build XA strings directly into per-primary kstring_t entries — avoids the prior
+    // str_ scratch + kputsn copy round-trip. The unused str_ stays in scratch for tot>0
+    // re-entry parity.
     let mut aln = vec![kstring_t::default(); a.n];
-    // Reset only the logical length; keep the buffer (Vec<u8>) so its capacity is reused.
-    str_.l = 0;
     for i in 0..a.n {
         let r = pri_idx[i];
         if r < 0 {
             continue;
         }
-        let r = usize::try_from(r).expect("r");
+        let r = r as usize;
         if cnt[r] > opt.max_XA_hits_alt || (!has_alt[r] && cnt[r] > opt.max_XA_hits) {
             continue;
         }
         let t = mem_reg2aln(opt, bns, pac, l_query, query, Some(&a.a[i]));
-        str_.l = 0;
-        kputs(
-            &bns.anns[usize::try_from(t.rid).expect("rid")].name,
-            &mut str_,
-        );
-        kputc(i32::from(b','), &mut str_);
-        kputc(
-            i32::from(if t.is_rev != 0 { b'-' } else { b'+' }),
-            &mut str_,
-        );
-        kputl(t.pos + 1, &mut str_);
-        kputc(i32::from(b','), &mut str_);
-        for &cigar in t
-            .cigar
-            .iter()
-            .take(usize::try_from(t.n_cigar).expect("n_cigar"))
-        {
-            kputw(i32::try_from(cigar >> 4).expect("len"), &mut str_);
+        let dst = &mut aln[r];
+        kputs(&bns.anns[t.rid as usize].name, dst);
+        kputc(i32::from(b','), dst);
+        kputc(i32::from(if t.is_rev != 0 { b'-' } else { b'+' }), dst);
+        kputl(t.pos + 1, dst);
+        kputc(i32::from(b','), dst);
+        const MIDSHN_LUT: [u8; 6] = *b"MIDSHN";
+        for &cigar in t.cigar.iter().take(t.n_cigar as usize) {
+            kputw((cigar >> 4) as i32, dst);
+            let op_idx = (cigar & 0xf) as usize;
             kputc(
-                i32::from(b"MIDSHN"[usize::try_from(cigar & 0xf).expect("op")]),
-                &mut str_,
+                i32::from(unsafe { *MIDSHN_LUT.get_unchecked(op_idx.min(5)) }),
+                dst,
             );
         }
-        kputc(i32::from(b','), &mut str_);
-        kputw(i32::try_from(t.NM).expect("NM"), &mut str_);
-        kputc(i32::from(b';'), &mut str_);
-        kputsn(
-            str_.as_bytes(),
-            i32::try_from(str_.l).expect("str len"),
-            &mut aln[r],
-        );
+        kputc(i32::from(b','), dst);
+        kputw(t.NM as i32, dst);
+        kputc(i32::from(b';'), dst);
     }
 
+    // SAFETY: every byte written above came from kput* helpers (ASCII) or from chromosome
+    // names from bns.anns (which are stored as Rust String, hence valid UTF-8). Skip the
+    // O(n) validation pass.
     let result: Vec<Option<String>> = aln
         .into_iter()
         .map(|s| {
@@ -211,7 +202,7 @@ pub fn mem_gen_alt(
             } else {
                 let mut bytes = s.s;
                 bytes.truncate(s.l);
-                Some(String::from_utf8(bytes).expect("XA tag contains invalid UTF-8"))
+                Some(unsafe { String::from_utf8_unchecked(bytes) })
             }
         })
         .collect();
@@ -219,7 +210,7 @@ pub fn mem_gen_alt(
         let mut scratch = c.borrow_mut();
         scratch.0 = cnt;
         scratch.1 = has_alt;
-        scratch.2 = str_;
+        scratch.2 = str_owned;
         scratch.3 = pri_idx;
     });
     result

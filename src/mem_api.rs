@@ -199,7 +199,7 @@ impl MemAligner {
                 let pair_index = usize::try_from(seq.id)
                     .map_err(|_| format!("invalid negative read id in BWA output: {}", seq.id))?
                     / 2;
-                sink(pair_index, &line.into_string())?;
+                sink(pair_index, &line)?;
             }
         }
         Ok(())
@@ -258,10 +258,10 @@ fn make_bseq(id: i32, name: &str, seq: &[u8], qual: &[u8]) -> Result<bseq1_t> {
     Ok(bseq1_t {
         l_seq: i32::try_from(seq.len()).map_err(|_| format!("read is too long for {}", name))?,
         id,
-        name: Some(name.to_string().into_boxed_str()),
+        name: Some(name.to_string()),
         comment: None,
-        seq: Some(seq.to_string().into_boxed_str()),
-        qual: Some(qual.to_string().into_boxed_str()),
+        seq: Some(seq.to_string()),
+        qual: Some(qual.to_string()),
         sam: None,
         seq_nt4: Vec::new(),
     })

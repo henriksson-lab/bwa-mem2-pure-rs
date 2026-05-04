@@ -118,14 +118,15 @@ pub(crate) fn encode_pairs_soa_avx512_into(
         let s2_base = (p.idq as usize)..(p.idq as usize + p.len2 as usize);
         // BCE: lane < SIMD_WIDTH8_AVX512 and k < {len1,len2} <= {max_len1,max_len2}, so the
         // SoA index k*64+lane is < max_*64 = s*.len(). Safe under the resize above.
+        // Branchless: 4 → 0xFF (=255), 0..3 → identity. Add 251 when bit-2 set: b=4 has b>>2 = 1.
         unsafe {
             for (k, &b) in seq_buf_ref[s1_base].iter().enumerate() {
-                *s1.get_unchecked_mut(k * SIMD_WIDTH8_AVX512 + lane) =
-                    if b == AMBIG_BASE { 0xFF } else { b };
+                let v = b.wrapping_add(((b >> 2) & 1).wrapping_mul(251));
+                *s1.get_unchecked_mut(k * SIMD_WIDTH8_AVX512 + lane) = v;
             }
             for (k, &b) in seq_buf_qer[s2_base].iter().enumerate() {
-                *s2.get_unchecked_mut(k * SIMD_WIDTH8_AVX512 + lane) =
-                    if b == AMBIG_BASE { 0xFF } else { b };
+                let v = b.wrapping_add(((b >> 2) & 1).wrapping_mul(251));
+                *s2.get_unchecked_mut(k * SIMD_WIDTH8_AVX512 + lane) = v;
             }
         }
     }
@@ -773,19 +774,27 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_16_impl(
                 continue;
             }
             let qlen_lane = len2_lanes[lane] as i16;
+            // Combined OR check: load h_h and f_buf, OR them, compare to 0. Compiler is free to
+            // schedule both loads in parallel (no short-circuit dep between them).
             let mut jb = head_lane[lane] as usize;
-            while (jb as i16) < tail_lane[lane]
-                && unsafe { *h_h_ptr.add(jb * SIMD_WIDTH16_AVX512 + lane) } == 0
-                && unsafe { *f_buf_ptr.add(jb * SIMD_WIDTH16_AVX512 + lane) } == 0
-            {
+            while (jb as i16) < tail_lane[lane] {
+                let off = jb * SIMD_WIDTH16_AVX512 + lane;
+                let h = unsafe { *h_h_ptr.add(off) };
+                let f = unsafe { *f_buf_ptr.add(off) };
+                if (h | f) != 0 {
+                    break;
+                }
                 jb += 1;
             }
             head_lane[lane] = jb as i16;
             let mut je = tail_lane[lane] as usize;
-            while (je as i16) >= head_lane[lane]
-                && unsafe { *h_h_ptr.add(je * SIMD_WIDTH16_AVX512 + lane) } == 0
-                && unsafe { *f_buf_ptr.add(je * SIMD_WIDTH16_AVX512 + lane) } == 0
-            {
+            while (je as i16) >= head_lane[lane] {
+                let off = je * SIMD_WIDTH16_AVX512 + lane;
+                let h = unsafe { *h_h_ptr.add(off) };
+                let f = unsafe { *f_buf_ptr.add(off) };
+                if (h | f) != 0 {
+                    break;
+                }
                 if je == 0 {
                     break;
                 }
@@ -1149,19 +1158,26 @@ pub(crate) unsafe fn process_batch_soa_banded_dp_avx512_impl(
                 continue;
             }
             let qlen_lane = len2_lanes[lane] as i32;
+            // Combined OR check: load h_h and f_buf, OR them, compare to 0. Allows parallel loads.
             let mut jb = head_lane[lane] as usize;
-            while (jb as i32) < tail_lane[lane]
-                && unsafe { *h_h_ptr.add(jb * SIMD_WIDTH8_AVX512 + lane) } == 0
-                && unsafe { *f_buf_ptr.add(jb * SIMD_WIDTH8_AVX512 + lane) } == 0
-            {
+            while (jb as i32) < tail_lane[lane] {
+                let off = jb * SIMD_WIDTH8_AVX512 + lane;
+                let h = unsafe { *h_h_ptr.add(off) };
+                let f = unsafe { *f_buf_ptr.add(off) };
+                if (h | f) != 0 {
+                    break;
+                }
                 jb += 1;
             }
             head_lane[lane] = jb as i32;
             let mut je = tail_lane[lane] as usize;
-            while (je as i32) >= head_lane[lane]
-                && unsafe { *h_h_ptr.add(je * SIMD_WIDTH8_AVX512 + lane) } == 0
-                && unsafe { *f_buf_ptr.add(je * SIMD_WIDTH8_AVX512 + lane) } == 0
-            {
+            while (je as i32) >= head_lane[lane] {
+                let off = je * SIMD_WIDTH8_AVX512 + lane;
+                let h = unsafe { *h_h_ptr.add(off) };
+                let f = unsafe { *f_buf_ptr.add(off) };
+                if (h | f) != 0 {
+                    break;
+                }
                 if je == 0 {
                     break;
                 }
@@ -1420,18 +1436,18 @@ unsafe fn main_code16_avx512(
     let ambig_lanes = _mm512_or_si512(s1_v, s2_v);
     let ambig_mask = _mm512_movepi16_mask(ambig_lanes);
     let sbt = _mm512_mask_blend_epi16(ambig_mask, sbt0, w_ambig_v);
-    // m11 = h00 + sbt; reset to 0 where h00 == 0.
-    let m11_unmasked = _mm512_add_epi16(h00_v, sbt);
+    // m11 = h00 + sbt; reset to 0 where h00 == 0. Fused: only add for h00 != 0 lanes.
     let h00_zero = _mm512_cmpeq_epi16_mask(h00_v, zero);
-    let m11 = _mm512_mask_blend_epi16(h00_zero, m11_unmasked, zero);
+    let m11 = _mm512_mask_add_epi16(zero, !h00_zero, h00_v, sbt);
     // h11 = max(m11, e11, f11)
     let h11 = _mm512_max_epi16(_mm512_max_epi16(m11, e11_v), f11_v);
-    // e11_new = max(m11 - oe_ins, 0).max(e11 - e_ins)
-    let val_e = _mm512_max_epi16(_mm512_sub_epi16(m11, oe_ins_v), zero);
+    // e11_new = max(m11 - oe_ins, 0).max(e11 - e_ins). m11 is non-negative (zeroed where h00=0
+    // by mask_add); use u16 saturating sub to fold `max(_, zero)` into one op.
+    let val_e = _mm512_subs_epu16(m11, oe_ins_v);
     let e11_dec = _mm512_sub_epi16(e11_v, e_ins_v);
     let e11_new = _mm512_max_epi16(val_e, e11_dec);
     // f21 = max(m11 - oe_del, 0).max(f11 - e_del)
-    let val_f = _mm512_max_epi16(_mm512_sub_epi16(m11, oe_del_v), zero);
+    let val_f = _mm512_subs_epu16(m11, oe_del_v);
     let f21_dec = _mm512_sub_epi16(f11_v, e_del_v);
     let f21 = _mm512_max_epi16(val_f, f21_dec);
     (h11, e11_new, f21)
@@ -1474,18 +1490,18 @@ unsafe fn main_code8_avx512(
     let max_s = _mm512_max_epu8(s1_v, s2_v);
     let ambig_mask = _mm512_movepi8_mask(max_s);
     let sbt = _mm512_mask_blend_epi8(ambig_mask, sbt0, w_ambig_v);
-    // m11 = h00 + sbt; reset to 0 where h00 == 0 (local SW reset).
-    let m11_unmasked = _mm512_add_epi8(h00_v, sbt);
+    // m11 = h00 + sbt; reset to 0 where h00 == 0 (local SW reset). Fused into mask_add.
     let h00_zero = _mm512_cmpeq_epi8_mask(h00_v, zero);
-    let m11 = _mm512_mask_blend_epi8(h00_zero, m11_unmasked, zero);
+    let m11 = _mm512_mask_add_epi8(zero, !h00_zero, h00_v, sbt);
     // h11 = max(m11, e11, f11) — signed max
     let h11 = _mm512_max_epi8(_mm512_max_epi8(m11, e11_v), f11_v);
-    // e11_new = max(m11 - oe_ins, 0).max(e11 - e_ins)
-    let val_e = _mm512_max_epi8(_mm512_sub_epi8(m11, oe_ins_v), zero);
+    // e11_new = max(m11 - oe_ins, 0).max(e11 - e_ins). m11 is non-negative (zeroed where h00=0
+    // by mask_add); use u8 saturating sub to fold `max(_, zero)` into one op.
+    let val_e = _mm512_subs_epu8(m11, oe_ins_v);
     let e11_dec = _mm512_sub_epi8(e11_v, e_ins_v);
     let e11_new = _mm512_max_epi8(val_e, e11_dec);
     // f21 = max(m11 - oe_del, 0).max(f11 - e_del)
-    let val_f = _mm512_max_epi8(_mm512_sub_epi8(m11, oe_del_v), zero);
+    let val_f = _mm512_subs_epu8(m11, oe_del_v);
     let f21_dec = _mm512_sub_epi8(f11_v, e_del_v);
     let f21 = _mm512_max_epi8(val_f, f21_dec);
     (h11, e11_new, f21)
@@ -1576,14 +1592,15 @@ pub(crate) fn encode_pairs_soa_avx512_16_into(
         let s1_base = (p.idr as usize)..(p.idr as usize + p.len1 as usize);
         let s2_base = (p.idq as usize)..(p.idq as usize + p.len2 as usize);
         // Same BCE rationale as the u8 variant: k < len ≤ max_len, lane < SIMD_WIDTH16.
+        // Branchless: 4 → -1 (i16). Subtract 5 when bit-2 set: b=4 has b>>2 = 1, 4-5 = -1.
         unsafe {
             for (k, &b) in seq_buf_ref[s1_base].iter().enumerate() {
-                *s1.get_unchecked_mut(k * SIMD_WIDTH16_AVX512 + lane) =
-                    if b == AMBIG_BASE { -1 } else { i16::from(b) };
+                let v = i16::from(b).wrapping_sub(i16::from((b >> 2) & 1).wrapping_mul(5));
+                *s1.get_unchecked_mut(k * SIMD_WIDTH16_AVX512 + lane) = v;
             }
             for (k, &b) in seq_buf_qer[s2_base].iter().enumerate() {
-                *s2.get_unchecked_mut(k * SIMD_WIDTH16_AVX512 + lane) =
-                    if b == AMBIG_BASE { -1 } else { i16::from(b) };
+                let v = i16::from(b).wrapping_sub(i16::from((b >> 2) & 1).wrapping_mul(5));
+                *s2.get_unchecked_mut(k * SIMD_WIDTH16_AVX512 + lane) = v;
             }
         }
     }
@@ -3451,22 +3468,22 @@ fn sort_pairs_len(
     tempArray: &mut [SeqPair],
     hist: &mut [i16],
 ) {
-    let count = usize::try_from(count).expect("count");
+    let count = count as usize;
     hist.fill(0);
     for sp in pairArray.iter().take(count) {
-        let idx = usize::try_from(sp.len1).expect("len1");
+        let idx = sp.len1 as usize;
         hist[idx] += 1;
     }
     let mut cumul_sum = 0_i32;
     for slot in hist.iter_mut() {
         let cur = i32::from(*slot);
-        *slot = i16::try_from(cumul_sum).expect("cumul_sum");
+        *slot = cumul_sum as i16;
         cumul_sum += cur;
     }
     for i in 0..count {
         let sp = pairArray[i];
-        let idx = usize::try_from(sp.len1).expect("len1");
-        let pos = usize::try_from(hist[idx]).expect("pos");
+        let idx = sp.len1 as usize;
+        let pos = hist[idx] as usize;
         tempArray[pos] = sp;
         hist[idx] += 1;
     }
@@ -3474,9 +3491,9 @@ fn sort_pairs_len(
 }
 
 fn sort_pairs_id(pairArray: &mut [SeqPair], first: i32, count: i32, tempArray: &mut [SeqPair]) {
-    let count = usize::try_from(count).expect("count");
+    let count = count as usize;
     for sp in pairArray.iter().take(count).copied() {
-        let pos = usize::try_from(sp.id - first).expect("pos");
+        let pos = (sp.id - first) as usize;
         tempArray[pos] = sp;
     }
     pairArray[..count].copy_from_slice(&tempArray[..count]);
@@ -3496,11 +3513,7 @@ impl BandedPairWiseSW {
         let mut seq = Vec::with_capacity(len);
         for row in 0..len {
             let v = soa[row * width + lane];
-            seq.push(if v <= 3 {
-                u8::try_from(v).expect("base")
-            } else {
-                4
-            });
+            seq.push(if v <= 3 { v as u8 } else { 4 });
         }
         seq
     }
@@ -3514,23 +3527,10 @@ impl BandedPairWiseSW {
         numPairs: i32,
         w: i32,
     ) {
-        for pair in p
-            .iter_mut()
-            .take(usize::try_from(numPairs).expect("numPairs").min(width))
-        {
-            let lane = usize::try_from(pair.id.max(0)).unwrap_or(0) % width;
-            let target = Self::decode_packed_lane_u8(
-                seq1SoA,
-                width,
-                lane,
-                usize::try_from(pair.len1).expect("len1"),
-            );
-            let query = Self::decode_packed_lane_u8(
-                seq2SoA,
-                width,
-                lane,
-                usize::try_from(pair.len2).expect("len2"),
-            );
+        for pair in p.iter_mut().take((numPairs as usize).min(width)) {
+            let lane = (pair.id.max(0) as usize) % width;
+            let target = Self::decode_packed_lane_u8(seq1SoA, width, lane, pair.len1 as usize);
+            let query = Self::decode_packed_lane_u8(seq2SoA, width, lane, pair.len2 as usize);
             pair.score = self.scalarBandedSWA(
                 pair.len2,
                 &query,
@@ -3556,23 +3556,10 @@ impl BandedPairWiseSW {
         numPairs: i32,
         w: i32,
     ) {
-        for pair in p
-            .iter_mut()
-            .take(usize::try_from(numPairs).expect("numPairs").min(width))
-        {
-            let lane = usize::try_from(pair.id.max(0)).unwrap_or(0) % width;
-            let target = Self::decode_packed_lane_u16(
-                seq1SoA,
-                width,
-                lane,
-                usize::try_from(pair.len1).expect("len1"),
-            );
-            let query = Self::decode_packed_lane_u16(
-                seq2SoA,
-                width,
-                lane,
-                usize::try_from(pair.len2).expect("len2"),
-            );
+        for pair in p.iter_mut().take((numPairs as usize).min(width)) {
+            let lane = (pair.id.max(0) as usize) % width;
+            let target = Self::decode_packed_lane_u16(seq1SoA, width, lane, pair.len1 as usize);
+            let query = Self::decode_packed_lane_u16(seq2SoA, width, lane, pair.len2 as usize);
             pair.score = self.scalarBandedSWA(
                 pair.len2,
                 &query,
@@ -3605,7 +3592,7 @@ impl BandedPairWiseSW {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512bw") && !disable_simd8() {
-                let n = usize::try_from(numPairs).expect("numPairs");
+                let n = numPairs as usize;
                 let mut idx = 0_usize;
                 while idx + SIMD_WIDTH8_AVX512 <= n {
                     let chunk = &mut pairArray[idx..idx + SIMD_WIDTH8_AVX512];
@@ -3663,7 +3650,7 @@ impl BandedPairWiseSW {
         #[cfg(target_arch = "x86_64")]
         {
             if std::is_x86_feature_detected!("avx512bw") && !disable_simd16() {
-                let n = usize::try_from(numPairs).expect("numPairs");
+                let n = numPairs as usize;
                 let mut idx = 0_usize;
                 while idx + SIMD_WIDTH16_AVX512 <= n {
                     let chunk = &mut pairArray[idx..idx + SIMD_WIDTH16_AVX512];
@@ -3797,9 +3784,9 @@ impl BandedPairWiseSW {
         eh_h: &mut Vec<i32>,
         eh_e: &mut Vec<i32>,
     ) -> i32 {
-        let qlen_usize = usize::try_from(qlen).expect("qlen");
-        let tlen_usize = usize::try_from(tlen).expect("tlen");
-        let m_usize = usize::try_from(self.m).expect("m");
+        let qlen_usize = qlen as usize;
+        let tlen_usize = tlen as usize;
+        let m_usize = self.m as usize;
         qp.clear();
         qp.resize(qlen_usize * m_usize, 0);
         eh_h.clear();
@@ -3980,14 +3967,11 @@ impl BandedPairWiseSW {
         BANDED_SCRATCH.with(|cell| {
             let mut buf = cell.borrow_mut();
             let (qp, eh_h, eh_e) = &mut *buf;
-            for p in seqPairArray
-                .iter_mut()
-                .take(usize::try_from(numPairs).expect("numPairs"))
-            {
-                let seq1 = &seqBufRef[usize::try_from(p.idr).expect("idr")
-                    ..usize::try_from(p.idr + p.len1).expect("idr+len1")];
-                let seq2 = &seqBufQer[usize::try_from(p.idq).expect("idq")
-                    ..usize::try_from(p.idq + p.len2).expect("idq+len2")];
+            for p in seqPairArray.iter_mut().take(numPairs as usize) {
+                let idr = p.idr as usize;
+                let idq = p.idq as usize;
+                let seq1 = &seqBufRef[idr..idr + p.len1 as usize];
+                let seq2 = &seqBufQer[idq..idq + p.len2 as usize];
                 p.score = self.scalarBandedSWA_inner(
                     p.len2,
                     seq2,

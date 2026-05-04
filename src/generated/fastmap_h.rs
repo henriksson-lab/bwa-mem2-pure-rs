@@ -34,5 +34,5 @@ pub struct ktp_aux_t {
 pub struct ktp_data_t {
     pub n_seqs: i32,
     pub seqs: Vec<bseq1_t>,
-    pub sam_lines: Vec<Box<str>>,
+    pub sam_lines: Vec<String>,
 }

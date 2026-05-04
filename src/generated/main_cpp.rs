@@ -142,7 +142,13 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             reads.to_str().expect("utf8").to_string(),
         ];
-        assert_eq!(main(&argv), 0);
+        let rc = {
+            let _guard = crate::generated::fastmap_cpp::MAIN_MEM_TEST_LOCK
+                .lock()
+                .expect("main_mem test lock");
+            main(&argv)
+        };
+        assert_eq!(rc, 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("@PG\tID:bwa-mem2\tPN:bwa-mem2\tVN:"), "{sam}");
         assert!(sam.contains("mm1\t"), "{sam}");

@@ -12,11 +12,11 @@
 pub struct bseq1_t {
     pub l_seq: i32,
     pub id: i32,
-    pub name: Option<Box<str>>,
-    pub comment: Option<Box<str>>,
-    pub seq: Option<Box<str>>,
-    pub qual: Option<Box<str>>,
-    pub sam: Option<Box<str>>,
+    pub name: Option<String>,
+    pub comment: Option<String>,
+    pub seq: Option<String>,
+    pub qual: Option<String>,
+    pub sam: Option<String>,
     pub seq_nt4: Vec<u8>,
 }
 

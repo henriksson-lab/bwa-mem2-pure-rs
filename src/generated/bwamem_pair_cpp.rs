@@ -8,7 +8,6 @@
 //! Generated scaffold for `bwa-mem2/src/bwamem_pair.cpp`.
 
 use crate::generated::bandedswa_h::SeqPair;
-use crate::generated::bntseq_cpp::bns_fetch_seq;
 use crate::generated::bntseq_h::bntseq_t;
 use crate::generated::bwa_h::bseq1_t;
 use crate::generated::bwamem_cpp::{
@@ -36,14 +35,17 @@ const MEM_F_NOPAIRING: i32 = 0x4;
 const MEM_F_PRIMARY5: i32 = 0x800;
 
 #[inline]
-fn take_kstring_boxed(str_: &mut kstring_t) -> Box<str> {
+fn take_kstring_boxed(str_: &mut kstring_t) -> String {
     let mut bytes = std::mem::take(&mut str_.s);
     bytes.truncate(str_.l);
     str_.l = 0;
     str_.m = 0;
-    String::from_utf8(bytes)
-        .expect("SAM record contains invalid UTF-8")
-        .into_boxed_str()
+    // SAFETY: every byte in `str_` was written by kput*/ksprintf helpers (ASCII output) or by
+    // FASTQ sequence/quality bytes which the formats define as printable ASCII. Skipping the
+    // O(n) UTF-8 validation pass eliminates ~hundreds of MB of byte scans on a 700K-read run.
+    // Skip into_boxed_str() too — keeps Vec<u8> capacity (no shrink-to-fit alloc/memcpy per
+    // SAM record). The .as_deref()/.as_str() readers downstream work uniformly with String.
+    unsafe { String::from_utf8_unchecked(bytes) }
 }
 
 fn debug_trace_read(name: Option<&str>) -> bool {
@@ -110,7 +112,7 @@ pub fn mem_pestat(
     *pes = [mem_pestat_t::default(); 4];
     let mut isize: [Vec<u64>; 4] = std::array::from_fn(|_| Vec::new());
 
-    for i in 0..(usize::try_from(n).expect("n") >> 1) {
+    for i in 0..((n as usize) >> 1) {
         let r0 = &regs[i << 1];
         let r1 = &regs[i << 1 | 1];
         if r0.n == 0 || r1.n == 0 {
@@ -126,10 +128,9 @@ pub fn mem_pestat(
             continue;
         }
         let mut is = 0_i64;
-        let dir =
-            usize::try_from(mem_infer_dir(l_pac, r0.a[0].rb, r1.a[0].rb, &mut is)).expect("dir");
+        let dir = mem_infer_dir(l_pac, r0.a[0].rb, r1.a[0].rb, &mut is) as usize;
         if is != 0 && is <= i64::from(opt.max_ins) {
-            isize[dir].push(u64::try_from(is).expect("insert size"));
+            isize[dir].push(is as u64);
         }
     }
 
@@ -209,7 +210,7 @@ pub fn mem_matesw(
 
     for i in 0..ma.n {
         let mut dist = 0_i64;
-        let r = usize::try_from(mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist)).expect("dir");
+        let r = mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist) as usize;
         if dist >= i64::from(pes[r].low) && dist <= i64::from(pes[r].high) {
             skip[r] = 1;
         }
@@ -219,11 +220,11 @@ pub fn mem_matesw(
     }
 
     let mut n = 0_i32;
-    let l_ms_usize = usize::try_from(l_ms).expect("l_ms");
-    // Hoist buffers across the 4 r-direction iterations to amortize allocations.
-    let mut rev_buf: Vec<u8> = Vec::new();
-    let mut query_buf: Vec<u8> = Vec::new();
-    let mut ref_buf: Vec<u8> = Vec::new();
+    let l_ms_usize = l_ms as usize;
+    // Reuse thread-local buffers across mem_matesw calls — was per-call alloc × ~25K-100K
+    // per PE batch.
+    let (mut rev_buf, mut query_buf, mut ref_buf) =
+        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
     for r in 0..4 {
         if skip[r] != 0 {
             continue;
@@ -231,13 +232,15 @@ pub fn mem_matesw(
         let is_rev = ((r >> 1) != (r & 1)) as i32;
         let is_larger = ((r >> 1) == 0) as i32;
         let seq: &[u8] = if is_rev != 0 {
-            // Reverse-complement: walk ms backward and extend rev_buf with per-byte complement.
+            // Reverse-complement: walk ms backward, complement each base via LUT.
+            // LUT maps 0,1,2,3,4,5+ -> 3,2,1,0,4,4 (any value >= 4 maps to AMBIG=4).
+            const RC_LUT: [u8; 8] = [3, 2, 1, 0, 4, 4, 4, 4];
             rev_buf.clear();
             rev_buf.extend(
                 ms[..l_ms_usize]
                     .iter()
                     .rev()
-                    .map(|&c| if c < 4 { 3 - c } else { 4 }),
+                    .map(|&c| unsafe { *RC_LUT.get_unchecked((c as usize).min(7)) }),
             );
             &rev_buf
         } else {
@@ -302,7 +305,7 @@ pub fn mem_matesw(
                 | (opt.min_seed_len * opt.a);
             query_buf.clear();
             query_buf.extend_from_slice(seq);
-            let span = i32::try_from(re - rb).expect("ref span");
+            let span = (re - rb) as i32;
             let aln = ksw_align2(
                 l_ms,
                 &mut query_buf,
@@ -344,8 +347,7 @@ pub fn mem_matesw(
                 b.score = aln.score;
                 b.csub = aln.score2;
                 b.secondary = -1;
-                b.seedcov =
-                    i32::try_from((b.re - b.rb).min(i64::from(b.qe - b.qb)) >> 1).expect("seedcov");
+                b.seedcov = ((b.re - b.rb).min(i64::from(b.qe - b.qb)) >> 1) as i32;
 
                 ma.a.push(b);
                 ma.n = ma.a.len();
@@ -366,18 +368,18 @@ pub fn mem_matesw(
             n += 1;
         }
         if n != 0 {
-            ma.n = usize::try_from(mem_sort_dedup_patch(
+            ma.n = mem_sort_dedup_patch(
                 opt,
                 None,
                 None,
                 None,
-                i32::try_from(ma.n).expect("n"),
+                ma.n as i32,
                 &mut ma.a,
-            ))
-            .expect("n");
+            ) as usize;
             ma.m = ma.a.len();
         }
     }
+    MEM_MATESW_SCRATCH.with(|c| *c.borrow_mut() = (rev_buf, query_buf, ref_buf));
     n
 }
 
@@ -392,6 +394,56 @@ thread_local! {
     // from phase-0 results.
     static MEM_PE_BATCH_PHASE1_PAIRS: std::cell::RefCell<Vec<SeqPair>> =
         const { std::cell::RefCell::new(Vec::new()) };
+
+    // Reused across mem_matesw* calls (per pair × 4 directions). Hold the rev-complement
+    // query, copied query for ksw_align2, and reference sequence buffer.
+    static MEM_MATESW_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<u8>, Vec<u8>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+
+    // Reused across mem_sam_pe / mem_sam_pe_batch_post calls (per pair). Each call previously
+    // allocated `b: [Vec<mem_alnreg_t>; 2]` via collect; ~700K Vec allocations per 700K-read run.
+    static MEM_SAM_PE_B_SCRATCH: std::cell::RefCell<(Vec<mem_alnreg_t>, Vec<mem_alnreg_t>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+
+    // Reused across mem_sam_pe / mem_sam_pe_batch_post calls (per pair). Holds aa (the per-end
+    // mem_aln_t lists). Each call previously allocated 2 fresh Vec<mem_aln_t>; ~700K * 2 Vec
+    // allocations per 700K-read run.
+    static MEM_SAM_PE_AA_SCRATCH: std::cell::RefCell<(Vec<mem_aln_t>, Vec<mem_aln_t>)> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
+
+// Drain h/g/aa mem_aln_t cigar/md buffers into the global pools so they're reused on next call
+// instead of being freed when these stack-locals go out of scope. Also returns the aa Vec
+// capacity to the per-pair pool.
+#[inline]
+fn drain_pe_aln_pools(
+    h: &mut [mem_aln_t; 2],
+    g: &mut [mem_aln_t; 2],
+    aa: &mut [Vec<mem_aln_t>; 2],
+) {
+    for i in 0..2 {
+        crate::generated::bwa_cpp::return_cigar_buf(std::mem::take(&mut h[i].cigar));
+        crate::generated::bwa_cpp::return_md_buf(std::mem::take(&mut h[i].md));
+        crate::generated::bwa_cpp::return_cigar_buf(std::mem::take(&mut g[i].cigar));
+        crate::generated::bwa_cpp::return_md_buf(std::mem::take(&mut g[i].md));
+        for aln in aa[i].drain(..) {
+            crate::generated::bwa_cpp::return_cigar_buf(aln.cigar);
+            crate::generated::bwa_cpp::return_md_buf(aln.md);
+        }
+    }
+    // Return aa Vec capacity to the thread-local pool. drain(..) above already cleared them.
+    let aa0 = std::mem::take(&mut aa[0]);
+    let aa1 = std::mem::take(&mut aa[1]);
+    MEM_SAM_PE_AA_SCRATCH.with(|c| *c.borrow_mut() = (aa0, aa1));
+}
+
+#[inline]
+fn take_pe_aa_pools() -> [Vec<mem_aln_t>; 2] {
+    let (mut a0, mut a1) =
+        MEM_SAM_PE_AA_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    a0.clear();
+    a1.clear();
+    [a0, a1]
 }
 
 #[doc = "Original function: mem_pair:285"]
@@ -433,21 +485,20 @@ fn mem_pair_inner(
     let l_pac = bns.l_pac;
 
     for r in 0..2_usize {
-        for i in 0..usize::try_from(n_pri[r]).expect("n_pri") {
+        for i in 0..(n_pri[r] as usize) {
             let e = &a[r].a[i];
             let mut x = if e.rb < l_pac {
                 e.rb
             } else {
                 (l_pac << 1) - 1 - e.rb
             };
-            x = (i64::from(e.rid) << 32)
-                | (x - bns.anns[usize::try_from(e.rid).expect("rid")].offset);
-            let y = (u64::try_from(e.score).expect("score") << 32)
-                | (u64::try_from(i).expect("i") << 2)
+            x = (i64::from(e.rid) << 32) | (x - bns.anns[e.rid as usize].offset);
+            let y = ((e.score as u64) << 32)
+                | ((i as u64) << 2)
                 | (u64::from((e.rb >= l_pac) as u8) << 1)
-                | u64::try_from(r).expect("r");
+                | (r as u64);
             v.push(pair64_t {
-                x: u64::try_from(x).expect("x"),
+                x: x as u64,
                 y,
             });
         }
@@ -457,19 +508,19 @@ fn mem_pair_inner(
     let mut y_last = [-1_i32; 4];
     for i in 0..v.len() {
         for r in 0..2_u64 {
-            let dir = usize::try_from((r << 1) | ((v[i].y >> 1) & 1)).expect("dir");
+            let dir = ((r << 1) | ((v[i].y >> 1) & 1)) as usize;
             if pes[dir].failed != 0 {
                 continue;
             }
-            let which = usize::try_from((r << 1) | ((v[i].y & 1) ^ 1)).expect("which");
+            let which = ((r << 1) | ((v[i].y & 1) ^ 1)) as usize;
             if y_last[which] < 0 {
                 continue;
             }
-            for k in (0..=usize::try_from(y_last[which]).expect("y_last")).rev() {
-                if (v[k].y & 3) != u64::try_from(which).expect("which") {
+            for k in (0..=(y_last[which] as usize)).rev() {
+                if (v[k].y & 3) != (which as u64) {
                     continue;
                 }
-                let dist = i64::try_from(v[i].x).expect("x") - i64::try_from(v[k].x).expect("x");
+                let dist = (v[i].x as i64) - (v[k].x as i64);
                 if dist > i64::from(pes[dir].high) {
                     break;
                 }
@@ -482,17 +533,16 @@ fn mem_pair_inner(
                 q += 0.721 * (2.0_f64 * erfc_term).ln() * (opt.a as f64);
                 // Match C++: (int)(... + 0.499) truncates toward zero, then clamp >= 0.
                 let q_int = (q + 0.499) as i32;
-                let q = u64::try_from(q_int.max(0)).expect("q");
-                let pair_y = (u64::try_from(k).expect("k") << 32) | u64::try_from(i).expect("i");
-                let pair_x = (q << 32)
-                    | (hash_64(pair_y ^ (u64::try_from(id).expect("id") << 8)) & 0xffff_ffff);
+                let q = q_int.max(0) as u64;
+                let pair_y = ((k as u64) << 32) | (i as u64);
+                let pair_x = (q << 32) | (hash_64(pair_y ^ ((id as u64) << 8)) & 0xffff_ffff);
                 u.push(pair64_t {
                     x: pair_x,
                     y: pair_y,
                 });
             }
         }
-        y_last[usize::try_from(v[i].y & 3).expect("which")] = i32::try_from(i).expect("i");
+        y_last[(v[i].y & 3) as usize] = i as i32;
     }
 
     if !u.is_empty() {
@@ -501,21 +551,19 @@ fn mem_pair_inner(
         tmp = tmp.max(opt.o_ins + opt.e_ins);
         u.sort_by(|lhs, rhs| lhs.x.cmp(&rhs.x).then(lhs.y.cmp(&rhs.y)));
         let best = *u.last().expect("best pair");
-        let i = usize::try_from(best.y >> 32).expect("i");
-        let k = usize::try_from(best.y as u32).expect("k");
-        z[usize::try_from(v[i].y & 1).expect("z")] =
-            i32::try_from((v[i].y >> 2) & 0x3fff_ffff).expect("z idx");
-        z[usize::try_from(v[k].y & 1).expect("z")] =
-            i32::try_from((v[k].y >> 2) & 0x3fff_ffff).expect("z idx");
-        let ret = i32::try_from(best.x >> 32).expect("ret");
+        let i = (best.y >> 32) as usize;
+        let k = (best.y as u32) as usize;
+        z[(v[i].y & 1) as usize] = ((v[i].y >> 2) & 0x3fff_ffff) as i32;
+        z[(v[k].y & 1) as usize] = ((v[k].y >> 2) & 0x3fff_ffff) as i32;
+        let ret = (best.x >> 32) as i32;
         *sub = if u.len() > 1 {
-            i32::try_from(u[u.len() - 2].x >> 32).expect("sub")
+            (u[u.len() - 2].x >> 32) as i32
         } else {
             0
         };
         *n_sub = 0;
         for pair in u.iter().rev().skip(1) {
-            if *sub - i32::try_from(pair.x >> 32).expect("pair score") <= tmp {
+            if *sub - (pair.x >> 32) as i32 <= tmp {
                 *n_sub += 1;
             }
         }
@@ -543,27 +591,36 @@ pub fn mem_sam_pe(
     let mut n_sub = 0_i32;
     let mut extra_flag = 1_i32;
     let mut n_pri = [0_i32; 2];
+    // Pre-size for two SAM lines (~1KB) — typical paired-end SAM record pair fits without growth.
     let mut str_ = kstring_t::default();
+    crate::generated::kstring_h::ks_resize(&mut str_, 1024);
     let mut h: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
     let mut g: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
-    let mut aa: [Vec<mem_aln_t>; 2] = std::array::from_fn(|_| Vec::new());
+    let mut aa: [Vec<mem_aln_t>; 2] = take_pe_aa_pools();
 
     if (opt.flag & 0x20) == 0 {
-        let b: [Vec<mem_alnreg_t>; 2] = std::array::from_fn(|i| {
-            a[i].a
+        let (mut b0, mut b1) = MEM_SAM_PE_B_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        b0.clear();
+        b0.extend(
+            a[0].a
                 .iter()
-                .take(a[i].n)
-                .filter(|reg| reg.score >= a[i].a[0].score - opt.pen_unpaired)
-                .copied()
-                .collect()
-        });
+                .take(a[0].n)
+                .filter(|reg| reg.score >= a[0].a[0].score - opt.pen_unpaired)
+                .copied(),
+        );
+        b1.clear();
+        b1.extend(
+            a[1].a
+                .iter()
+                .take(a[1].n)
+                .filter(|reg| reg.score >= a[1].a[0].score - opt.pen_unpaired)
+                .copied(),
+        );
+        let b = [&b0, &b1];
         for i in 0..2_usize {
             // Hoist nt4_cow outside the j loop — same mate seq each iter.
             let mate_nt4 = nt4_cow(&s[1 - i]);
-            for j in 0..b[i]
-                .len()
-                .min(usize::try_from(opt.max_matesw).expect("max_matesw"))
-            {
+            for j in 0..b[i].len().min(opt.max_matesw as usize) {
                 let val = mem_matesw(
                     opt,
                     bns,
@@ -577,19 +634,20 @@ pub fn mem_sam_pe(
                 n += val;
             }
         }
+        MEM_SAM_PE_B_SCRATCH.with(|c| *c.borrow_mut() = (b0, b1));
     }
 
     n_pri[0] = mem_mark_primary_se(
         opt,
-        i32::try_from(a[0].n).expect("n"),
+        a[0].n as i32,
         &mut a[0].a,
-        i64::try_from(id << 1).expect("id"),
+        (id << 1) as i64,
     );
     n_pri[1] = mem_mark_primary_se(
         opt,
-        i32::try_from(a[1].n).expect("n"),
+        a[1].n as i32,
         &mut a[1].a,
-        i64::try_from((id << 1) | 1).expect("id"),
+        ((id << 1) | 1) as i64,
     );
     if (opt.flag & MEM_F_PRIMARY5) != 0 {
         mem_reorder_primary5(opt.T, &mut a[0]);
@@ -642,7 +700,7 @@ pub fn mem_sam_pe(
                 pac,
                 pes,
                 a,
-                i32::try_from(id).expect("id"),
+                id as i32,
                 &mut subo,
                 &mut n_sub,
                 &mut z,
@@ -679,13 +737,13 @@ pub fn mem_sam_pe(
             let mut is_multi = [0_i32; 2];
             for i in 0..2_usize {
                 let mut j = 1_usize;
-                while j < usize::try_from(n_pri[i]).expect("n_pri") {
+                while j < n_pri[i] as usize {
                     if a[i].a[j].secondary < 0 && a[i].a[j].score >= opt.T {
                         break;
                     }
                     j += 1;
                 }
-                is_multi[i] = if j < usize::try_from(n_pri[i]).expect("n_pri") {
+                is_multi[i] = if j < n_pri[i] as usize {
                     1
                 } else {
                     0
@@ -706,10 +764,10 @@ pub fn mem_sam_pe(
                 let mut q_se = [0_i32; 2];
                 if o > score_un {
                     for i in 0..2_usize {
-                        let zi = usize::try_from(z[i]).expect("z");
+                        let zi = z[i] as usize;
                         let secondary = a[i].a[zi].secondary;
                         let secondary_score = if secondary >= 0 {
-                            Some(a[i].a[usize::try_from(secondary).expect("secondary")].score)
+                            Some(a[i].a[secondary as usize].score)
                         } else {
                             None
                         };
@@ -736,7 +794,7 @@ pub fn mem_sam_pe(
                     };
                     extra_flag |= 2;
                     for i in 0..2_usize {
-                        let c = &a[i].a[usize::try_from(z[i]).expect("z")];
+                        let c = &a[i].a[z[i] as usize];
                         q_se[i] = q_se[i].min(raw_mapq(c.score - c.csub, opt.a));
                     }
                 } else {
@@ -764,11 +822,11 @@ pub fn mem_sam_pe(
                 }
 
                 for i in 0..2_usize {
-                    let zi = usize::try_from(z[i]).expect("z");
+                    let zi = z[i] as usize;
                     let k = a[i].a[zi].secondary_all;
                     if k >= 0 && k < n_pri[i] {
                         for j in 0..a[i].n {
-                            if a[i].a[j].secondary_all == k || j == usize::try_from(k).expect("k") {
+                            if a[i].a[j].secondary_all == k || j == k as usize {
                                 a[i].a[j].secondary_all = z[i];
                             }
                         }
@@ -776,7 +834,7 @@ pub fn mem_sam_pe(
                     }
                 }
 
-                let xa = if (opt.flag & MEM_F_ALL) == 0 {
+                let mut xa = if (opt.flag & MEM_F_ALL) == 0 {
                     [
                         mem_gen_alt(
                             opt,
@@ -800,7 +858,7 @@ pub fn mem_sam_pe(
                 };
 
                 for i in 0..2_usize {
-                    let zi = usize::try_from(z[i]).expect("z");
+                    let zi = z[i] as usize;
                     h[i] = mem_reg2aln(
                         opt,
                         bns,
@@ -809,12 +867,14 @@ pub fn mem_sam_pe(
                         s[i].seq.as_deref().unwrap_or(""),
                         Some(&a[i].a[zi]),
                     );
-                    h[i].mapq = u32::try_from(q_se[i]).expect("mapq");
+                    h[i].mapq = q_se[i].max(0) as u32;
                     h[i].flag |= (0x40 << i) | extra_flag;
-                    h[i].XA = xa[i][zi].clone();
+                    // Take XA from xa rather than clone — xa goes out of scope at the end of
+                    // this block so the take is safe.
+                    h[i].XA = std::mem::take(&mut xa[i][zi]);
                     aa[i].push(h[i].clone());
-                    if usize::try_from(n_pri[i]).expect("n_pri") < a[i].n {
-                        let p = &a[i].a[usize::try_from(n_pri[i]).expect("n_pri")];
+                    if (n_pri[i] as usize) < a[i].n {
+                        let p = &a[i].a[n_pri[i] as usize];
                         if p.score >= opt.T && p.secondary < 0 && p.is_alt != 0 {
                             g[i] = mem_reg2aln(
                                 opt,
@@ -825,7 +885,9 @@ pub fn mem_sam_pe(
                                 Some(p),
                             );
                             g[i].flag |= 0x800 | (0x40 << i) | extra_flag;
-                            g[i].XA = xa[i][usize::try_from(n_pri[i]).expect("n_pri")].clone();
+                            g[i].XA = std::mem::take(
+                                &mut xa[i][n_pri[i] as usize],
+                            );
                             aa[i].push(g[i].clone());
                         }
                     }
@@ -837,9 +899,9 @@ pub fn mem_sam_pe(
                         bns,
                         &mut str_,
                         &s[0],
-                        i32::try_from(aa[0].len()).expect("len"),
+                        aa[0].len() as i32,
                         &aa[0],
-                        i32::try_from(i).expect("i"),
+                        i as i32,
                         Some(&h[1]),
                     );
                 }
@@ -850,14 +912,15 @@ pub fn mem_sam_pe(
                         bns,
                         &mut str_,
                         &s[1],
-                        i32::try_from(aa[1].len()).expect("len"),
+                        aa[1].len() as i32,
                         &aa[1],
-                        i32::try_from(i).expect("i"),
+                        i as i32,
                         Some(&h[0]),
                     );
                 }
                 s[1].sam = Some(take_kstring_boxed(&mut str_));
                 assert_eq!(s[0].name, s[1].name, "paired reads have different names");
+                drain_pe_aln_pools(&mut h, &mut g, &mut aa);
                 return n;
             }
         }
@@ -868,8 +931,8 @@ pub fn mem_sam_pe(
         if a[i].n > 0 {
             if a[i].a[0].score >= opt.T {
                 which = 0;
-            } else if usize::try_from(n_pri[i]).expect("n_pri") < a[i].n
-                && a[i].a[usize::try_from(n_pri[i]).expect("n_pri")].score >= opt.T
+            } else if (n_pri[i] as usize) < a[i].n
+                && a[i].a[n_pri[i] as usize].score >= opt.T
             {
                 which = n_pri[i];
             }
@@ -881,7 +944,7 @@ pub fn mem_sam_pe(
                 pac,
                 s[i].l_seq,
                 s[i].seq.as_deref().unwrap_or(""),
-                Some(&a[i].a[usize::try_from(which).expect("which")]),
+                Some(&a[i].a[which as usize]),
             )
         } else {
             mem_reg2aln(
@@ -896,13 +959,7 @@ pub fn mem_sam_pe(
     }
     if (opt.flag & MEM_F_NOPAIRING) == 0 && h[0].rid == h[1].rid && h[0].rid >= 0 {
         let mut dist = 0_i64;
-        let d = usize::try_from(mem_infer_dir(
-            bns.l_pac,
-            a[0].a[0].rb,
-            a[1].a[0].rb,
-            &mut dist,
-        ))
-        .expect("dir");
+        let d = mem_infer_dir(bns.l_pac, a[0].a[0].rb, a[1].a[0].rb, &mut dist) as usize;
         if pes[d].failed == 0 && dist >= i64::from(pes[d].low) && dist <= i64::from(pes[d].high) {
             extra_flag |= 2;
         }
@@ -926,6 +983,7 @@ pub fn mem_sam_pe(
         Some(&h[0]),
     );
     assert_eq!(s[0].name, s[1].name, "paired reads have different names");
+    drain_pe_aln_pools(&mut h, &mut g, &mut aa);
     n
 }
 
@@ -960,7 +1018,7 @@ pub fn mem_sam_pe_batch_pre(
             if reg.score < min_score {
                 continue;
             }
-            if rescue_count >= usize::try_from(opt.max_matesw).expect("max_matesw") {
+            if rescue_count >= opt.max_matesw.max(0) as usize {
                 break;
             }
             *pcnt = mem_matesw_batch_pre(
@@ -988,7 +1046,7 @@ pub fn mem_sam_pe_batch_pre(
 
 #[doc = "Original function: revseq:604"]
 pub fn revseq(l: i32, s: &mut [u8]) {
-    let l = usize::try_from(l).expect("l");
+    let l = l.max(0) as usize;
     let mut i = 0_usize;
     while i < (l >> 1) {
         s.swap(i, l - 1 - i);
@@ -1007,11 +1065,11 @@ pub fn mem_sam_pe_batch(
     maxQerLen: i32,
     tid: usize,
 ) -> i32 {
-    let total = usize::try_from(pcnt).expect("pcnt");
+    let total = pcnt.max(0) as usize;
     if total == 0 {
         return 1;
     }
-    let pcnt8_usize = usize::try_from(pcnt8.max(0)).expect("pcnt8");
+    let pcnt8_usize = pcnt8.max(0) as usize;
     let pcnt16_usize = total.saturating_sub(pcnt8_usize);
 
     for r in aln.iter_mut().take(total) {
@@ -1039,7 +1097,7 @@ pub fn mem_sam_pe_batch(
             &mmc.seqBufLeftRef[tid],
             &mmc.seqBufLeftQer[tid],
             aln,
-            i32::try_from(pcnt8_usize).expect("pcnt8"),
+            pcnt8_usize as i32,
             1,
             0,
         );
@@ -1051,7 +1109,7 @@ pub fn mem_sam_pe_batch(
             &mmc.seqBufLeftRef[tid],
             &mmc.seqBufLeftQer[tid],
             aln,
-            i32::try_from(pcnt16_usize).expect("pcnt16"),
+            pcnt16_usize as i32,
             1,
             0,
         );
@@ -1073,7 +1131,7 @@ pub fn mem_sam_pe_batch(
             };
             for i in 0..count {
                 let mut sp = mmc.seqPairArrayLeft128[tid][start + i];
-                let ind = usize::try_from(sp.regid).expect("regid");
+                let ind = sp.regid as usize;
                 let r = aln[ind];
                 let xtra = sp.h0;
                 if (xtra & KSW_XSTART) == 0
@@ -1083,8 +1141,8 @@ pub fn mem_sam_pe_batch(
                 }
                 sp.h0 = KSW_XSTOP | r.score;
                 sp.len2 = r.qe + 1;
-                let qs_start = usize::try_from(sp.idq).expect("idq");
-                let rs_start = usize::try_from(sp.idr).expect("idr");
+                let qs_start = sp.idq as usize;
+                let rs_start = sp.idr as usize;
                 revseq(r.qe + 1, &mut mmc.seqBufLeftQer[tid][qs_start..]);
                 revseq(r.te + 1, &mut mmc.seqBufLeftRef[tid][rs_start..]);
                 phase1_pairs.push(sp);
@@ -1104,7 +1162,7 @@ pub fn mem_sam_pe_batch(
                 &mmc.seqBufLeftRef[tid],
                 &mmc.seqBufLeftQer[tid],
                 aln,
-                i32::try_from(pos16).expect("pos16"),
+                pos16 as i32,
                 1,
                 1,
             );
@@ -1116,7 +1174,7 @@ pub fn mem_sam_pe_batch(
                 &mmc.seqBufLeftRef[tid],
                 &mmc.seqBufLeftQer[tid],
                 aln,
-                i32::try_from(pos8).expect("pos8"),
+                pos8 as i32,
                 1,
                 1,
             );
@@ -1147,19 +1205,31 @@ pub fn mem_sam_pe_batch_post(
     let mut n_sub = 0_i32;
     let mut extra_flag = 1_i32;
     let mut n_pri = [0_i32; 2];
+    // Pre-size for two SAM lines (~1KB) — typical paired-end SAM record pair fits without growth.
     let mut str_ = kstring_t::default();
+    crate::generated::kstring_h::ks_resize(&mut str_, 1024);
     let mut h: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
     let mut g: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
-    let mut aa: [Vec<mem_aln_t>; 2] = std::array::from_fn(|_| Vec::new());
+    let mut aa: [Vec<mem_aln_t>; 2] = take_pe_aa_pools();
     if (opt.flag & 0x20) == 0 {
-        let b: [Vec<mem_alnreg_t>; 2] = std::array::from_fn(|i| {
-            a[i].a
+        let (mut b0, mut b1) = MEM_SAM_PE_B_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        b0.clear();
+        b0.extend(
+            a[0].a
                 .iter()
-                .take(a[i].n)
-                .filter(|reg| reg.score >= a[i].a[0].score - opt.pen_unpaired)
-                .copied()
-                .collect()
-        });
+                .take(a[0].n)
+                .filter(|reg| reg.score >= a[0].a[0].score - opt.pen_unpaired)
+                .copied(),
+        );
+        b1.clear();
+        b1.extend(
+            a[1].a
+                .iter()
+                .take(a[1].n)
+                .filter(|reg| reg.score >= a[1].a[0].score - opt.pen_unpaired)
+                .copied(),
+        );
+        let b = [&b0, &b1];
         for reg in &mut a[0].a[..a[0].n] {
             reg.flg = 0;
         }
@@ -1167,10 +1237,7 @@ pub fn mem_sam_pe_batch_post(
             reg.flg = 0;
         }
         for i in 0..2_usize {
-            for j in 0..b[i]
-                .len()
-                .min(usize::try_from(opt.max_matesw).expect("max_matesw"))
-            {
+            for j in 0..b[i].len().min(opt.max_matesw as usize) {
                 let mate_nt4 = nt4_cow(&s[1 - i]);
                 let val = mem_matesw_batch_post(
                     opt,
@@ -1189,19 +1256,20 @@ pub fn mem_sam_pe_batch_post(
                 *gcnt += 4;
             }
         }
+        MEM_SAM_PE_B_SCRATCH.with(|c| *c.borrow_mut() = (b0, b1));
     }
 
     n_pri[0] = mem_mark_primary_se(
         opt,
-        i32::try_from(a[0].n).expect("n"),
+        a[0].n as i32,
         &mut a[0].a,
-        i64::try_from(id << 1).expect("id"),
+        (id << 1) as i64,
     );
     n_pri[1] = mem_mark_primary_se(
         opt,
-        i32::try_from(a[1].n).expect("n"),
+        a[1].n as i32,
         &mut a[1].a,
-        i64::try_from((id << 1) | 1).expect("id"),
+        ((id << 1) | 1) as i64,
     );
     if (opt.flag & MEM_F_PRIMARY5) != 0 {
         mem_reorder_primary5(opt.T, &mut a[0]);
@@ -1254,7 +1322,7 @@ pub fn mem_sam_pe_batch_post(
                 pac,
                 pes,
                 a,
-                i32::try_from(id).expect("id"),
+                id as i32,
                 &mut subo,
                 &mut n_sub,
                 &mut z,
@@ -1291,13 +1359,13 @@ pub fn mem_sam_pe_batch_post(
             let mut is_multi = [0_i32; 2];
             for i in 0..2_usize {
                 let mut j = 1_usize;
-                while j < usize::try_from(n_pri[i]).expect("n_pri") {
+                while j < n_pri[i] as usize {
                     if a[i].a[j].secondary < 0 && a[i].a[j].score >= opt.T {
                         break;
                     }
                     j += 1;
                 }
-                is_multi[i] = if j < usize::try_from(n_pri[i]).expect("n_pri") {
+                is_multi[i] = if j < n_pri[i] as usize {
                     1
                 } else {
                     0
@@ -1318,10 +1386,10 @@ pub fn mem_sam_pe_batch_post(
                 let mut q_se = [0_i32; 2];
                 if o > score_un {
                     for i in 0..2_usize {
-                        let zi = usize::try_from(z[i]).expect("z");
+                        let zi = z[i] as usize;
                         let secondary = a[i].a[zi].secondary;
                         let secondary_score = if secondary >= 0 {
-                            Some(a[i].a[usize::try_from(secondary).expect("secondary")].score)
+                            Some(a[i].a[secondary as usize].score)
                         } else {
                             None
                         };
@@ -1348,7 +1416,7 @@ pub fn mem_sam_pe_batch_post(
                     };
                     extra_flag |= 2;
                     for i in 0..2_usize {
-                        let c = &a[i].a[usize::try_from(z[i]).expect("z")];
+                        let c = &a[i].a[z[i] as usize];
                         q_se[i] = q_se[i].min(raw_mapq(c.score - c.csub, opt.a));
                     }
                 } else {
@@ -1376,11 +1444,11 @@ pub fn mem_sam_pe_batch_post(
                 }
 
                 for i in 0..2_usize {
-                    let zi = usize::try_from(z[i]).expect("z");
+                    let zi = z[i] as usize;
                     let k = a[i].a[zi].secondary_all;
                     if k >= 0 && k < n_pri[i] {
                         for j in 0..a[i].n {
-                            if a[i].a[j].secondary_all == k || j == usize::try_from(k).expect("k") {
+                            if a[i].a[j].secondary_all == k || j == k as usize {
                                 a[i].a[j].secondary_all = z[i];
                             }
                         }
@@ -1388,7 +1456,7 @@ pub fn mem_sam_pe_batch_post(
                     }
                 }
 
-                let xa = if (opt.flag & MEM_F_ALL) == 0 {
+                let mut xa = if (opt.flag & MEM_F_ALL) == 0 {
                     [
                         mem_gen_alt(
                             opt,
@@ -1412,7 +1480,7 @@ pub fn mem_sam_pe_batch_post(
                 };
 
                 for i in 0..2_usize {
-                    let zi = usize::try_from(z[i]).expect("z");
+                    let zi = z[i] as usize;
                     h[i] = mem_reg2aln(
                         opt,
                         bns,
@@ -1421,12 +1489,14 @@ pub fn mem_sam_pe_batch_post(
                         s[i].seq.as_deref().unwrap_or(""),
                         Some(&a[i].a[zi]),
                     );
-                    h[i].mapq = u32::try_from(q_se[i]).expect("mapq");
+                    h[i].mapq = q_se[i].max(0) as u32;
                     h[i].flag |= (0x40 << i) | extra_flag;
-                    h[i].XA = xa[i][zi].clone();
+                    // Take XA from xa rather than clone — xa goes out of scope at the end of
+                    // this block so the take is safe.
+                    h[i].XA = std::mem::take(&mut xa[i][zi]);
                     aa[i].push(h[i].clone());
-                    if usize::try_from(n_pri[i]).expect("n_pri") < a[i].n {
-                        let p = &a[i].a[usize::try_from(n_pri[i]).expect("n_pri")];
+                    if (n_pri[i] as usize) < a[i].n {
+                        let p = &a[i].a[n_pri[i] as usize];
                         if p.score >= opt.T && p.secondary < 0 && p.is_alt != 0 {
                             g[i] = mem_reg2aln(
                                 opt,
@@ -1437,7 +1507,9 @@ pub fn mem_sam_pe_batch_post(
                                 Some(p),
                             );
                             g[i].flag |= 0x800 | (0x40 << i) | extra_flag;
-                            g[i].XA = xa[i][usize::try_from(n_pri[i]).expect("n_pri")].clone();
+                            g[i].XA = std::mem::take(
+                                &mut xa[i][n_pri[i] as usize],
+                            );
                             aa[i].push(g[i].clone());
                         }
                     }
@@ -1449,9 +1521,9 @@ pub fn mem_sam_pe_batch_post(
                         bns,
                         &mut str_,
                         &s[0],
-                        i32::try_from(aa[0].len()).expect("len"),
+                        aa[0].len() as i32,
                         &aa[0],
-                        i32::try_from(i).expect("i"),
+                        i as i32,
                         Some(&h[1]),
                     );
                 }
@@ -1462,14 +1534,15 @@ pub fn mem_sam_pe_batch_post(
                         bns,
                         &mut str_,
                         &s[1],
-                        i32::try_from(aa[1].len()).expect("len"),
+                        aa[1].len() as i32,
                         &aa[1],
-                        i32::try_from(i).expect("i"),
+                        i as i32,
                         Some(&h[0]),
                     );
                 }
                 s[1].sam = Some(take_kstring_boxed(&mut str_));
                 assert_eq!(s[0].name, s[1].name, "paired reads have different names");
+                drain_pe_aln_pools(&mut h, &mut g, &mut aa);
                 return n;
             }
         }
@@ -1480,8 +1553,8 @@ pub fn mem_sam_pe_batch_post(
         if a[i].n > 0 {
             if a[i].a[0].score >= opt.T {
                 which = 0;
-            } else if usize::try_from(n_pri[i]).expect("n_pri") < a[i].n
-                && a[i].a[usize::try_from(n_pri[i]).expect("n_pri")].score >= opt.T
+            } else if (n_pri[i] as usize) < a[i].n
+                && a[i].a[n_pri[i] as usize].score >= opt.T
             {
                 which = n_pri[i];
             }
@@ -1493,7 +1566,7 @@ pub fn mem_sam_pe_batch_post(
                 pac,
                 s[i].l_seq,
                 s[i].seq.as_deref().unwrap_or(""),
-                Some(&a[i].a[usize::try_from(which).expect("which")]),
+                Some(&a[i].a[which as usize]),
             )
         } else {
             mem_reg2aln(
@@ -1508,13 +1581,7 @@ pub fn mem_sam_pe_batch_post(
     }
     if (opt.flag & MEM_F_NOPAIRING) == 0 && h[0].rid == h[1].rid && h[0].rid >= 0 {
         let mut dist = 0_i64;
-        let d = usize::try_from(mem_infer_dir(
-            bns.l_pac,
-            a[0].a[0].rb,
-            a[1].a[0].rb,
-            &mut dist,
-        ))
-        .expect("dir");
+        let d = mem_infer_dir(bns.l_pac, a[0].a[0].rb, a[1].a[0].rb, &mut dist) as usize;
         if pes[d].failed == 0 && dist >= i64::from(pes[d].low) && dist <= i64::from(pes[d].high) {
             extra_flag |= 2;
         }
@@ -1538,6 +1605,7 @@ pub fn mem_sam_pe_batch_post(
         Some(&h[0]),
     );
     assert_eq!(s[0].name, s[1].name, "paired reads have different names");
+    drain_pe_aln_pools(&mut h, &mut g, &mut aa);
     n
 }
 
@@ -1565,51 +1633,54 @@ pub fn mem_matesw_batch_pre(
     }
     for i in 0..ma.n {
         let mut dist = 0_i64;
-        let r = usize::try_from(mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist)).expect("dir");
+        let r = mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist) as usize;
         if dist >= i64::from(pes[r].low) && dist <= i64::from(pes[r].high) {
             skip[r] = 1;
         }
     }
     if skip.iter().copied().sum::<i32>() == 4 {
-        while mmc.seqPairArrayAux[tid].len() < usize::try_from(gcnt + 4).expect("gcnt") {
+        let gcnt_us = gcnt as usize;
+        while mmc.seqPairArrayAux[tid].len() < gcnt_us + 4 {
             mmc.seqPairArrayAux[tid].push(SeqPair {
                 id: -1,
                 ..Default::default()
             });
         }
         for r in 0..4_usize {
-            mmc.seqPairArrayAux[tid][usize::try_from(gcnt).expect("gcnt") + r].id = -1;
+            mmc.seqPairArrayAux[tid][gcnt_us + r].id = -1;
         }
         return pcnt;
     }
 
-    let l_ms_usize = usize::try_from(l_ms).expect("l_ms");
-    // Hoist rev_buf out of the r loop so the rev-complement allocation is paid once per call,
-    // not 4 times. The non-rev branch can borrow ms directly without copying.
-    let mut rev_buf: Vec<u8> = Vec::new();
+    let l_ms_usize = l_ms as usize;
+    // Reuse thread-local scratch across the 4-direction r loop AND across mem_matesw_batch_pre
+    // calls (one per pair × per-batch). query_buf is unused here but we still take/restore the
+    // tuple to keep the API consistent across mem_matesw* sites.
+    let (mut rev_buf, _query_buf_unused, mut ref_seq_buf) =
+        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
     for r in 0..4_usize {
         if skip[r] != 0 {
-            while mmc.seqPairArrayAux[tid].len()
-                < usize::try_from(gcnt + r as i32 + 1).expect("gcnt")
-            {
+            while mmc.seqPairArrayAux[tid].len() < (gcnt as usize + r + 1) {
                 mmc.seqPairArrayAux[tid].push(SeqPair {
                     id: -1,
                     ..Default::default()
                 });
             }
-            mmc.seqPairArrayAux[tid][usize::try_from(gcnt).expect("gcnt") + r].id = -1;
+            mmc.seqPairArrayAux[tid][gcnt as usize + r].id = -1;
             continue;
         }
         let is_rev = ((r >> 1) != (r & 1)) as i32;
         let is_larger = ((r >> 1) == 0) as i32;
         let seq: &[u8] = if is_rev != 0 {
-            // Reverse-complement: walk ms backward and extend rev_buf with per-byte complement.
+            // Reverse-complement: walk ms backward, complement each base via LUT.
+            // LUT maps 0,1,2,3,4,5+ -> 3,2,1,0,4,4 (any value >= 4 maps to AMBIG=4).
+            const RC_LUT: [u8; 8] = [3, 2, 1, 0, 4, 4, 4, 4];
             rev_buf.clear();
             rev_buf.extend(
                 ms[..l_ms_usize]
                     .iter()
                     .rev()
-                    .map(|&c| if c < 4 { 3 - c } else { 4 }),
+                    .map(|&c| unsafe { *RC_LUT.get_unchecked((c as usize).min(7)) }),
             );
             &rev_buf
         } else {
@@ -1650,24 +1721,29 @@ pub fn mem_matesw_batch_pre(
             re = l_pac << 1;
         }
         let mut rid = -1_i32;
-        let ref_seq = if rb < re {
+        let ref_ok = if rb < re {
             let mid = (rb + re) >> 1;
-            Some(bns_fetch_seq(bns, pac, &mut rb, mid, &mut re, &mut rid))
+            crate::generated::bntseq_cpp::bns_fetch_seq_into(
+                bns, pac, &mut rb, mid, &mut re, &mut rid, &mut ref_seq_buf,
+            );
+            true
         } else {
-            None
+            ref_seq_buf.clear();
+            false
         };
+        let ref_seq: Option<&[u8]> = if ref_ok { Some(&ref_seq_buf) } else { None };
         if a.rid == rid && re - rb >= i64::from(opt.min_seed_len) {
             let xtra = KSW_XSUBO
                 | KSW_XSTART
                 | if l_ms * opt.a < 250 { KSW_XBYTE } else { 0 }
                 | (opt.min_seed_len * opt.a);
             let (ref_offset, qer_offset) = if pcnt != 0 {
-                let prev = mmc.seqPairArrayLeft128[tid][usize::try_from(pcnt - 1).expect("pcnt")];
+                let prev = mmc.seqPairArrayLeft128[tid][(pcnt - 1) as usize];
                 (prev.idr + prev.len1, prev.idq + prev.len2)
             } else {
                 (0_i32, 0_i32)
             };
-            let len1 = i32::try_from(re - rb).expect("len1");
+            let len1 = (re - rb) as i32;
             let len2 = l_ms;
             *maxRefLen = (*maxRefLen).max(len1);
             *maxQerLen = (*maxQerLen).max(len2);
@@ -1689,19 +1765,18 @@ pub fn mem_matesw_batch_pre(
             if mmc.seqPairArrayAux.len() <= tid {
                 mmc.seqPairArrayAux.resize_with(tid + 1, Vec::new);
             }
-            while mmc.seqPairArrayAux[tid].len()
-                < usize::try_from(gcnt + r as i32 + 1).expect("gcnt")
-            {
+            let gcnt_us = gcnt as usize;
+            while mmc.seqPairArrayAux[tid].len() < gcnt_us + r + 1 {
                 mmc.seqPairArrayAux[tid].push(SeqPair {
                     id: -1,
                     ..Default::default()
                 });
             }
-            mmc.seqPairArrayAux[tid][usize::try_from(gcnt).expect("gcnt") + r].id = pcnt;
-            let ref_start = usize::try_from(ref_offset).expect("ref_offset");
-            let qer_start = usize::try_from(qer_offset).expect("qer_offset");
-            let ref_end = ref_start + usize::try_from(len1).expect("len1");
-            let qer_end = qer_start + usize::try_from(len2).expect("len2");
+            mmc.seqPairArrayAux[tid][gcnt_us + r].id = pcnt;
+            let ref_start = ref_offset as usize;
+            let qer_start = qer_offset as usize;
+            let ref_end = ref_start + len1 as usize;
+            let qer_end = qer_start + len2 as usize;
             if mmc.seqBufLeftRef[tid].len() < ref_end {
                 mmc.seqBufLeftRef[tid].resize(ref_end, 0);
             }
@@ -1709,26 +1784,27 @@ pub fn mem_matesw_batch_pre(
                 mmc.seqBufLeftQer[tid].resize(qer_end, 0);
             }
             mmc.seqBufLeftRef[tid][ref_start..ref_end]
-                .copy_from_slice(ref_seq.as_ref().expect("reference seq"));
-            mmc.seqBufLeftQer[tid][qer_start..qer_end].copy_from_slice(&seq);
-            let sp_index = usize::try_from(pcnt).expect("pcnt");
+                .copy_from_slice(ref_seq.expect("reference seq"));
+            mmc.seqBufLeftQer[tid][qer_start..qer_end].copy_from_slice(seq);
+            let sp_index = pcnt as usize;
             if mmc.seqPairArrayLeft128[tid].len() <= sp_index {
                 mmc.seqPairArrayLeft128[tid].resize(sp_index + 1, SeqPair::default());
             }
             mmc.seqPairArrayLeft128[tid][sp_index] = sp;
             pcnt += 1;
         } else {
-            while mmc.seqPairArrayAux[tid].len()
-                < usize::try_from(gcnt + r as i32 + 1).expect("gcnt")
-            {
+            let gcnt_us = gcnt as usize;
+            while mmc.seqPairArrayAux[tid].len() < gcnt_us + r + 1 {
                 mmc.seqPairArrayAux[tid].push(SeqPair {
                     id: -1,
                     ..Default::default()
                 });
             }
-            mmc.seqPairArrayAux[tid][usize::try_from(gcnt).expect("gcnt") + r].id = -1;
+            mmc.seqPairArrayAux[tid][gcnt_us + r].id = -1;
         }
     }
+    MEM_MATESW_SCRATCH
+        .with(|c| *c.borrow_mut() = (rev_buf, _query_buf_unused, ref_seq_buf));
     pcnt
 }
 
@@ -1753,7 +1829,7 @@ pub fn mem_matesw_batch_post(
     }
     for i in 0..ma.n {
         let mut dist = 0_i64;
-        let r = usize::try_from(mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist)).expect("dir");
+        let r = mem_infer_dir(l_pac, a.rb, ma.a[i].rb, &mut dist) as usize;
         if dist >= i64::from(pes[r].low) && dist <= i64::from(pes[r].high) {
             skip[r] = 1;
         }
@@ -1763,11 +1839,16 @@ pub fn mem_matesw_batch_post(
     }
 
     let mut n = 0_i32;
-    let l_ms_usize = usize::try_from(l_ms).expect("l_ms");
-    // Hoist rev_buf and query_buf out of the r loop to amortize the per-direction allocations
-    // (was: 1 rev/copy + 1 seq.clone() per r iter = 8 small allocs per call worst case).
-    let mut rev_buf: Vec<u8> = Vec::new();
-    let mut query_buf: Vec<u8> = Vec::new();
+    let l_ms_usize = l_ms as usize;
+    // Reserve up to 4 extra mem_alnreg_t slots in ma.a before potential per-direction push —
+    // amortizes the per-rescue realloc that perf showed at 0.62% in mem_matesw_batch_post.
+    if ma.a.capacity() < ma.a.len() + 4 {
+        ma.a.reserve(ma.a.len() + 4 - ma.a.capacity());
+    }
+    // Reuse thread-local scratch across the 4-direction r loop AND across mem_matesw_batch_post
+    // calls (one per pair × per-batch).
+    let (mut rev_buf, mut query_buf, mut ref_seq_buf) =
+        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
     for r in 0..4_usize {
         if skip[r] != 0 {
             continue;
@@ -1775,13 +1856,15 @@ pub fn mem_matesw_batch_post(
         let is_rev = ((r >> 1) != (r & 1)) as i32;
         let is_larger = ((r >> 1) == 0) as i32;
         let seq: &[u8] = if is_rev != 0 {
-            // Reverse-complement: walk ms backward and extend rev_buf with per-byte complement.
+            // Reverse-complement: walk ms backward, complement each base via LUT.
+            // LUT maps 0,1,2,3,4,5+ -> 3,2,1,0,4,4 (any value >= 4 maps to AMBIG=4).
+            const RC_LUT: [u8; 8] = [3, 2, 1, 0, 4, 4, 4, 4];
             rev_buf.clear();
             rev_buf.extend(
                 ms[..l_ms_usize]
                     .iter()
                     .rev()
-                    .map(|&c| if c < 4 { 3 - c } else { 4 }),
+                    .map(|&c| unsafe { *RC_LUT.get_unchecked((c as usize).min(7)) }),
             );
             &rev_buf
         } else {
@@ -1821,30 +1904,31 @@ pub fn mem_matesw_batch_post(
             re = l_pac << 1;
         }
         let mut rid = -1_i32;
-        let ref_seq = if rb < re {
+        let ref_ok = if rb < re {
             let mid = (rb + re) >> 1;
-            Some(bns_fetch_seq(bns, pac, &mut rb, mid, &mut re, &mut rid))
+            crate::generated::bntseq_cpp::bns_fetch_seq_into(
+                bns, pac, &mut rb, mid, &mut re, &mut rid, &mut ref_seq_buf,
+            );
+            true
         } else {
-            None
+            ref_seq_buf.clear();
+            false
         };
         if a.rid == rid && re - rb >= i64::from(opt.min_seed_len) {
             let xtra = KSW_XSUBO
                 | KSW_XSTART
                 | if l_ms * opt.a < 250 { KSW_XBYTE } else { 0 }
                 | (opt.min_seed_len * opt.a);
-            let index = gar
-                .get(usize::try_from(gcnt).expect("gcnt") + r)
-                .map(|sp| sp.id)
-                .unwrap_or(-1);
+            let index = gar.get(gcnt as usize + r).map(|sp| sp.id).unwrap_or(-1);
             let aln = if index < 0 {
+                debug_assert!(ref_ok, "ksw fallback path requires ref_seq_buf populated");
                 query_buf.clear();
                 query_buf.extend_from_slice(seq);
-                let mut target = ref_seq.expect("reference seq");
                 ksw_align2(
                     l_ms,
                     &mut query_buf,
-                    i32::try_from(re - rb).expect("ref span"),
-                    &mut target,
+                    (re - rb) as i32,
+                    &mut ref_seq_buf,
                     5,
                     &opt.mat,
                     opt.o_del,
@@ -1855,7 +1939,7 @@ pub fn mem_matesw_batch_post(
                     None,
                 )
             } else {
-                myaln[usize::try_from(index).expect("index")]
+                myaln[index as usize]
             };
             if aln.score >= opt.min_seed_len && aln.qb >= 0 {
                 let b = mem_alnreg_t {
@@ -1884,29 +1968,26 @@ pub fn mem_matesw_batch_post(
                     score: aln.score,
                     csub: aln.score2,
                     secondary: -1,
-                    seedcov: i32::try_from(
-                        ((if is_rev != 0 {
-                            (l_pac << 1) - (rb + i64::from(aln.tb))
+                    seedcov: (((if is_rev != 0 {
+                        (l_pac << 1) - (rb + i64::from(aln.tb))
+                    } else {
+                        rb + i64::from(aln.te) + 1
+                    }) - (if is_rev != 0 {
+                        (l_pac << 1) - (rb + i64::from(aln.te) + 1)
+                    } else {
+                        rb + i64::from(aln.tb)
+                    }))
+                    .min(i64::from(
+                        if is_rev != 0 {
+                            l_ms - aln.qb
                         } else {
-                            rb + i64::from(aln.te) + 1
-                        }) - (if is_rev != 0 {
-                            (l_pac << 1) - (rb + i64::from(aln.te) + 1)
+                            aln.qe + 1
+                        } - if is_rev != 0 {
+                            l_ms - (aln.qe + 1)
                         } else {
-                            rb + i64::from(aln.tb)
-                        }))
-                        .min(i64::from(
-                            if is_rev != 0 {
-                                l_ms - aln.qb
-                            } else {
-                                aln.qe + 1
-                            } - if is_rev != 0 {
-                                l_ms - (aln.qe + 1)
-                            } else {
-                                aln.qb
-                            },
-                        )) >> 1,
-                    )
-                    .expect("seedcov"),
+                            aln.qb
+                        },
+                    )) >> 1) as i32,
                     ..Default::default()
                 };
                 ma.a.push(b);
@@ -1928,18 +2009,18 @@ pub fn mem_matesw_batch_post(
             n += 1;
         }
         if n != 0 {
-            ma.n = usize::try_from(mem_sort_dedup_patch(
+            ma.n = mem_sort_dedup_patch(
                 opt,
                 None,
                 None,
                 None,
-                i32::try_from(ma.n).expect("n"),
+                ma.n as i32,
                 &mut ma.a,
-            ))
-            .expect("n");
+            ) as usize;
             ma.m = ma.a.len();
         }
     }
+    MEM_MATESW_SCRATCH.with(|c| *c.borrow_mut() = (rev_buf, query_buf, ref_seq_buf));
     n
 }
 
