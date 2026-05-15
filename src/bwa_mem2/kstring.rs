@@ -208,6 +208,11 @@ mod tests_h {
 
 // --- kstring.cpp ---
 
+/// Format into a `kstring_t`, growing the buffer with kroundup32 sizing.
+///
+/// Rust port of C's variadic `ksprintf`; takes pre-rendered `Arguments`
+/// in place of `va_list`. Always NUL-terminates and returns the number
+/// of bytes appended.
 #[doc = "Original function: ksprintf:34"]
 pub fn ksprintf(s: &mut kstring_t, args: Arguments<'_>) -> i32 {
     let rendered = args.to_string();
@@ -239,6 +244,9 @@ pub fn ksprintf(s: &mut kstring_t, args: Arguments<'_>) -> i32 {
     i32::try_from(l).expect("ksprintf length overflow")
 }
 
+/// Stand-alone smoke test (upstream `#ifdef KSTRING_MAIN`).
+///
+/// Formats `"abcdefg: 100"` into a fresh `kstring_t` and prints it.
 #[doc = "Original function: main:55"]
 pub fn main() -> i32 {
     let mut s = kstring_t::default();

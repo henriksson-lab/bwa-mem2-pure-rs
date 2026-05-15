@@ -46,6 +46,14 @@ pub fn bwa_index(argv: &[String]) -> i32 {
     bwa_idx_build(fa, &prefix)
 }
 
+/// Pack the FASTA at `fa` into the `<prefix>.pac`/`.ann`/`.amb` triplet and
+/// then build the FM-index over it (writing `<prefix>.bwt.2bit.64` and the
+/// other index files). Mirrors `bwa_idx_build` in
+/// `bwa-mem2/src/bwtindex.cpp`.
+///
+/// # Arguments
+/// * `fa` - path to the input FASTA (gzip auto-detected by `.gz` suffix).
+/// * `prefix` - output index prefix.
 #[doc = "Original function: bwa_idx_build:61"]
 pub fn bwa_idx_build(fa: &str, prefix: &str) -> i32 {
     // Nucleotide indexing: pack the FASTA into a .pac/.ann/.amb triplet, then

@@ -93,6 +93,11 @@ pub fn ftp_open(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("ftp_open")
 }
 
+/// Split a shell-style command string into an argv vector.
+///
+/// Returns `None` if `cmd` is empty after trimming; otherwise splits on
+/// whitespace. Used by the pipe-open path of `kopen` (currently inert
+/// in the Rust scaffold).
 #[doc = "Original function: cmd2argv:278"]
 pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
     let trimmed = cmd.trim();
@@ -107,6 +112,17 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
     )
 }
 
+/// Open a file/stdin/http/ftp/pipe spec and return a `koaux_t` handle.
+///
+/// Mirrors C's `void *kopen(const char *fn, int *_fd)`. `"-"` selects
+/// stdin; `"http://"` / `"ftp://"` and `"<"`-prefixed pipe specs are
+/// not yet wired up in the Rust port and return `None`. On success
+/// `fd_out` receives the underlying file descriptor (or `-1` for the
+/// File-backed scaffold path).
+///
+/// # Arguments
+/// * `fn_` - filename or URL to open
+/// * `fd_out` - out parameter for the raw fd, `-1` if unknown
 #[doc = "Original function: kopen:312"]
 pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     *fd_out = -1;
@@ -146,6 +162,11 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     })
 }
 
+/// Release a handle returned by `kopen`.
+///
+/// For `KO_FILE` aux objects the inner `File` is dropped, closing the
+/// fd via the standard library rather than leaking it as the upstream
+/// C code does. Always returns 0.
 #[doc = "Original function: kclose:386"]
 pub fn kclose(aux: koaux_t) -> i32 {
     if aux.type_ == KO_FILE {

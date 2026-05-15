@@ -472,6 +472,10 @@ fn write_batch(batch: &ktp_data_t, fp: &mut ErrFile) {
     });
 }
 
+/// Issue an x86 cpuid for leaf `i` (sub-leaf 0).
+///
+/// Returns the `[EAX, EBX, ECX, EDX]` values; non-x86 builds return zeros.
+/// Used by `HTStatus` to query the platform vendor/topology.
 #[doc = "Original function: __cpuid:51"]
 pub fn cpuid(i: u32) -> [u32; 4] {
     #[cfg(target_arch = "x86")]
@@ -490,6 +494,12 @@ pub fn cpuid(i: u32) -> [u32; 4] {
     }
 }
 
+/// Detect whether the CPU advertises hyperthreading.
+///
+/// Reads the vendor string and feature bits via `cpuid`, and on
+/// Intel parts compares logical CPU count to physical core count.
+/// Returns 1 when HT is enabled, 0 otherwise. Prints vendor and
+/// HT status to stderr for parity with the upstream banner.
 #[doc = "Original function: HTStatus:63"]
 pub fn HTStatus() -> i32 {
     let cpuid0 = cpuid(0);
@@ -523,6 +533,17 @@ pub fn HTStatus() -> i32 {
 }
 
 /// Memory pre-allocations for the worker.
+///
+/// Sizes the per-read buffers (`regs`, `chain_ar`) to `nreads` and
+/// the per-thread SWA scratch arrays to `nthreads`. This must allocate
+/// `nreads` slots — clearing alone breaks parity (see CLAUDE.md
+/// "`memoryAlloc`" trap).
+///
+/// # Arguments
+/// * `aux` - shared pipeline aux (provides `mem_opt_t`)
+/// * `w` - worker whose buffers are being initialized
+/// * `nreads` - capacity for per-read state
+/// * `nthreads` - capacity for per-thread SWA scratch
 #[doc = "Original function: memoryAlloc:100"]
 pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32) {
     let opt = aux.opt.as_ref().expect("memoryAlloc requires aux.opt");
@@ -701,6 +722,12 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
     0
 }
 
+/// Rescale derived scoring options when `-A` (match score) is overridden.
+///
+/// `opt0` is a "set"-mask: each non-zero field means the user supplied
+/// that option on the command line. When `-A` was supplied and a
+/// derived option (`B`, `T`, `O`, `E`, zdrop, clip/unpaired penalties)
+/// was left at its default, scale the default by the new match score.
 #[doc = "Original function: update_a:547"]
 pub fn update_a(opt: &mut mem_opt_t, opt0: &mem_opt_t) {
     // matching score is changed; scale derived scoring options that were left at default
@@ -738,6 +765,10 @@ pub fn update_a(opt: &mut mem_opt_t, opt0: &mem_opt_t) {
     }
 }
 
+/// Print the `bwa-mem2 mem` usage banner to stderr.
+///
+/// Delegates to `usage_text` and writes via `eprint!`. Defaults shown
+/// in `[brackets]` are read from `opt`.
 #[doc = "Original function: usage:563"]
 pub fn usage(opt: &mem_opt_t) {
     eprint!("{}", usage_text(opt));

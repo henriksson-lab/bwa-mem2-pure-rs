@@ -3419,10 +3419,11 @@ impl Default for BandedPairWiseSW {
 }
 
 // ------------------------- AVX2 - 8 bit SIMD_LANES ---------------------------
-// Counting/radix sort of SeqPair by len1 (and by id for the inverse pass).
-// Both family of `sortPairsLen` / `sortPairsId` instances delegate to the same
-// scalar helpers below — the C++ versions differ only in the SIMD width used for
-// histogram zero-init.
+/// Counting / radix sort of `SeqPair`s by `len1` (AVX2 entry point).
+///
+/// Both families of `sortPairsLen` / `sortPairsId` instances delegate to the
+/// same scalar helpers below — the C++ versions differ only in the SIMD width
+/// used for histogram zero-init.
 #[doc = "Original function: sortPairsLen:356"]
 pub fn sortPairsLen__L356(
     pairArray: &mut [SeqPair],
@@ -3433,6 +3434,8 @@ pub fn sortPairsLen__L356(
     sort_pairs_len(pairArray, count, tempArray, hist);
 }
 
+/// Inverse permutation: restore `SeqPair`s to their original `id` order
+/// (AVX2 entry point).
 #[doc = "Original function: sortPairsId:393"]
 pub fn sortPairsId__L393(
     pairArray: &mut [SeqPair],
@@ -3443,6 +3446,7 @@ pub fn sortPairsId__L393(
     sort_pairs_id(pairArray, first, count, tempArray);
 }
 
+/// Counting / radix sort of `SeqPair`s by `len1` (AVX-512 entry point).
 #[doc = "Original function: sortPairsLen:1909"]
 pub fn sortPairsLen__L1909(
     pairArray: &mut [SeqPair],
@@ -3454,6 +3458,8 @@ pub fn sortPairsLen__L1909(
     sort_pairs_len(pairArray, count, tempArray, hist);
 }
 
+/// Inverse permutation: restore `SeqPair`s to their original `id` order
+/// (AVX-512 entry point).
 #[doc = "Original function: sortPairsId:1952"]
 pub fn sortPairsId__L1952(
     pairArray: &mut [SeqPair],
@@ -3465,8 +3471,10 @@ pub fn sortPairsId__L1952(
 }
 
 /// SSE2 fallback emulation of `_mm_blendv_epi16`: replace each bit in `x` with the
-/// corresponding bit in `y` when the matching bit in `mask` is set. Upstream C++
-/// defines this inline only when neither AVX-512 nor AVX2 is available.
+/// corresponding bit in `y` when the matching bit in `mask` is set.
+///
+/// Upstream C++ defines this inline only when neither AVX-512 nor AVX2 is
+/// available.
 #[doc = "Original function: _mm_blendv_epi16:3364"]
 pub fn mm_blendv_epi16(x: &[i16], y: &[i16], mask: &[i16]) -> Vec<i16> {
     assert_eq!(x.len(), y.len(), "x/y length mismatch");
@@ -3478,6 +3486,7 @@ pub fn mm_blendv_epi16(x: &[i16], y: &[i16], mask: &[i16]) -> Vec<i16> {
         .collect()
 }
 
+/// Counting / radix sort of `SeqPair`s by `len1` (SSE2 entry point).
 #[doc = "Original function: sortPairsLen:3410"]
 pub fn sortPairsLen__L3410(
     pairArray: &mut [SeqPair],
@@ -3489,6 +3498,8 @@ pub fn sortPairsLen__L3410(
     sort_pairs_len(pairArray, count, tempArray, hist);
 }
 
+/// Inverse permutation: restore `SeqPair`s to their original `id` order
+/// (SSE2 entry point).
 #[doc = "Original function: sortPairsId:3448"]
 pub fn sortPairsId__L3448(
     pairArray: &mut [SeqPair],
@@ -3500,8 +3511,9 @@ pub fn sortPairsId__L3448(
 }
 
 /// SSE2 fallback emulation of `_mm_blendv_epi8`: replace each bit in `x` with the
-/// corresponding bit in `y` when the matching bit in `mask` is set. Upstream C++
-/// defines this inline only when `__SSE4_1__` is unavailable.
+/// corresponding bit in `y` when the matching bit in `mask` is set.
+///
+/// Upstream C++ defines this inline only when `__SSE4_1__` is unavailable.
 #[doc = "Original function: _mm_blendv_epi8:4152"]
 pub fn mm_blendv_epi8(x: &[u8], y: &[u8], mask: &[u8]) -> Vec<u8> {
     assert_eq!(x.len(), y.len(), "x/y length mismatch");
@@ -3746,7 +3758,13 @@ impl BandedPairWiseSW {
         self.scalarBandedSWAWrapper(pairArray, seqBufRef, seqBufQer, numPairs, nthreads, w);
     }
 
-    // constructor
+    /// Constructor: initialise scoring parameters (gap-open/extend per ins/del,
+    /// `zdrop`, `end_bonus`), the 5x5 substitution matrix `mat_`, and the
+    /// per-direction `w_match` / `w_mismatch` weights used by the vector kernels.
+    ///
+    /// In upstream C++ this also allocates per-thread `F8_`/`H8_`/`H8__` and
+    /// `F16_`/`H16_`/`H16__` SIMD scratch arrays; the Rust port uses
+    /// thread-local `Vec` scratch instead so `_numThreads` is unused.
     #[doc = "Original function: BandedPairWiseSW::BandedPairWiseSW:50"]
     pub fn ctor(
         o_del: i32,
@@ -3782,14 +3800,20 @@ impl BandedPairWiseSW {
         }
     }
 
-    // destructor — upstream C++ frees the per-thread F8_/H8_/H8__ / F16_/H16_/H16__ scratch
-    // arrays here. The Rust port relies on thread-local Vec scratch (BANDED_SCRATCH /
-    // SIMD8_PROTO_SCRATCH / SIMD16_PROTO_SCRATCH) instead, so there is nothing to free.
+    /// Destructor.
+    ///
+    /// Upstream C++ frees the per-thread `F8_`/`H8_`/`H8__` /
+    /// `F16_`/`H16_`/`H16__` scratch arrays here. The Rust port relies on
+    /// thread-local `Vec` scratch (`BANDED_SCRATCH` / `SIMD8_PROTO_SCRATCH` /
+    /// `SIMD16_PROTO_SCRATCH`) instead, so there is nothing to free.
     #[doc = "Original function: BandedPairWiseSW::~BandedPairWiseSW:97"]
     pub fn dtor(&mut self) {
         self.SW_cells = 0;
     }
 
+    /// Return the sum of accumulated TSC tick counters
+    /// (`sort1Ticks + setupTicks + swTicks + sort2Ticks`) used by upstream
+    /// profiling code.
     #[doc = "Original function: BandedPairWiseSW::getTicks:102"]
     pub fn getTicks(&self) -> i64 {
         self.sort1Ticks + self.setupTicks + self.swTicks + self.sort2Ticks
@@ -3798,6 +3822,16 @@ impl BandedPairWiseSW {
     // ------------------------------------------------------------------------------------
     // Banded SWA - scalar code
     // ------------------------------------------------------------------------------------
+    /// Scalar banded Smith-Waterman extension over `query` (length `qlen`) vs
+    /// `target` (length `tlen`) within band `w` and starting score `h0`.
+    ///
+    /// Writes back the best query / target / global-extension offsets and the
+    /// global score into `qle` / `tle` / `gtle` / `gscore` / `max_off`, and
+    /// returns the best local score.
+    ///
+    /// Hoists the thread-local `BANDED_SCRATCH` query-profile and DP scratch
+    /// buffers once per call before delegating to
+    /// [`Self::scalarBandedSWA_inner`].
     #[doc = "Original function: BandedPairWiseSW::scalarBandedSWA:116"]
     #[inline]
     pub fn scalarBandedSWA(
@@ -4034,9 +4068,14 @@ impl BandedPairWiseSW {
         max
     }
 
-    // -------------------------------------------------------------
-    // Banded SWA, wrapper function — runs scalarBandedSWA over a batch of SeqPairs.
-    //-------------------------------------------------------------
+    /// Banded-SWA wrapper: run [`Self::scalarBandedSWA`] over a batch of
+    /// `SeqPair`s, indexing into `seqBufRef` / `seqBufQer` by each pair's
+    /// `idr` / `idq` offsets and writing the scalar DP output back into the
+    /// pair's `score` / `qle` / `tle` / `gtle` / `gscore` / `max_off` fields.
+    ///
+    /// Hoists `BANDED_SCRATCH` once across the batch so the per-pair DP only
+    /// borrows the scratch buffers by `&mut`, eliminating per-pair
+    /// thread-local borrow + drop cost.
     #[doc = "Original function: BandedPairWiseSW::scalarBandedSWAWrapper:242"]
     pub fn scalarBandedSWAWrapper(
         &self,
@@ -4077,11 +4116,13 @@ impl BandedPairWiseSW {
         });
     }
 
-    // Vector code, version 2.0. Line-specific entry points (`__L412`, `__L1970`,
-    // `__L4198`) mirror the three SIMD-feature-guarded copies of `getScores8` in
-    // bandedSWA.cpp (AVX2 / AVX-512 / SSE2). All three forward to the same production
-    // `getScores8` dispatch — there is no logic difference in upstream beyond the
-    // intrinsic widths.
+    /// 8-bit batch scoring (AVX2 entry point).
+    ///
+    /// The line-specific entry points (`__L412`, `__L1970`, `__L4198`) mirror
+    /// the three SIMD-feature-guarded copies of `getScores8` in
+    /// `bandedSWA.cpp` (AVX2 / AVX-512 / SSE2). All three forward to the same
+    /// production `getScores8` dispatch — there is no logic difference in
+    /// upstream beyond the intrinsic widths.
     #[doc = "Original function: BandedPairWiseSW::getScores8:412"]
     pub fn getScores8__L412(
         &self,
@@ -4095,6 +4136,8 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 8-bit batch SW wrapper (AVX2 entry point); forwards to the production
+    /// `getScores8` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:436"]
     pub fn smithWatermanBatchWrapper8__L436(
         &self,
@@ -4108,6 +4151,12 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// AVX2 256-bit / 8-bit-lane Smith-Waterman inner kernel.
+    ///
+    /// The Rust port routes through the scalar packed-kernel helper rather
+    /// than re-emitting AVX2 intrinsics; it copies per-lane `h0` into each
+    /// pair, reads the band from `band[0]`, and dispatches to
+    /// `run_packed_kernel_u8` with `width = 32` (32 u8 lanes / 256 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman256_8:713"]
     pub fn smithWaterman256_8(
         &self,
@@ -4134,6 +4183,8 @@ impl BandedPairWiseSW {
     }
 
     // ------------------------- AVX2 - 16 bit SIMD_LANES ---------------------------
+    /// 16-bit batch scoring (AVX2 entry point); forwards to the production
+    /// `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::getScores16:1117"]
     pub fn getScores16__L1117(
         &self,
@@ -4147,6 +4198,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 16-bit batch SW wrapper (AVX2 entry point); forwards to the production
+    /// `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:1143"]
     pub fn smithWatermanBatchWrapper16__L1143(
         &self,
@@ -4160,6 +4213,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// AVX2 256-bit / 16-bit-lane Smith-Waterman inner kernel; dispatches to
+    /// `run_packed_kernel_u16` with `width = 16` (16 i16 lanes / 256 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman256_16:1412"]
     pub fn smithWaterman256_16(
         &self,
@@ -4186,6 +4241,8 @@ impl BandedPairWiseSW {
     }
 
     // ____________________________ AVX512 - getScore() _______________________________________
+    /// 8-bit batch scoring (AVX-512 entry point); forwards to the production
+    /// `getScores8` dispatch.
     #[doc = "Original function: BandedPairWiseSW::getScores8:1970"]
     pub fn getScores8__L1970(
         &self,
@@ -4199,6 +4256,8 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 8-bit batch SW wrapper (AVX-512 entry point); forwards to the
+    /// production `getScores8` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:1997"]
     pub fn smithWatermanBatchWrapper8__L1997(
         &self,
@@ -4212,6 +4271,8 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// AVX-512 512-bit / 8-bit-lane Smith-Waterman inner kernel; dispatches
+    /// to `run_packed_kernel_u8` with `width = 64` (64 u8 lanes / 512 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman512_8:2263"]
     pub fn smithWaterman512_8(
         &self,
@@ -4237,6 +4298,8 @@ impl BandedPairWiseSW {
         self.run_packed_kernel_u8(seq1SoA, seq2SoA, 64, p, numPairs, w);
     }
 
+    /// 16-bit batch scoring (AVX-512 entry point); forwards to the
+    /// production `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::getScores16:2664"]
     pub fn getScores16__L2664(
         &self,
@@ -4250,6 +4313,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 16-bit batch SW wrapper (AVX-512 entry point); forwards to the
+    /// production `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:2690"]
     pub fn smithWatermanBatchWrapper16__L2690(
         &self,
@@ -4263,6 +4328,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// AVX-512 512-bit / 16-bit-lane Smith-Waterman inner kernel; dispatches
+    /// to `run_packed_kernel_u16` with `width = 32` (32 i16 lanes / 512 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman512_16:2962"]
     pub fn smithWaterman512_16(
         &self,
@@ -4289,6 +4356,8 @@ impl BandedPairWiseSW {
     }
 
     // ------------------------- SSE2 - 16 bit SIMD_LANES ---------------------------
+    /// 16-bit batch scoring (SSE2 entry point); forwards to the production
+    /// `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::getScores16:3469"]
     pub fn getScores16__L3469(
         &self,
@@ -4302,6 +4371,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 16-bit batch SW wrapper (SSE2 entry point); forwards to the production
+    /// `getScores16` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper16:3492"]
     pub fn smithWatermanBatchWrapper16__L3492(
         &self,
@@ -4315,6 +4386,8 @@ impl BandedPairWiseSW {
         self.getScores16(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// SSE2 128-bit / 16-bit-lane Smith-Waterman inner kernel; dispatches to
+    /// `run_packed_kernel_u16` with `width = 8` (8 i16 lanes / 128 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman128_16:3757"]
     pub fn smithWaterman128_16(
         &self,
@@ -4341,6 +4414,8 @@ impl BandedPairWiseSW {
     }
 
     // ------------------------- SSE2 - 8 bit SIMD_LANES ---------------------------
+    /// 8-bit batch scoring (SSE2 entry point); forwards to the production
+    /// `getScores8` dispatch.
     #[doc = "Original function: BandedPairWiseSW::getScores8:4198"]
     pub fn getScores8__L4198(
         &self,
@@ -4354,6 +4429,8 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, numThreads, w);
     }
 
+    /// 8-bit batch SW wrapper (SSE2 entry point); forwards to the production
+    /// `getScores8` dispatch.
     #[doc = "Original function: BandedPairWiseSW::smithWatermanBatchWrapper8:4223"]
     pub fn smithWatermanBatchWrapper8__L4223(
         &self,
@@ -4367,6 +4444,8 @@ impl BandedPairWiseSW {
         self.getScores8(pairArray, seqBufRef, seqBufQer, numPairs, 1, w);
     }
 
+    /// SSE2 128-bit / 8-bit-lane Smith-Waterman inner kernel; dispatches to
+    /// `run_packed_kernel_u8` with `width = 16` (16 u8 lanes / 128 bits).
     #[doc = "Original function: BandedPairWiseSW::smithWaterman128_8:4485"]
     pub fn smithWaterman128_8(
         &self,

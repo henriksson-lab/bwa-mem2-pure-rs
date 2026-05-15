@@ -37,6 +37,7 @@ pub struct indexEle {
 // --- read_index_ele.cpp ---
 
 impl indexEle {
+    /// Construct an `indexEle` with a default-initialised `bwaidx_fm_t` payload.
     #[doc = "Original function: indexEle::indexEle:40"]
     pub fn ctor() -> Self {
         Self {
@@ -44,6 +45,12 @@ impl indexEle {
         }
     }
 
+    /// Release index resources held by `idx`.
+    ///
+    /// When the index was loaded from individual files (`mem` empty), destroys
+    /// the `bntseq_t` and clears the `pac` buffer. When the index was loaded
+    /// from a single shared-memory blob, drops the `bns` view and frees the
+    /// blob unless it lives in shared memory (`is_shm` set).
     #[doc = "Original function: indexEle::~indexEle:46"]
     pub fn dtor(&mut self) {
         if self.idx.mem.is_empty() {
@@ -64,6 +71,14 @@ impl indexEle {
         }
     }
 
+    /// Load index elements selected by `which` from disk into `self.idx`.
+    ///
+    /// # Arguments
+    /// * `hint` - prefix path of the index files (without per-file suffix).
+    /// * `which` - bitmask of `BWA_IDX_BWT` / `BWA_IDX_BNS` / `BWA_IDX_PAC`
+    ///   (`BWA_IDX_ALL` for everything). `BWA_IDX_BNS` triggers restoring the
+    ///   `bntseq_t` and reporting the ALT contig count; `BWA_IDX_PAC` reads
+    ///   the concatenated 2-bit-encoded reference into `idx.pac`.
     #[doc = "Original function: indexEle::bwa_idx_load_ele:60"]
     pub fn bwa_idx_load_ele(&mut self, hint: &str, which: i32) {
         let prefix = hint.to_string();
@@ -92,6 +107,14 @@ impl indexEle {
         }
     }
 
+    /// Infer the on-disk index prefix from a user-supplied path hint.
+    ///
+    /// Tries `<hint>.64.bwt` first (preferring the 64-bit suffix-array build),
+    /// then falls back to `<hint>.bwt`. Returns the prefix that should be
+    /// passed to subsequent loaders, or `None` if neither file exists.
+    ///
+    /// # Arguments
+    /// * `hint` - candidate index path prefix.
     #[doc = "Original function: indexEle::bwa_idx_infer_prefix:96"]
     pub fn bwa_idx_infer_prefix(&self, hint: &str) -> Option<String> {
         let suffix64 = format!("{hint}.64.bwt");

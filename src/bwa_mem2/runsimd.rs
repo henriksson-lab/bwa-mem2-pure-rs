@@ -29,6 +29,16 @@ const SIMD_AVX2: i32 = 0x80;
 const SIMD_AVX512F: i32 = 0x100;
 const SIMD_AVX512BW: i32 = 0x200;
 
+/// Run the x86 `cpuid` instruction at `func_id`/`subfunc_id`.
+///
+/// Mirrors the upstream `__cpuidex` shim (adapted from linux-sgx's
+/// `cpuid_gnu.h`) so the SIMD-dispatch logic can probe CPU features.
+/// Writes EAX/EBX/ECX/EDX into `cpuid`. Non-x86 targets receive zeros.
+///
+/// # Arguments
+/// * `cpuid` - 4-element output buffer (EAX, EBX, ECX, EDX)
+/// * `func_id` - leaf number passed in EAX
+/// * `subfunc_id` - sub-leaf number passed in ECX
 // adapted from https://github.com/01org/linux-sgx/blob/master/common/inc/internal/linux/cpuid_gnu.h
 #[doc = "Original function: __cpuidex:58"]
 pub fn cpuidex(cpuid: &mut [i32; 4], func_id: i32, subfunc_id: i32) {
@@ -53,6 +63,11 @@ pub fn cpuidex(cpuid: &mut [i32; 4], func_id: i32, subfunc_id: i32) {
     }
 }
 
+/// Probe the host's x86 SIMD feature set via cpuid.
+///
+/// Returns a bitmask combining `SIMD_SSE..SIMD_AVX512BW` flags
+/// matching what the host CPU advertises. Returns 0 if cpuid is
+/// unsupported (max leaf == 0).
 #[doc = "Original function: x86_simd:72"]
 pub fn x86_simd() -> i32 {
     let mut flag = 0;
@@ -142,6 +157,19 @@ fn exe_path_impl(exe: &str) -> Result<(String, usize), i32> {
     Err(-2) // shouldn't happen!
 }
 
+/// Resolve the directory containing executable `exe`.
+///
+/// Mirrors C's `exe_path`: writes the directory portion (including the
+/// trailing slash) into `buf` and the index of the basename into
+/// `base_st`. Handles absolute paths, relative paths with slashes
+/// (joined to `cwd`), and bare names (searched on `PATH`). Returns 0
+/// on success, `-1` for malformed input / cwd failure, `-2` if not
+/// found on `PATH`.
+///
+/// # Arguments
+/// * `exe` - executable name or path
+/// * `buf` - out buffer to receive the directory prefix
+/// * `base_st` - optional out parameter for the basename offset
 #[doc = "Original function: exe_path:95"]
 pub fn exe_path(exe: &str, _max: i32, buf: &mut String, base_st: Option<&mut i32>) -> i32 {
     match exe_path_impl(exe) {
@@ -172,8 +200,20 @@ fn candidate_is_executable(path: &Path) -> bool {
     }
 }
 
+/// Try to `exec` the SIMD-suffixed binary at `prefix + simd`.
+///
+/// Appends `simd` to `prefix`, stats the resulting path, and execs it
+/// with the original `argv` if it exists and is executable. On
+/// success this never returns. The trailing suffix is stripped from
+/// `prefix` before returning so the caller can try the next variant.
+///
 /// We assume `prefix` is long enough to receive the suffix; on return the original
 /// length is restored regardless of success.
+///
+/// # Arguments
+/// * `argv` - full argv of the launcher (forwarded to the child)
+/// * `prefix` - in/out path prefix (e.g. `/usr/bin/bwa-mem2`)
+/// * `simd` - suffix such as `.avx2`, `.sse42`
 #[doc = "Original function: test_and_launch:152"]
 pub fn test_and_launch(argv: &[String], prefix: &mut String, simd: &str) {
     let prefix_len = prefix.len();
@@ -217,6 +257,13 @@ pub fn test_and_launch(argv: &[String], prefix: &mut String, simd: &str) {
     prefix.truncate(prefix_len);
 }
 
+/// Entry point of the runsimd dispatcher shim.
+///
+/// Resolves the launcher's own directory, probes the CPU's SIMD
+/// features via `x86_simd`, and tries to exec the best-matching
+/// `bwa-mem2.{avx512bw|avx2|avx|sse42|sse41}` binary. Returns 1 if
+/// the path resolution fails and 2 if no SIMD-suffixed binary is
+/// found.
 #[doc = "Original function: main:176"]
 pub fn main(argc: i32, argv: &[String]) -> i32 {
     let _ = argc;

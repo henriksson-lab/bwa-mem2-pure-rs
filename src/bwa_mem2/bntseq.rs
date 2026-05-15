@@ -47,6 +47,11 @@ pub struct bntseq_t {
     pub fp_pac: Option<File>,
 }
 
+/// Map a packed position to its forward-strand coordinate.
+///
+/// If `pos >= bns.l_pac` the position is on the reverse strand; this
+/// returns the reflected forward-strand position and sets `is_rev = 1`.
+/// Otherwise the position is returned unchanged with `is_rev = 0`.
 #[doc = "Original function: bns_depos:87"]
 #[inline]
 pub fn bns_depos(bns: &bntseq_t, pos: i64, is_rev: &mut i32) -> i64 {
@@ -186,6 +191,11 @@ fn parse_fasta<R: BufRead>(reader: R) -> Vec<SequenceRecord> {
     records
 }
 
+/// Write the `.ann` and `.amb` companion files for a `bntseq_t`.
+///
+/// `.ann` lists each contig's gi, name, comment, offset, length, and
+/// ambiguous-base count; `.amb` lists the ambiguous-base runs. Used
+/// by `bns_fasta2bntseq` at the end of `bwa index`.
 #[doc = "Original function: bns_dump:73"]
 pub fn bns_dump(bns: &bntseq_t, prefix: &str) {
     let ann_name = format!("{prefix}.ann");
@@ -222,6 +232,11 @@ pub fn bns_dump(bns: &bntseq_t, prefix: &str) {
     }
 }
 
+/// Reconstruct a `bntseq_t` from explicit `.ann`/`.amb`/`.pac` paths.
+///
+/// Parses contig metadata and ambiguous-base runs, opens the `.pac`
+/// for later random access, and asserts that the `.ann` and `.amb`
+/// headers agree on `l_pac` and `n_seqs`.
 #[doc = "Original function: bns_restore_core:106"]
 pub fn bns_restore_core(ann_filename: &str, amb_filename: &str, pac_filename: &str) -> bntseq_t {
     // read .ann
@@ -304,6 +319,10 @@ pub fn bns_restore_core(ann_filename: &str, amb_filename: &str, pac_filename: &s
     bns
 }
 
+/// Restore a `bntseq_t` from `prefix.{ann,amb,pac}` and optional `prefix.alt`.
+///
+/// Wraps `bns_restore_core`; when `prefix.alt` exists, each contig
+/// whose name appears in the file is marked `is_alt = 1`.
 #[doc = "Original function: bns_restore:188"]
 pub fn bns_restore(prefix: &str) -> bntseq_t {
     let ann_filename = format!("{prefix}.ann");
@@ -336,6 +355,10 @@ pub fn bns_restore(prefix: &str) -> bntseq_t {
     bns
 }
 
+/// Release the `.pac` file handle and clear annotation/ambiguity tables.
+///
+/// Mirrors C's `bns_destroy(bntseq_t *)` minus the `free(bns)` — the
+/// caller still owns the struct in Rust.
 #[doc = "Original function: bns_destroy:230"]
 pub fn bns_destroy(bns: &mut bntseq_t) {
     bns.fp_pac = None;
@@ -345,6 +368,13 @@ pub fn bns_destroy(bns: &mut bntseq_t) {
     bns.n_holes = 0;
 }
 
+/// Append one FASTA record into the growing `bntseq_t` and `.pac` buffer.
+///
+/// Translates ASCII bases via `nt4`, opens/extends ambiguous-base
+/// (`N`) runs as `bntamb1_t`, packs 2-bit bases into `pac` (doubling
+/// `m_pac` when full), and replaces `N`s with a random base drawn
+/// from a shared LCG state (`rng_state`) that matches glibc
+/// `srand48(bns.seed) ; lrand48()` semantics in upstream.
 #[doc = "Original function: add1:249"]
 fn add1(
     seq: &SequenceRecord,
@@ -415,6 +445,17 @@ fn add1(
     bns.n_seqs += 1;
 }
 
+/// Convert a FASTA stream to packed `.pac` + `.ann` + `.amb` indices.
+///
+/// Calls `add1` per record, optionally appends the reverse complement
+/// of the concatenated forward strand (controlled by `for_only`), and
+/// writes the final `.pac` with the upstream tail byte convention.
+/// Returns the total packed length `l_pac` after the optional rc append.
+///
+/// # Arguments
+/// * `reader` - FASTA input (gzip is handled by the caller)
+/// * `prefix` - output filename prefix for `.pac`/`.ann`/`.amb`
+/// * `for_only` - if nonzero, skip the reverse-complement half
 #[doc = "Original function: bns_fasta2bntseq:298"]
 pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i64 {
     let records = parse_fasta(reader);
@@ -474,6 +515,11 @@ pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i
     ret
 }
 
+/// CLI driver for the `fa2pac` subcommand.
+///
+/// Parses `-f` (forward-only) plus 1-2 positional arguments
+/// (`<in.fasta> [<out.prefix>]`), opens the input (transparently
+/// handling `.gz`), and invokes `bns_fasta2bntseq`.
 #[doc = "Original function: bwa_fa2pac:359"]
 pub fn bwa_fa2pac(argv: &[String]) -> i32 {
     let mut for_only = 0;
@@ -502,6 +548,11 @@ pub fn bwa_fa2pac(argv: &[String]) -> i32 {
     0
 }
 
+/// Look up the contig id (`rid`) bracketing a forward-strand position.
+///
+/// Returns `-1` if `pos_f >= bns.l_pac`. Otherwise binary-searches
+/// `bns.anns` for the contig whose `[offset, offset + len)` brackets
+/// `pos_f`.
 #[doc = "Original function: bns_pos2rid:378"]
 #[inline(always)]
 pub fn bns_pos2rid(bns: &bntseq_t, pos_f: i64) -> i32 {
@@ -530,6 +581,11 @@ pub fn bns_pos2rid(bns: &bntseq_t, pos_f: i64) -> i32 {
     mid
 }
 
+/// Resolve a `[rb, re)` reference interval to a single `rid`.
+///
+/// Returns `-2` if the interval straddles the forward/reverse boundary,
+/// the shared `rid` if both endpoints map to the same contig, or `-1`
+/// if they fall on different contigs.
 #[doc = "Original function: bns_intv2rid:394"]
 #[inline(always)]
 pub fn bns_intv2rid(bns: &bntseq_t, rb: i64, re: i64) -> i32 {
@@ -551,6 +607,11 @@ pub fn bns_intv2rid(bns: &bntseq_t, rb: i64, re: i64) -> i32 {
     }
 }
 
+/// Count ambiguous bases overlapping a `[pos_f, pos_f + len)` window.
+///
+/// Binary-searches `bns.ambs` for the first overlapping run and
+/// returns the size of the intersection. Optionally writes the
+/// owning contig's `rid` into `ref_id` via `bns_pos2rid`.
 #[doc = "Original function: bns_cnt_ambi:404"]
 pub fn bns_cnt_ambi(bns: &bntseq_t, pos_f: i64, len: i32, ref_id: Option<&mut i32>) -> i32 {
     if let Some(ref_id) = ref_id {
@@ -581,6 +642,12 @@ pub fn bns_cnt_ambi(bns: &bntseq_t, pos_f: i64, len: i32, ref_id: Option<&mut i3
     nn
 }
 
+/// Decode the 2-bit reference slice `[beg, end)` into a fresh byte vec.
+///
+/// Forward intervals walk `pac` directly; intervals on the reverse
+/// half reflect back into the forward strand and emit
+/// complemented bases. Intervals straddling the forward/reverse
+/// boundary return `None`. Writes the decoded length into `len`.
 #[doc = "Original function: bns_get_seq:427"]
 pub fn bns_get_seq(l_pac: i64, pac: &[u8], beg: i64, end: i64, len: &mut i64) -> Option<Vec<u8>> {
     let mut seq = Vec::new();
@@ -692,6 +759,12 @@ fn decode_pac_reverse_complement_into(pac: &[u8], beg: i64, end: i64, out: &mut 
     }
 }
 
+/// Fetch the reference slice around `mid`, clipped to the owning contig.
+///
+/// Determines the contig containing `mid` via `bns_pos2rid`, clamps
+/// the caller-supplied `[beg, end)` to that contig's range
+/// (flipping for reverse-strand `mid`), and decodes the resulting
+/// window. `beg`, `end`, and `rid` are updated in place.
 #[doc = "Original function: bns_fetch_seq:453"]
 pub fn bns_fetch_seq(
     bns: &bntseq_t,

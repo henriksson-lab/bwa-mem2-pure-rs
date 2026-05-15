@@ -115,6 +115,13 @@ pub fn ksw_qinit(size: i32, qlen: i32, query: &[u8], m: i32, mat: &[i8]) -> _ksw
     }
 }
 
+/// SSE2 striped Farrar Smith-Waterman kernel with unsigned-byte score lanes.
+///
+/// Processes 16 query positions per `__m128i` in a striped layout
+/// (stripe `i`, lane `k` -> `query[i + k*slen]` with `slen = ceil(qlen/16)`).
+/// Mirrors the C++ kernel exactly to preserve byte-identical output (max-position
+/// tie-breaking included); falls back to scalar
+/// `local_align_affine_with_rows_endsc` if SSE2 is unavailable.
 #[doc = "Original function: ksw_u8:111"]
 pub fn ksw_u8(
     q: &_kswq_t,
@@ -179,6 +186,10 @@ pub fn ksw_u8(
     r
 }
 
+/// SSE2 striped Farrar Smith-Waterman kernel with signed-i16 score lanes.
+///
+/// Same striped layout as `ksw_u8` but 8 `i16` lanes per `__m128i` (instead of
+/// 16 `u8`); no `shift` bias is needed since `i16` has plenty of headroom.
 #[doc = "Original function: ksw_i16:234"]
 pub fn ksw_i16(
     q: &_kswq_t,
@@ -1046,6 +1057,7 @@ fn build_score_peaks(row_maxes: &[i32], minsc: i32) -> Vec<(i32, i32)> {
     b
 }
 
+/// Reverse the first `l` bytes of `s` in place.
 #[doc = "Original function: revseq:340"]
 #[inline]
 pub fn revseq(l: i32, s: &mut [u8]) {
@@ -1248,6 +1260,8 @@ pub fn ksw_align2(
     r
 }
 
+/// Legacy backup of `ksw_align2`; retained for benchmarking parity with the
+/// upstream C++ source. Delegates to `ksw_align2`.
 #[doc = "Original function: ksw_align2_orig_bak:383"]
 pub fn ksw_align2_orig_bak(
     qlen: i32,
@@ -1268,6 +1282,8 @@ pub fn ksw_align2_orig_bak(
     )
 }
 
+/// Convenience wrapper around `ksw_align2` using symmetric deletion/insertion
+/// gap penalties (`gapo`/`gape` for both).
 #[doc = "Original function: ksw_align:419"]
 pub fn ksw_align(
     qlen: i32,
@@ -1289,12 +1305,15 @@ pub fn ksw_align(
 // ********************
 // *** SW extension ***
 // ********************
-//
-// Extend alignment from the seed (h0). Aligns query and target assuming their upstream
-// sequences (not provided) have been aligned with score h0. On return [0,*qle) on the
-// query and [0,*tle) on the target are aligned together. If *gscore>=0, *gscore keeps the
-// best score for an end-to-end alignment of the query, and *gtle is its target position;
-// these help the caller decide between end-to-end and partial hits.
+
+/// Extend alignment from the seed (`h0`).
+///
+/// Aligns query and target assuming their upstream sequences (not provided) have
+/// been aligned with score `h0`. On return `[0, *qle)` on the query and
+/// `[0, *tle)` on the target are aligned together. If `*gscore >= 0`, `*gscore`
+/// keeps the best score for an end-to-end alignment of the query, and `*gtle`
+/// is its target position; these help the caller decide between end-to-end and
+/// partial hits.
 #[doc = "Original function: ksw_extend2:432"]
 pub fn ksw_extend2(
     qlen: i32,
@@ -1504,6 +1523,8 @@ pub fn ksw_extend2(
     best
 }
 
+/// Convenience wrapper around `ksw_extend2` using symmetric deletion/insertion
+/// gap penalties (`gapo`/`gape` for both).
 #[doc = "Original function: ksw_extend:535"]
 pub fn ksw_extend(
     qlen: i32,
@@ -1530,6 +1551,8 @@ pub fn ksw_extend(
     )
 }
 
+/// Append `(op, len)` to a CIGAR vector, merging with the previous run when
+/// it shares the same opcode.
 #[doc = "Original function: push_cigar:546"]
 #[inline]
 pub fn push_cigar(n_cigar: &mut i32, _m_cigar: &mut i32, cigar: &mut Vec<u32>, op: i32, len: i32) {
@@ -1545,12 +1568,14 @@ pub fn push_cigar(n_cigar: &mut i32, _m_cigar: &mut i32, cigar: &mut Vec<u32>, o
 // ********************
 // * Global alignment *
 // ********************
-//
-// Banded global alignment with optional CIGAR traceback. `w` is the band width; when
-// `n_cigar_` and `cigar_` are both provided, the backtrack matrix `z` is allocated
-// (z[i,j] keeps h for the current cell and e/f for the next cell, packed as f<<4|e<<2|h
-// — in principle we could halve the memory but the backtrack would be slightly more
-// complex). Returns the alignment score.
+
+/// Banded global alignment with optional CIGAR traceback.
+///
+/// `w` is the band width; when `n_cigar_` and `cigar_` are both provided, the
+/// backtrack matrix `z` is allocated (`z[i,j]` keeps `h` for the current cell
+/// and `e`/`f` for the next cell, packed as `f<<4 | e<<2 | h` — in principle
+/// we could halve the memory but the backtrack would be slightly more complex).
+/// Returns the alignment score.
 #[doc = "Original function: ksw_global2:558"]
 pub fn ksw_global2(
     qlen: i32,
@@ -1747,6 +1772,8 @@ pub fn ksw_global2(
     })
 }
 
+/// Convenience wrapper around `ksw_global2` using symmetric deletion/insertion
+/// gap penalties (`gapo`/`gape` for both).
 #[doc = "Original function: ksw_global:670"]
 pub fn ksw_global(
     qlen: i32,

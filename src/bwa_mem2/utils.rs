@@ -50,6 +50,8 @@ pub fn rdtsc__L60(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__rdtsc")
 }
 
+/// Thomas Wang's 64-bit integer hash. Permutes the key with a sequence of
+/// XOR-shifts and adds so that close inputs scatter widely.
 #[doc = "Original function: hash_64:117"]
 #[inline]
 pub fn hash_64(mut key: u64) -> u64 {
@@ -208,6 +210,13 @@ fn format_error_line(header: &str, message: &str, abort_suffix: bool) -> String 
 
 // ===== System utilities =====
 
+/// Open the file `fn_` in mode `mode`, or fall back to stdin/stdout when
+/// `fn_` is `"-"`. On failure, aborts via [`err_fatal`] tagged with `func`.
+///
+/// # Arguments
+/// * `func` - caller name used in the fatal-error tag.
+/// * `fn_` - path to open, or `"-"` for stdin (read mode) / stdout.
+/// * `mode` - fopen-style mode string (e.g. `"r"`, `"w"`, `"w+"`).
 #[doc = "Original function: err_xopen_core:56"]
 pub fn err_xopen_core(func: &str, fn_: &str, mode: &str) -> ErrFile {
     if fn_ == "-" {
@@ -223,6 +232,8 @@ pub fn err_xopen_core(func: &str, fn_: &str, mode: &str) -> ErrFile {
     }
 }
 
+/// Reopen `fn_` with mode `mode`, replacing the existing handle. Aborts via
+/// [`err_fatal`] tagged with `func` on failure.
 #[doc = "Original function: err_xreopen_core:67"]
 pub fn err_xreopen_core(func: &str, fn_: &str, mode: &str, _fp: ErrFile) -> ErrFile {
     match ErrFile::open_path(fn_, mode) {
@@ -231,6 +242,8 @@ pub fn err_xreopen_core(func: &str, fn_: &str, mode: &str, _fp: ErrFile) -> ErrF
     }
 }
 
+/// Open a gzip stream at `fn_`, or wrap stdin/stdout when `fn_` is `"-"`.
+/// Aborts via [`err_fatal`] tagged with `func` on failure.
 #[doc = "Original function: err_xzopen_core:75"]
 pub fn err_xzopen_core(func: &str, fn_: &str, mode: &str) -> ErrGzFile {
     if fn_ == "-" {
@@ -248,30 +261,40 @@ pub fn err_xzopen_core(func: &str, fn_: &str, mode: &str) -> ErrGzFile {
     }
 }
 
+/// Print a fatal error message tagged `[header]` to stderr and exit with
+/// `EXIT_FAILURE`. Never returns.
 #[doc = "Original function: err_fatal:90"]
 pub fn err_fatal(header: &str, args: Arguments<'_>) -> ! {
     eprintln!("{}", format_error_line(header, &args.to_string(), false));
     std::process::exit(libc::EXIT_FAILURE);
 }
 
+/// Print a fatal error message tagged `[header]` with an ` Abort!` suffix
+/// to stderr and call `abort()`. Never returns.
 #[doc = "Original function: err_fatal_core:101"]
 pub fn err_fatal_core(header: &str, args: Arguments<'_>) -> ! {
     eprintln!("{}", format_error_line(header, &args.to_string(), true));
     std::process::abort();
 }
 
+/// Print `[func] msg` to stderr and exit with `EXIT_FAILURE`. Never returns.
+/// Backs the `err_fatal_simple(msg)` macro in `utils.h`.
 #[doc = "Original function: _err_fatal_simple:112"]
 pub fn err_fatal_simple(func: &str, msg: &str) -> ! {
     eprintln!("{}", format_error_line(func, msg, false));
     std::process::exit(libc::EXIT_FAILURE);
 }
 
+/// Print `[func] msg Abort!` to stderr and call `abort()`. Never returns.
+/// Backs the `err_fatal_simple_core(msg)` macro in `utils.h`.
 #[doc = "Original function: _err_fatal_simple_core:118"]
 pub fn err_fatal_simple_core(func: &str, msg: &str) -> ! {
     eprintln!("{}", format_error_line(func, msg, true));
     std::process::abort();
 }
 
+/// Wrapper around `fwrite` that aborts via [`err_fatal_simple`] on short
+/// write. Returns the count actually written (always `nmemb` on success).
 #[doc = "Original function: err_fwrite:124"]
 pub fn err_fwrite(ptr: &[u8], size: usize, nmemb: usize, stream: &mut ErrFile) -> usize {
     let want = size.saturating_mul(nmemb);
@@ -282,6 +305,9 @@ pub fn err_fwrite(ptr: &[u8], size: usize, nmemb: usize, stream: &mut ErrFile) -
     nmemb
 }
 
+/// Wrapper around `fread` that aborts via [`err_fatal_simple`] on short read
+/// (treating EOF as a "Unexpected end of file" error). Returns the count
+/// actually read (always `nmemb` on success).
 #[doc = "Original function: err_fread_noeof:132"]
 pub fn err_fread_noeof(ptr: &mut [u8], size: usize, nmemb: usize, stream: &mut ErrFile) -> usize {
     let want = size.saturating_mul(nmemb);
@@ -297,6 +323,8 @@ pub fn err_fread_noeof(ptr: &mut [u8], size: usize, nmemb: usize, stream: &mut E
     nmemb
 }
 
+/// Wrapper around `gzread` that aborts via [`err_fatal_simple`] on error.
+/// Returns the number of bytes read.
 #[doc = "Original function: err_gzread:142"]
 pub fn err_gzread(file: &mut ErrGzFile, ptr: &mut [u8], len: u32) -> i32 {
     let want = usize::try_from(len).expect("len");
@@ -315,6 +343,8 @@ pub fn err_gzread(file: &mut ErrGzFile, ptr: &mut [u8], len: u32) -> i32 {
     }
 }
 
+/// Wrapper around `fseek` that aborts via [`err_fatal_simple`] on error.
+/// `whence` must be one of `SEEK_SET`, `SEEK_CUR`, `SEEK_END`.
 #[doc = "Original function: err_fseek:156"]
 pub fn err_fseek(stream: &mut ErrFile, offset: i64, whence: i32) -> i32 {
     let pos = match whence {
@@ -329,6 +359,8 @@ pub fn err_fseek(stream: &mut ErrFile, offset: i64, whence: i32) -> i32 {
     0
 }
 
+/// Wrapper around `ftell` that aborts via [`err_fatal_simple`] on error.
+/// Returns the current stream position.
 #[doc = "Original function: err_ftell:166"]
 pub fn err_ftell(stream: &mut ErrFile) -> i64 {
     match stream.seek_checked(SeekFrom::Current(0)) {
@@ -337,6 +369,8 @@ pub fn err_ftell(stream: &mut ErrFile) -> i64 {
     }
 }
 
+/// Wrapper around `vfprintf(stdout, ...)` that aborts via
+/// [`err_fatal_simple`] on error. Returns the number of bytes written.
 #[doc = "Original function: err_printf:176"]
 pub fn err_printf(args: Arguments<'_>) -> i32 {
     let rendered = args.to_string();
@@ -346,6 +380,8 @@ pub fn err_printf(args: Arguments<'_>) -> i32 {
     }
 }
 
+/// Wrapper around `vfprintf` that aborts via [`err_fatal_simple`] on error.
+/// Returns the number of bytes written.
 #[doc = "Original function: err_fprintf:188"]
 pub fn err_fprintf(stream: &mut ErrFile, args: Arguments<'_>) -> i32 {
     let rendered = args.to_string();
@@ -355,6 +391,8 @@ pub fn err_fprintf(stream: &mut ErrFile, args: Arguments<'_>) -> i32 {
     i32::try_from(rendered.len()).expect("fprintf length overflow")
 }
 
+/// Wrapper around `putc` that aborts via [`err_fatal_simple`] on error.
+/// Returns the byte written (the value of `c`).
 #[doc = "Original function: err_fputc:200"]
 pub fn err_fputc(c: i32, stream: &mut ErrFile) -> i32 {
     let byte = [u8::try_from(c).expect("c")];
@@ -364,6 +402,9 @@ pub fn err_fputc(c: i32, stream: &mut ErrFile) -> i32 {
     c
 }
 
+/// Wrapper around `fgets` that aborts via [`err_fatal_simple`] on error or
+/// EOF. Reads up to `size - 1` bytes (or until a newline) into `buf` and
+/// returns a clone of the buffered line.
 #[doc = "Original function: err_fgets:211"]
 pub fn err_fgets(buf: &mut String, size: i32, stream: &mut ErrFile) -> String {
     buf.clear();
@@ -383,6 +424,7 @@ pub fn err_fgets(buf: &mut String, size: i32, stream: &mut ErrFile) -> String {
     buf.clone()
 }
 
+/// Wrapper around `fputs` that aborts via [`err_fatal_simple`] on error.
 #[doc = "Original function: err_fputs:222"]
 pub fn err_fputs(s: &str, stream: &mut ErrFile) -> i32 {
     if let Err(err) = stream.write_all_checked(s.as_bytes()) {
@@ -391,6 +433,8 @@ pub fn err_fputs(s: &str, stream: &mut ErrFile) -> i32 {
     0
 }
 
+/// Wrapper around `puts` that aborts via [`err_fatal_simple`] on error.
+/// Writes `s` followed by a newline to stdout.
 #[doc = "Original function: err_puts:233"]
 pub fn err_puts(s: &str) -> i32 {
     let line = format!("{s}\n");
@@ -400,6 +444,11 @@ pub fn err_puts(s: &str) -> i32 {
     }
 }
 
+/// Flush `stream` and, when it is a regular file, also `fsync` it. Aborts via
+/// [`err_fatal_simple`] on error. Calling flush ensures the data has made it
+/// to the kernel buffers, but this may not be sufficient for remote
+/// filesystems (e.g. NFS, lustre); fsync of the file descriptor closes that
+/// gap. Mirrors the `FSYNC_ON_FLUSH` block in the C++ source.
 #[doc = "Original function: err_fflush:244"]
 pub fn err_fflush(stream: &mut ErrFile) -> i32 {
     if let Err(err) = stream.flush_checked() {
@@ -417,6 +466,8 @@ pub fn err_fflush(stream: &mut ErrFile) -> i32 {
     0
 }
 
+/// Wrapper around `fclose` that aborts via [`err_fatal_simple`] on error.
+/// Consumes `stream`.
 #[doc = "Original function: err_fclose:271"]
 pub fn err_fclose(mut stream: ErrFile) -> i32 {
     if let Err(err) = stream.flush_checked() {
@@ -425,6 +476,8 @@ pub fn err_fclose(mut stream: ErrFile) -> i32 {
     0
 }
 
+/// Wrapper around `gzclose` that aborts via [`err_fatal_simple`] on error.
+/// Consumes `file`.
 #[doc = "Original function: err_gzclose:278"]
 pub fn err_gzclose(file: ErrGzFile) -> i32 {
     let result = match file {
@@ -440,11 +493,15 @@ pub fn err_gzclose(file: ErrGzFile) -> i32 {
 
 // ===== Timer =====
 
+/// Combined user + system CPU time consumed by the current process, in
+/// seconds. Mirrors the C++ `getrusage(RUSAGE_SELF, ...)` accumulation.
 #[doc = "Original function: cputime:293"]
 pub fn cputime() -> f64 {
     cpu_time::ProcessTime::now().as_duration().as_secs_f64()
 }
 
+/// Wall-clock seconds since the Unix epoch as an `f64` (matches the C++
+/// `gettimeofday` return).
 #[doc = "Original function: realtime:300"]
 pub fn realtime() -> f64 {
     let now = SystemTime::now()

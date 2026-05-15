@@ -213,7 +213,9 @@ fn max_i8(a: i8, b: i8) -> i8 {
 }
 
 impl kswv {
-    // constructor
+    /// Constructor: allocate the SoA scratch buffers (`F8`/`F16`, `H*_0/1/max`,
+    /// `rowMax*`) sized for `numThreads` and the configured max ref/query lengths,
+    /// and seed the scoring parameters.
     #[doc = "Original function: kswv::kswv:114"]
     pub fn ctor(
         o_del: i32,
@@ -268,7 +270,7 @@ impl kswv {
         }
     }
 
-    // destructor
+    /// Destructor: release the SoA scratch buffers allocated by `ctor`.
     #[doc = "Original function: kswv::~kswv:157"]
     pub fn dtor(&mut self) {
         self.F8.clear();
@@ -283,7 +285,8 @@ impl kswv {
         self.rowMax16.clear();
     }
 
-    // Vector u8 Smith-Waterman entry point (AVX-512 path).
+    /// Vector u8 Smith-Waterman entry point (AVX-512 path); thin shim over
+    /// `kswvBatchWrapper8`.
     #[doc = "Original function: kswv::getScores8:164"]
     pub fn getScores8(
         &self,
@@ -300,9 +303,11 @@ impl kswv {
         );
     }
 
-    // Pack SIMD_WIDTH8 SeqPairs into SoA (struct-of-arrays) buffers and run the AVX-512 u8
-    // SW kernel. Rounds the batch up to SIMD_WIDTH8 with padded "id=ii, len1=len2=0" lanes
-    // so the kernel can run a full vector per chunk.
+    /// Pack `SIMD_WIDTH8` `SeqPair`s into SoA (struct-of-arrays) buffers and run
+    /// the AVX-512 u8 SW kernel.
+    ///
+    /// Rounds the batch up to `SIMD_WIDTH8` with padded `id=ii, len1=len2=0` lanes
+    /// so the kernel can run a full vector per chunk.
     #[doc = "Original function: kswv::kswvBatchWrapper8:177"]
     pub fn kswvBatchWrapper8(
         &self,
@@ -443,7 +448,8 @@ impl kswv {
         );
     }
 
-    // Vectorized 16-bit (i16 lane) SW entry point.
+    /// Vectorized 16-bit (i16 lane) SW entry point; thin shim over
+    /// `kswvBatchWrapper16`.
     #[doc = "Original function: kswv::getScores16:713"]
     pub fn getScores16(
         &self,
@@ -460,8 +466,8 @@ impl kswv {
         );
     }
 
-    // Pack SIMD_WIDTH16 SeqPairs into SoA buffers and run the AVX-512 i16 SW kernel; same
-    // padding / rounding scheme as the u8 wrapper.
+    /// Pack `SIMD_WIDTH16` `SeqPair`s into SoA buffers and run the AVX-512 i16
+    /// SW kernel; uses the same padding/rounding scheme as the u8 wrapper.
     #[doc = "Original function: kswv::kswvBatchWrapper16:725"]
     pub fn kswvBatchWrapper16(
         &self,
@@ -682,8 +688,10 @@ impl kswv {
     }
 
     // *********************************** Vectorized Code 16 bit *****************************
-    // 16 bit lanes. Scalar fallback path used when AVX-512BW is unavailable; the AVX-512
-    // implementation lives in `kswv512_16_avx512_impl` below.
+    /// Vectorized i16 SW kernel for one `SIMD_WIDTH16`-wide SoA chunk.
+    ///
+    /// This is the scalar fallback path used when AVX-512BW is unavailable; the
+    /// AVX-512 implementation lives in `kswv512_16_avx512_impl` below.
     #[doc = "Original function: kswv::kswv512_16:933"]
     #[inline]
     pub fn kswv512_16(
@@ -1492,6 +1500,10 @@ impl kswv {
     // This is the original SW code from bwa-mem. We are keeping both, 8-bit and 16-bit
     // implementations, here for benchmarking purposes. The interface to the code is very
     // simple and similar to the one we used above. By default the C++ build disables this.
+
+    /// Fill a 5x5 scoring matrix from the configured `w_match`, `w_mismatch`,
+    /// and `w_ambig` parameters (the ambiguous-base row/column is set to
+    /// `w_ambig` for all positions).
     #[doc = "Original function: kswv::bwa_fill_scmat:1231"]
     #[inline]
     pub fn bwa_fill_scmat(&self, mat: &mut [i8; 25]) {
@@ -1604,8 +1616,10 @@ impl kswv {
         }
     }
 
-    // Scalar u8 SW (the first gap costs -(_o+_e)). Original SSE2 SW kernel from bwa-mem,
-    // here adapted to call into ksw_align2 for the scalar/scalar-replacement path.
+    /// Scalar u8 SW (the first gap costs `-(_o+_e)`).
+    ///
+    /// The original SSE2 SW kernel from bwa-mem, here adapted to call into
+    /// `ksw_align2` for the scalar/scalar-replacement path.
     #[doc = "Original function: kswv::kswvScalar_u8:1306"]
     pub fn kswvScalar_u8(
         &self,
@@ -1647,7 +1661,8 @@ impl kswv {
         }
     }
 
-    // Scalar i16 SW (the first gap costs -(_o+_e)). Same role as kswvScalar_u8 but i16 lanes.
+    /// Scalar i16 SW (the first gap costs `-(_o+_e)`); same role as
+    /// `kswvScalar_u8` but with i16 lanes.
     #[doc = "Original function: kswv::kswvScalar_i16:1434"]
     pub fn kswvScalar_i16(
         &self,
@@ -1689,11 +1704,11 @@ impl kswv {
         }
     }
 
-    // -------------------------------------------------------------
-    // kswc scalar, wrapper function, the interface. Iterates over the SeqPair batch and
-    // dispatches each pair to kswvScalar_u8 / kswvScalar_i16 (selected by `sw` and the
-    // KSW_XBYTE flag in p->h0).
-    // -------------------------------------------------------------
+    /// Scalar SW wrapper — the batch interface for the scalar kernels.
+    ///
+    /// Iterates over the `SeqPair` batch and dispatches each pair to
+    /// `kswvScalar_u8` / `kswvScalar_i16` (selected by `sw` and the `KSW_XBYTE`
+    /// flag in `p->h0`).
     #[doc = "Original function: kswv::kswvScalarWrapper:1550"]
     pub fn kswvScalarWrapper(
         &self,

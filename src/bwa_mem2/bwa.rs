@@ -91,6 +91,10 @@ pub static BWA_RG_ID: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new(St
 pub static BWA_RG_ID_NONEMPTY: AtomicBool = AtomicBool::new(false);
 pub static BWA_PG: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
+/// Strip a trailing `/1` or `/2` read-number suffix from a FASTQ name in-place.
+///
+/// Mutates the kstring_t by shortening its logical length (and writing a NUL terminator) when
+/// the last two bytes are `/` followed by an ASCII digit.
 #[doc = "Original function: trim_readno:62"]
 pub fn trim_readno(s: &mut kstring_t) {
     if s.l > 2 && s.s[s.l - 2] == b'/' && s.s[s.l - 1].is_ascii_digit() {
@@ -103,8 +107,14 @@ pub fn trim_readno(s: &mut kstring_t) {
     }
 }
 
-// TODO: it would be better to allocate one chunk of memory, but probably it does not matter in
-// practice (upstream note).
+/// Move the current kseq record (name / comment / seq / qual) into a `bseq1_t`.
+///
+/// The kstring buffers in `ks` are taken (not copied) and reinterpreted as `String`s; bytes came
+/// from FASTQ (printable ASCII per spec), so UTF-8 validation is skipped. `ks`'s fields are left
+/// empty for the next `kseq_read` to refill.
+///
+/// TODO (upstream): it would be better to allocate one chunk of memory, but probably it does not
+/// matter in practice.
 #[doc = "Original function: kseq2bseq1:68"]
 pub fn kseq2bseq1(ks: &mut kseq_t, s: &mut bseq1_t) {
     // Swap kstring buffers into bseq1_t instead of copying. The Vec<u8> in each kstring_t holds
@@ -129,7 +139,9 @@ pub fn kseq2bseq1(ks: &mut kseq_t, s: &mut bseq1_t) {
     s.qual = take_kstring_as_string(&mut ks.qual);
 }
 
-// Customized for MPI processing (upstream note). Reads chunks of FASTA/Q records into bseq1_t.
+/// Customized FASTA/Q chunk reader for MPI processing (upstream).
+///
+/// Reads chunks of records into `bseq1_t`. Currently a stub in this port.
 #[doc = "Original function: bseq_read:78"]
 pub fn bseq_read(
     _arg0: crate::support::Opaque,
@@ -143,6 +155,11 @@ pub fn bseq_read(
     crate::support::stub::<crate::support::Opaque>("bseq_read")
 }
 
+/// Read a chunk of records from one or two FASTQ streams into `bseq1_t`s.
+///
+/// Stops once accumulated sequence length meets `chunk_size` (rounded up to an even count when
+/// paired). Emits warnings if one mate file is shorter than the other. Writes the per-record
+/// count to `n_` and the total sequence-byte count to `s`.
 #[doc = "Original function: bseq_read_orig:170"]
 pub fn bseq_read_orig(
     chunk_size: i64,
@@ -199,6 +216,9 @@ pub fn bseq_read_orig(
     seqs
 }
 
+/// Convenience wrapper that reads a chunk from a single FASTA/Q text source.
+///
+/// Builds a transient `kseq_t` from `text` and delegates to `bseq_read_orig`.
 #[doc = "Original function: bseq_read_one_fasta_file:218"]
 pub fn bseq_read_one_fasta_file(
     chunk_size: i64,
@@ -210,6 +230,10 @@ pub fn bseq_read_one_fasta_file(
     bseq_read_orig(chunk_size, n_, &mut ks, None, s)
 }
 
+/// Split a sequence batch into singletons and paired-end pairs by adjacent matching names.
+///
+/// Walks `seqs` and groups consecutive reads with identical names into `sep[1]` (paired);
+/// everything else goes into `sep[0]` (singletons). Counts are written to `m[0]`/`m[1]`.
 #[doc = "Original function: bseq_classify:226"]
 pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<bseq1_t>; 2]) {
     let limit = n.max(0) as usize;
@@ -249,7 +273,10 @@ pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<
     sep[1] = paired;
 }
 
-// Fill the 5x5 ACGTN scoring matrix (row/col 4 is the ambiguous base N).
+/// Fill the 5x5 ACGTN scoring matrix.
+///
+/// Sets diagonal of the ACGT submatrix to `+a` (match) and off-diagonals to `-b` (mismatch).
+/// Row and column 4 (the ambiguous base N) are filled with -1.
 #[doc = "Original function: bwa_fill_scmat:248"]
 #[inline]
 pub fn bwa_fill_scmat(a: i32, b: i32, mat: &mut [i8; 25]) {
@@ -270,7 +297,28 @@ pub fn bwa_fill_scmat(a: i32, b: i32, mat: &mut [i8; 25]) {
     }
 }
 
-// Generate CIGAR when the alignment end points are known.
+/// Generate the CIGAR when the alignment end points are known.
+///
+/// Runs banded global Needleman-Wunsch (`ksw_global2`) between the query and the reference
+/// window `[rb, re)`, optionally producing the cigar ops and the NM/MD tag values. Rejects
+/// alignments bridging the forward/reverse strand boundary. When `rb >= l_pac` (reverse strand),
+/// query and reference are reversed for the DP so indels land at the leftmost position.
+///
+/// # Arguments
+/// * `mat` - 5x5 ACGTN scoring matrix (see `bwa_fill_scmat`)
+/// * `o_del`, `e_del`, `o_ins`, `e_ins` - gap open / extend penalties for del / ins
+/// * `w_` - user-supplied band-width cap
+/// * `l_pac` - packed-reference length (single-strand)
+/// * `pac` - packed reference (2-bit)
+/// * `l_query`, `query` - query length and 0-3 encoded query bytes
+/// * `rb`, `re` - reference window (concatenated fwd|rev coordinates)
+/// * `score` - written with the alignment score
+/// * `n_cigar` - if `Some`, populated with the number of CIGAR ops emitted
+/// * `NM` - if `Some`, populated with NM (mismatches + gap bases)
+///
+/// # Returns
+/// `Some(bwa_cigar_t)` with the CIGAR ops and the MD string when `n_cigar` was requested, or
+/// `None` for rejected windows.
 #[doc = "Original function: bwa_gen_cigar2:260"]
 pub fn bwa_gen_cigar2(
     mat: &[i8; 25],
@@ -493,6 +541,8 @@ pub fn bwa_gen_cigar2(
     out_cigar.map(|cigar| bwa_cigar_t { cigar, md })
 }
 
+/// Convenience wrapper around `bwa_gen_cigar2` using a single gap-open/extend pair `q`/`r` for
+/// both deletions and insertions.
 #[doc = "Original function: bwa_gen_cigar:349"]
 pub fn bwa_gen_cigar(
     mat: &[i8; 25],
@@ -559,6 +609,11 @@ pub fn bwa_idx2mem(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx2mem")
 }
 
+/// Emit the SAM header to `fp`.
+///
+/// If `hdr_line` is `None` (or contains no `@SQ`), one `@SQ\tSN:<name>\tLN:<len>` line is
+/// emitted per reference sequence (with `\tAH:*` for ALT contigs). When `hdr_line` is provided
+/// it is appended verbatim, followed by the `@PG` line stashed in `BWA_PG` (if any).
 #[doc = "Original function: bwa_print_sam_hdr:523"]
 pub fn bwa_print_sam_hdr(bns: &bntseq_t, hdr_line: Option<&str>, fp: &mut ErrFile) {
     let mut n_sq = 0_i32;
@@ -598,6 +653,10 @@ pub fn bwa_print_sam_hdr(bns: &bntseq_t, hdr_line: Option<&str>, fp: &mut ErrFil
     }
 }
 
+/// Replace C-style backslash escapes (`\t`, `\n`, `\r`, `\\`) with the literal byte.
+///
+/// Used to unescape user-supplied `@RG` lines so command-line input like `\t` produces a real
+/// tab. Unrecognized escapes are passed through unchanged.
 #[doc = "Original function: bwa_escape:567"]
 pub fn bwa_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -622,6 +681,11 @@ pub fn bwa_escape(s: &str) -> String {
     out
 }
 
+/// Parse the user-supplied `@RG` line, set `BWA_RG_ID`, and return the escaped line.
+///
+/// Validates that `s` begins with `@RG`, extracts the `ID:` token (at most 255 characters), and
+/// stores it in `BWA_RG_ID` for use by `mem_aln2sam`. Returns `None` on any validation failure;
+/// the escaped header line on success.
 #[doc = "Original function: bwa_set_rg:583"]
 pub fn bwa_set_rg(s: &str) -> Option<String> {
     *BWA_RG_ID.write().expect("bwa_rg_id lock") = String::new();
@@ -656,6 +720,10 @@ pub fn bwa_set_rg(s: &str) -> Option<String> {
     Some(rg_line)
 }
 
+/// Append a user-supplied SAM header line to the accumulated header.
+///
+/// Skips lines that do not start with `@`. Only the newly-appended portion is run through
+/// `bwa_escape`, preserving any earlier escape pass on the existing header (C++ bwa.cpp:623).
 #[doc = "Original function: bwa_insert_header:612"]
 pub fn bwa_insert_header(s: Option<&str>, hdr: Option<String>) -> Option<String> {
     let s = s?;

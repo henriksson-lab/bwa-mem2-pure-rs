@@ -205,6 +205,11 @@ fn occ(cp_occ: &[CP_OCC], one_hot_mask_array: &[u64], sp: i64, b: u8) -> i64 {
     }
 }
 
+/// `qsort`-style three-way comparator on `SMEM` records.
+///
+/// Orders primarily by ascending `rid`, then ascending `m` (left edge), then
+/// descending `n` (right edge). Returns `-1`, `0`, or `1` like the C++
+/// `compare_smem`. Used by `sortSMEMs` to stabilise per-thread SMEM slices.
 #[doc = "Original function: compare_smem:987"]
 #[inline]
 pub fn compare_smem(a: &SMEM, b: &SMEM) -> i32 {
@@ -224,6 +229,10 @@ pub fn compare_smem_ord(a: &SMEM, b: &SMEM) -> std::cmp::Ordering {
 }
 
 impl FMI_search {
+    /// Construct an `FMI_search` whose on-disk artefacts share the prefix `fname`.
+    ///
+    /// All FM-index buffers start empty; populate them via [`load_index`] for
+    /// reads or [`build_index`] for index construction.
     #[doc = "Original function: FMI_search::FMI_search:44"]
     pub fn ctor(fname: &str) -> Self {
         Self {
@@ -239,6 +248,7 @@ impl FMI_search {
         }
     }
 
+    /// Release every owned FM-index buffer and the underlying `indexEle`.
     #[doc = "Original function: FMI_search::~FMI_search:58"]
     pub fn dtor(&mut self) {
         self.sa_ms_byte.clear();
@@ -248,6 +258,14 @@ impl FMI_search {
         self.base.dtor();
     }
 
+    /// Return the unpacked length of the reference encoded in `fn_pac`.
+    ///
+    /// The `.pac` file stores 2-bit-packed bases; the final byte records the
+    /// trailing-base count (0..3) so that the unpacked length is
+    /// `(file_size - 1) * 4 + tail_byte`.
+    ///
+    /// # Arguments
+    /// * `fn_pac` - path to the `.pac` file.
     #[doc = "Original function: FMI_search::pac_seq_len:70"]
     pub fn pac_seq_len(&self, fn_pac: &str) -> i64 {
         let mut fp =
@@ -259,6 +277,16 @@ impl FMI_search {
         (pac_len - 1) * 4 + i64::from(c[0])
     }
 
+    /// Decode the 2-bit-packed reference at `fn_pac` and append its forward
+    /// strand followed by the reverse-complement strand to `reference_seq`.
+    ///
+    /// Used by index construction to materialise the concatenated
+    /// forward+reverse reference that the suffix-array builder consumes.
+    ///
+    /// # Arguments
+    /// * `fn_pac` - path to the `.pac` file.
+    /// * `reference_seq` - destination string; the function appends ASCII
+    ///   bases (`A`/`C`/`G`/`T`) to it without clearing existing contents.
     #[doc = "Original function: FMI_search::pac2nt:83"]
     pub fn pac2nt(&self, fn_pac: &str, reference_seq: &mut String) {
         let seq_len = self.pac_seq_len(fn_pac);
@@ -292,6 +320,22 @@ impl FMI_search {
         }
     }
 
+    /// Write the checkpointed FM-index (`<ref>.bwt.2bit.64`) from an
+    /// already-computed `i64` suffix array.
+    ///
+    /// Materialises the BWT, builds the per-`CP_BLOCK_SIZE` checkpointed
+    /// occurrence table, downsamples the suffix array by `SA_COMPX`, and
+    /// updates `self` with the same in-memory copies for subsequent queries.
+    ///
+    /// # Arguments
+    /// * `ref_file_name` - index prefix; the output is `<ref_file_name>.bwt.2bit.64`.
+    /// * `binary_seq` - reference encoded as 0..3 base codes.
+    /// * `ref_seq_len` - length of `binary_seq` excluding the appended `$` sentinel.
+    /// * `sa_bwt` - suffix array of length `ref_seq_len + 1`.
+    /// * `count` - cumulative base counts (size 5) used to derive `self.count`.
+    ///
+    /// # Returns
+    /// Always `0` on success; matches the C++ `int` return convention.
     #[doc = "Original function: FMI_search::build_fm_index:144"]
     pub fn build_fm_index(
         &mut self,
@@ -487,6 +531,16 @@ impl FMI_search {
         0
     }
 
+    /// Build the full FM-index for the `.pac` reference at `self.file_name`.
+    ///
+    /// Decodes the packed reference via [`pac2nt`], 2-bit-encodes it to a
+    /// `<prefix>.0123` file, computes the cumulative base counts, runs SA-IS
+    /// to obtain the suffix array (falling back to a naive comparator-sort
+    /// when the reference exceeds `i32::MAX` bases), and delegates the
+    /// checkpointed-FM emit to [`build_fm_index`]-internal helpers.
+    ///
+    /// # Returns
+    /// Always `0` on success.
     #[doc = "Original function: FMI_search::build_index:306"]
     pub fn build_index(&mut self) -> i32 {
         let prefix = self.file_name.clone();
@@ -536,6 +590,13 @@ impl FMI_search {
         }
     }
 
+    /// Load the checkpointed FM-index from `<self.file_name>.bwt.2bit.64`
+    /// into in-memory buffers, then load the companion `.bns`/`.pac` files
+    /// via the embedded `indexEle` loader.
+    ///
+    /// Initialises `one_hot_mask_array`, the per-`CP_BLOCK_SIZE` `cp_occ`
+    /// table, the downsampled suffix array (`sa_ms_byte` / `sa_ls_word`),
+    /// and the sentinel index. Panics on any I/O failure.
     #[doc = "Original function: FMI_search::load_index:384"]
     pub fn load_index(&mut self) {
         self.one_hot_mask_array = vec![0_u64; 64];
@@ -616,6 +677,26 @@ impl FMI_search {
         eprintln!("* Done reading Index!!");
     }
 
+    /// Advance one SMEM-search step per active read on the calling thread.
+    ///
+    /// For each read referenced by `rid_array[i]`, starts at
+    /// `query_pos_array[i]`, runs the forward extension followed by the
+    /// backward extension, appends qualifying SMEMs to `match_array`, and
+    /// writes the new position to `query_pos_array[i]` so that
+    /// [`getSMEMsAllPosOneThread`] can iterate until all reads are exhausted.
+    ///
+    /// # Arguments
+    /// * `enc_qdb` - flat 0..3 encoded read buffer indexed via `query_cum_len_ar`.
+    /// * `query_pos_array` - current search head per active read; updated in-place.
+    /// * `min_intv_array` - minimum BWT interval size per active read.
+    /// * `rid_array` - read index per active slot.
+    /// * `numReads` - number of currently active slots (length cap on the arrays).
+    /// * `seq_` - read records, used for sequence lengths.
+    /// * `query_cum_len_ar` - cumulative offsets of each read into `enc_qdb`.
+    /// * `max_readlength` - upper bound on read length; sizes the prev-array scratch.
+    /// * `minSeedLen` - minimum seed length to emit.
+    /// * `match_array` - destination SMEMs; new entries are pushed.
+    /// * `num_total_smem` - running total of emitted SMEMs; incremented in-place.
     #[doc = "Original function: FMI_search::getSMEMsOnePosOneThread:496"]
     pub fn getSMEMsOnePosOneThread(
         &self,
@@ -889,6 +970,25 @@ impl FMI_search {
         }
     }
 
+    /// Drive [`getSMEMsOnePosOneThread`] until every read on this thread is
+    /// fully consumed.
+    ///
+    /// Maintains a compacting active-list: after each one-position pass the
+    /// arrays are repacked to keep only reads whose search head has not yet
+    /// reached `l_seq`. Resets `*num_total_smem` to zero before counting.
+    ///
+    /// # Arguments
+    /// * `enc_qdb` - flat 0..3 encoded read buffer.
+    /// * `min_intv_array` - per-read minimum BWT interval.
+    /// * `rid_array` - per-read identifiers (compacted in-place).
+    /// * `numReads` - initial number of reads.
+    /// * `batch_size` - forwarded to the per-step driver.
+    /// * `seq_` - read records (for sequence length lookup).
+    /// * `query_cum_len_ar` - cumulative read offsets into `enc_qdb`.
+    /// * `max_readlength` - upper bound on read length.
+    /// * `minSeedLen` - minimum seed length.
+    /// * `match_array` - SMEM output.
+    /// * `num_total_smem` - total emitted SMEM count.
     #[doc = "Original function: FMI_search::getSMEMsAllPosOneThread:672"]
     pub fn getSMEMsAllPosOneThread(
         &self,
@@ -947,6 +1047,24 @@ impl FMI_search {
         });
     }
 
+    /// Forward-only seed enumeration used by the alternate seeding strategy.
+    ///
+    /// For each read, scans left-to-right and accepts the first SMEM whose
+    /// interval drops below `max_intv_array[i]` while its length is still at
+    /// least `minSeedLen`; the seed is appended to `match_array` and the scan
+    /// advances past it.
+    ///
+    /// # Arguments
+    /// * `enc_qdb` - flat 0..3 encoded read buffer.
+    /// * `max_intv_array` - per-read maximum BWT interval at which to accept a seed.
+    /// * `numReads` - number of reads.
+    /// * `seq_` - read records.
+    /// * `query_cum_len_ar` - cumulative offsets of each read into `enc_qdb`.
+    /// * `minSeedLen` - minimum seed length to emit.
+    /// * `match_array` - seed output.
+    ///
+    /// # Returns
+    /// Number of seeds appended.
     #[doc = "Original function: FMI_search::bwtSeedStrategyAllPosOneThread:726"]
     pub fn bwtSeedStrategyAllPosOneThread(
         &self,
@@ -1022,6 +1140,22 @@ impl FMI_search {
         num_total_seed
     }
 
+    /// Sequential per-thread SMEM enumerator for fixed-width reads.
+    ///
+    /// Partitions the `numReads` reads across `nthreads` quota-balanced slices
+    /// (executed serially in this port) and runs the bidirectional SMEM walk
+    /// over each read. Each thread writes its SMEMs into `match_array` at a
+    /// reserved `tid * readlength` offset and reports the count via
+    /// `num_total_smem[tid]`.
+    ///
+    /// # Arguments
+    /// * `enc_qdb` - flat 0..3 encoded read buffer (all reads share `readlength`).
+    /// * `numReads` - number of reads to process.
+    /// * `readlength` - per-read length (uniform across the batch).
+    /// * `minSeedLen` - minimum seed length to keep.
+    /// * `nthreads` - thread-slot count used to partition the work.
+    /// * `match_array` - destination for emitted SMEMs.
+    /// * `num_total_smem` - per-thread SMEM counts (resized to `nthreads`).
     #[doc = "Original function: FMI_search::getSMEMs:815"]
     pub fn getSMEMs(
         &self,
@@ -1206,6 +1340,14 @@ impl FMI_search {
         }
     }
 
+    /// Sort each thread's SMEM slice in-place using [`compare_smem_ord`].
+    ///
+    /// # Arguments
+    /// * `match_array` - flat per-thread layout produced by [`getSMEMs`].
+    /// * `num_total_smem` - per-thread emitted counts (slice length).
+    /// * `num_reads` / `readlength` - same partitioning as in [`getSMEMs`],
+    ///   used to recover each thread's base offset.
+    /// * `nthreads` - number of thread slices.
     #[doc = "Original function: FMI_search::sortSMEMs:1008"]
     pub fn sortSMEMs(
         &self,
@@ -1225,6 +1367,17 @@ impl FMI_search {
         }
     }
 
+    /// One step of bidirectional FM-index extension to the left by base `a`.
+    ///
+    /// Computes the new `(k, l, s)` triplet for all four candidate bases from
+    /// the checkpointed occurrence table, then writes the chosen base's
+    /// result back into `smem`. The forward strand of the index handles
+    /// rightward extension by passing the `3 - a` complement and swapping
+    /// `k`/`l` around the call (mirroring the C++ implementation).
+    ///
+    /// # Arguments
+    /// * `smem` - current SMEM interval; consumed and returned with updated `k`/`l`/`s`.
+    /// * `a` - base to extend with (0..3); other values fall through to the `3` branch.
     #[doc = "Original function: FMI_search::backwardExt:1025"]
     #[inline(always)]
     pub fn backwardExt(&self, mut smem: SMEM, a: u8) -> SMEM {
@@ -1316,6 +1469,10 @@ impl FMI_search {
         smem
     }
 
+    /// Read the suffix-array value at BWT position `pos` from the uncompressed
+    /// `(ms_byte, ls_word)` arrays (i.e. SA-compression factor 1).
+    ///
+    /// Reassembles the 40-bit SA entry as `(ms_byte << 32) | ls_word`.
     #[doc = "Original function: FMI_search::get_sa_entry:1054"]
     #[inline]
     pub fn get_sa_entry(&self, pos: i64) -> i64 {
@@ -1329,6 +1486,16 @@ impl FMI_search {
         (i64::from(ms) << 32) + i64::from(ls)
     }
 
+    /// Bulk-resolve SA entries for an array of BWT positions.
+    ///
+    /// Writes `coord_array[i] = get_sa_entry(pos_array[i])` for the first
+    /// `count` positions; grows `coord_array` to fit when necessary. Matches
+    /// the uncompressed SA overload of `FMI_search::get_sa_entries`.
+    ///
+    /// # Arguments
+    /// * `pos_array` - input BWT positions.
+    /// * `coord_array` - output SA entries.
+    /// * `count` - number of positions to process.
     #[doc = "Original function: FMI_search::get_sa_entries:1062"]
     pub fn get_sa_entries__L1062(
         &self,
@@ -1346,6 +1513,19 @@ impl FMI_search {
         }
     }
 
+    /// Expand each SMEM's BWT interval into up to `max_occ` SA-derived genomic
+    /// coordinates using uncompressed [`get_sa_entry`] lookups.
+    ///
+    /// When the interval is larger than `max_occ`, samples it at a stride of
+    /// `smem.s / max_occ`. Records the emitted count per SMEM in
+    /// `coord_count_array`.
+    ///
+    /// # Arguments
+    /// * `smem_array` - SMEMs whose intervals to expand.
+    /// * `coord_array` - destination coordinates; grown as needed.
+    /// * `coord_count_array` - per-SMEM emitted counts.
+    /// * `count` - number of SMEMs to process.
+    /// * `max_occ` - cap on coordinates emitted per SMEM.
     #[doc = "Original function: FMI_search::get_sa_entries:1077"]
     pub fn get_sa_entries__L1077(
         &self,
@@ -1386,6 +1566,18 @@ impl FMI_search {
     }
 
     // sa_compression
+    /// Resolve a single SA entry against the SA-compressed index
+    /// (compression factor `SA_COMPX`).
+    ///
+    /// Positions aligned to the `SA_COMPX_MASK` lattice are read directly
+    /// from `sa_ms_byte`/`sa_ls_word`; otherwise the BWT is walked one
+    /// position at a time until a compressed slot is hit, accumulating an
+    /// offset that is added to the stored entry. The sentinel base aborts
+    /// the walk with offset only.
+    ///
+    /// # Arguments
+    /// * `pos` - BWT position to resolve.
+    /// * `_tid` - thread id (unused in the Rust port; preserved for parity).
     #[doc = "Original function: FMI_search::get_sa_entry_compressed:1103"]
     #[inline]
     pub fn get_sa_entry_compressed(&self, pos: i64, _tid: i32) -> i64 {
@@ -1423,6 +1615,20 @@ impl FMI_search {
         }
     }
 
+    /// Expand each SMEM's BWT interval into up to `max_occ` genomic
+    /// coordinates using the SA-compressed lookup
+    /// ([`get_sa_entry_compressed`]).
+    ///
+    /// Same striding behaviour as the uncompressed variant; aggregates the
+    /// total coordinate count into `*coord_count_array`.
+    ///
+    /// # Arguments
+    /// * `smem_array` - input SMEMs.
+    /// * `coord_array` - destination coordinates.
+    /// * `coord_count_array` - running coordinate total; incremented by the count.
+    /// * `count` - number of SMEMs to process.
+    /// * `max_occ` - cap on coordinates emitted per SMEM.
+    /// * `tid` - thread id passed through to the compressed walker.
     #[doc = "Original function: FMI_search::get_sa_entries:1177"]
     pub fn get_sa_entries__L1177(
         &self,
@@ -1464,6 +1670,22 @@ impl FMI_search {
     }
 
     // SA_COMPRESSION w/ PREFETCH
+    /// Take one step of the SA-compressed BWT walk and report whether the
+    /// final SA entry is now known.
+    ///
+    /// If `pos` is aligned to a compressed SA slot, fills `*sa_entry` and
+    /// returns `1`. Otherwise decodes the BWT base, advances `pos`, and
+    /// returns `1` only when the next position is itself a compressed slot
+    /// (whose value is recorded with the accumulated `*offset` applied); it
+    /// returns `0` to signal that the caller must continue walking.
+    ///
+    /// # Arguments
+    /// * `pos` - current BWT position.
+    /// * `sa_entry` - resolved SA entry or next walk position, written in-place.
+    /// * `offset` - running offset accumulated during the walk.
+    ///
+    /// # Returns
+    /// `1` when `*sa_entry` holds a final SA value, `0` when the walk must continue.
     #[doc = "Original function: FMI_search::call_one_step:1202"]
     #[inline]
     pub fn call_one_step(&self, pos: i64, sa_entry: &mut i64, offset: &mut i64) -> i64 {
@@ -1503,6 +1725,24 @@ impl FMI_search {
         }
     }
 
+    /// Prefetch-aware variant of [`get_sa_entries__L1177`] that drives
+    /// [`call_one_step`] manually so the next walk's `cp_occ` line can be
+    /// warmed under the current step's latency.
+    ///
+    /// Buffers the per-SMEM positions and their destination indices in
+    /// thread-local scratch, then walks them in order, prefetching the next
+    /// position's `cp_occ` entry on `x86_64`. Updates `*coord_count_array`
+    /// with the total emitted count and accumulates the number of walks
+    /// driven into `*id_`.
+    ///
+    /// # Arguments
+    /// * `smem_array` - SMEMs to resolve.
+    /// * `coord_array` - destination genomic coordinates.
+    /// * `coord_count_array` - running coordinate total.
+    /// * `count` - number of SMEMs to process.
+    /// * `max_occ` - cap on coordinates emitted per SMEM.
+    /// * `_tid` - thread id, unused in the Rust port.
+    /// * `id_` - counter incremented by the number of walks started.
     #[doc = "Original function: FMI_search::get_sa_entries_prefetch:1257"]
     pub fn get_sa_entries_prefetch(
         &self,

@@ -71,9 +71,15 @@ fn raw_mapq(diff: i32, a: i32) -> i32 {
     (6.02 * (diff as f64) / (a as f64) + 0.499) as i32
 }
 
-// Infer relative orientation/distance of two mapping positions.
-// Returns a code in {0=FF, 1=FR, 2=RF, 3=RR} describing the orientation pair, and writes the
-// (always positive) signed distance to *dist.
+/// Infer the relative orientation and distance of two mapping positions.
+///
+/// # Arguments
+/// * `l_pac` - packed-reference length (single-strand)
+/// * `b1`, `b2` - reference coordinates of the two mates (in concatenated fwd|rev space)
+/// * `dist` - written with the (always non-negative) distance between the mates
+///
+/// # Returns
+/// Orientation code in `{0 = FF, 1 = FR, 2 = RF, 3 = RR}`.
 #[doc = "Original function: mem_infer_dir:58"]
 #[inline]
 pub fn mem_infer_dir(l_pac: i64, b1: i64, b2: i64, dist: &mut i64) -> i32 {
@@ -85,9 +91,11 @@ pub fn mem_infer_dir(l_pac: i64, b1: i64, b2: i64, dist: &mut i64) -> i32 {
     (if r1 == r2 { 0 } else { 1 }) ^ (if p2 > b1 { 0 } else { 3 })
 }
 
-// Walk the secondary hits to find the first one whose query-side overlap with the primary is
-// "significant" (>= mask_level * min overlap length). Returns that hit's score, or a floor
-// (min_seed_len * a) if no such hit exists — used as the subo for MAPQ calibration.
+/// Compute the suboptimal-alignment score used for MAPQ calibration.
+///
+/// Walks the secondary hits and returns the score of the first one whose query-side overlap
+/// with the primary is significant (overlap length >= `opt.mask_level * min(overlap length)`).
+/// Falls back to `opt.min_seed_len * opt.a` when no such secondary exists.
 #[doc = "Original function: cal_sub:67"]
 #[inline]
 pub fn cal_sub(opt: &mem_opt_t, r: &mem_alnreg_v) -> i32 {
@@ -107,12 +115,13 @@ pub fn cal_sub(opt: &mem_opt_t, r: &mem_alnreg_v) -> i32 {
     opt.min_seed_len * opt.a
 }
 
-// Estimate the paired-end insert-size distribution from a chunk of single-end alignment
-// candidates. For each of the four orientation classes (FF, FR, RF, RR) we collect the insert
-// sizes of pairs whose primary hits are confidently unique (no significant secondary overlap;
-// see cal_sub), then derive low/high cutoffs and mean+stddev from the 25/50/75 percentiles
-// after trimming with OUTLIER_BOUND * IQR. Orientations with too few supporting pairs or with
-// counts below MIN_DIR_RATIO of the dominant orientation are marked failed.
+/// Estimate the paired-end insert-size distribution from a chunk of SE candidates.
+///
+/// For each of the four orientation classes (FF, FR, RF, RR) collect insert sizes of pairs
+/// whose primary hits are confidently unique (no significant secondary overlap; see `cal_sub`),
+/// then derive low/high cutoffs and mean+stddev from the 25/50/75 percentiles after trimming
+/// with `OUTLIER_BOUND * IQR`. Orientations with too few supporting pairs or with counts below
+/// `MIN_DIR_RATIO` of the dominant orientation are marked failed.
 #[doc = "Original function: mem_pestat:81"]
 pub fn mem_pestat(
     opt: &mem_opt_t,
@@ -207,11 +216,15 @@ pub fn mem_pestat(
     }
 }
 
-// Mate-rescue Smith-Waterman: given one mate's best alignment `a`, search for the other mate by
-// extracting the genomic window around `a` for each orientation that has not already produced a
-// consistent pair in `ma`, then running ksw_align2. Any high-scoring hits are inserted into `ma`
-// (sorted by descending score) and the deduplication pass is run. Returns the number of
-// directions that ran SW.
+/// Mate-rescue Smith-Waterman.
+///
+/// Given one mate's best alignment `a`, search for the other mate by extracting the genomic
+/// window around `a` for each orientation that has not already produced a consistent pair in
+/// `ma`, then running `ksw_align2`. Any high-scoring hits are inserted into `ma` (sorted by
+/// descending score) and the deduplication pass is run.
+///
+/// # Returns
+/// The number of orientations for which SW was actually executed.
 #[doc = "Original function: mem_matesw:150"]
 pub fn mem_matesw(
     opt: &mem_opt_t,
@@ -477,13 +490,18 @@ fn take_pe_aa_pools() -> [Vec<mem_aln_t>; 2] {
     [a0, a1]
 }
 
-// Pair two reads' single-end candidate alignment sets into the best proper pair.
-// Build a flat list `v` keyed by (rid, forward-strand position) over both ends' primary hits,
-// sorted so a single sweep finds candidate pairs whose pair-distance falls in pes[dir].low..high.
-// For each candidate, compute a pair score = sum of single-end scores plus a Gaussian-fit
-// insert-size term (.721 * log(2 * erfc(|ns| / sqrt(2))) * opt.a, where ns is the size's z-score),
-// quantized with the (int)(x + 0.499) bias-and-truncate rule and clamped >= 0. Returns the best
-// pair score, writes z[0]/z[1] to the chosen indices, and reports subo/n_sub for MAPQ.
+/// Pair two reads' single-end candidate alignment sets into the best proper pair.
+///
+/// Builds a flat list keyed by `(rid, forward-strand position)` over both ends' primary hits,
+/// sorted so a single sweep finds candidate pairs whose distance falls in
+/// `pes[dir].low..high`. For each candidate, the pair score is the sum of SE scores plus a
+/// Gaussian-fit insert-size term
+/// `.721 * log(2 * erfc(|ns| / sqrt(2))) * opt.a`, where `ns` is the insert size's z-score,
+/// quantized with the C++ `(int)(x + 0.499)` bias-and-truncate rule and clamped to `>= 0`.
+///
+/// # Returns
+/// The best pair score. Writes `z[0]`/`z[1]` with the chosen indices and reports `subo`/`n_sub`
+/// for MAPQ calibration.
 #[doc = "Original function: mem_pair:285"]
 pub fn mem_pair(
     opt: &mem_opt_t,
@@ -627,13 +645,15 @@ fn mem_pair_inner(
     }
 }
 
-// Paired-end SAM-output entry point. Runs mate-rescue SW (mem_matesw) for each candidate above
-// the unpaired-penalty floor on each end (unless MEM_F_NO_RESCUE), then primary marking, then
-// pairing via mem_pair. If a proper pair survives the is_multi gate, compute MAPQs (raw_mapq
-// from o - subo, capped at 60, capped at the tandem-repeat score, plus a frac_rep haircut),
-// emit per-record SAM lines via mem_aln2sam. The "no_pairing" fallback emits two independent
-// SE-style records and may still flag them as a proper pair if their best hits land within
-// pes[d].low..high.
+/// Paired-end SAM-output entry point.
+///
+/// Runs mate-rescue SW (`mem_matesw`) for each candidate above the unpaired-penalty floor on
+/// each end (unless `MEM_F_NO_RESCUE`), then primary marking, then pairing via `mem_pair`. When
+/// a proper pair survives the multi-pair gate, MAPQs are computed (`raw_mapq` from `o - subo`,
+/// capped at 60, capped at the tandem-repeat score, plus a `frac_rep` haircut), and per-record
+/// SAM lines are emitted via `mem_aln2sam`. The "no_pairing" fallback emits two independent
+/// SE-style records and may still flag them as a proper pair if their best hits land within
+/// `pes[d].low..high`.
 #[doc = "Original function: mem_sam_pe:353"]
 pub fn mem_sam_pe(
     opt: &mem_opt_t,
@@ -1060,9 +1080,11 @@ pub fn mem_sam_pe(
     n
 }
 
-// Pre-pass for the batched mate-rescue path: enqueue every (pair, direction) SW job into the
-// thread-local SeqPair arrays in `mmc` so a later single SIMD pass (mem_sam_pe_batch) processes
-// them all at once. NEW, batching — replaces per-pair ksw_align2 calls.
+/// Pre-pass for the batched mate-rescue path.
+///
+/// Enqueues every `(pair, direction)` SW job into the thread-local `SeqPair` arrays in `mmc` so
+/// a later single SIMD pass (`mem_sam_pe_batch`) processes them all at once. NEW, batching —
+/// replaces per-pair `ksw_align2` calls.
 #[doc = "Original function: mem_sam_pe_batch_pre:553"]
 pub fn mem_sam_pe_batch_pre(
     opt: &mem_opt_t,
@@ -1120,7 +1142,10 @@ pub fn mem_sam_pe_batch_pre(
     1
 }
 
-// In-place reverse of the first `l` bytes of `s` (used to flip query/ref between SW phases).
+/// In-place reverse of the first `l` bytes of `s`.
+///
+/// Used to flip query / reference between Smith-Waterman phases in the batched mate-rescue
+/// path.
 #[doc = "Original function: revseq:604"]
 pub fn revseq(l: i32, s: &mut [u8]) {
     let l = l.max(0) as usize;
@@ -1131,10 +1156,12 @@ pub fn revseq(l: i32, s: &mut [u8]) {
     }
 }
 
-// Run the batched mate-rescue SW: equivalent to ksw_align2 but vectorized over many pairs at
-// once. Two-phase: phase-0 forward extension via getScores8/16 by size class, then reverse the
-// hit windows in place and run phase-1 to recover the start coordinates. Output goes into
-// `aln[]` indexed by SeqPair.regid.
+/// Run the batched mate-rescue Smith-Waterman.
+///
+/// Equivalent to `ksw_align2` but vectorized over many pairs at once. Two-phase: phase-0
+/// forward extension via `getScores8/16` by size class, then reverse the hit windows in place
+/// and run phase-1 to recover the start coordinates. Output goes into `aln` indexed by
+/// `SeqPair.regid`.
 #[doc = "Original function: mem_sam_pe_batch:612"]
 pub fn mem_sam_pe_batch(
     opt: &mem_opt_t,
@@ -1266,10 +1293,12 @@ pub fn mem_sam_pe_batch(
     1
 }
 
-// Post-pass for the batched mate-rescue path. Consumes the SIMD SW results in `myaln` produced
-// by mem_sam_pe_batch, then mirrors mem_sam_pe's pair scoring / MAPQ / SAM emission. The
-// `mem_matesw_batch_post` call replays each (pair, direction) using the cached aln (or falls
-// back to ksw_align2 when the pre-pass marked the slot as -1).
+/// Post-pass for the batched mate-rescue path.
+///
+/// Consumes the SIMD SW results in `myaln` produced by `mem_sam_pe_batch`, then mirrors
+/// `mem_sam_pe`'s pair scoring / MAPQ / SAM emission. The `mem_matesw_batch_post` call replays
+/// each `(pair, direction)` using the cached alignment (or falls back to `ksw_align2` when the
+/// pre-pass marked the slot as `-1`).
 #[doc = "Original function: mem_sam_pe_batch_post:713"]
 pub fn mem_sam_pe_batch_post(
     opt: &mem_opt_t,
@@ -1709,11 +1738,13 @@ pub fn mem_sam_pe_batch_post(
     n
 }
 
-// Batched variant of mem_matesw: instead of running ksw_align2 immediately, emit a SeqPair
-// describing the (mate seq, ref window) job into the per-thread seqPairArrayLeft128/seqBufLeft
-// arrays and record the resulting pcnt index in seqPairArrayAux[gcnt + r] (or -1 if skipped).
-// mem_sam_pe_batch then runs SIMD SW over all enqueued pairs and mem_matesw_batch_post consumes
-// the results.
+/// Batched variant of `mem_matesw`.
+///
+/// Instead of running `ksw_align2` immediately, emits a `SeqPair` describing the
+/// `(mate seq, ref window)` job into the per-thread `seqPairArrayLeft128` / `seqBufLeft` arrays
+/// and records the resulting `pcnt` index in `seqPairArrayAux[gcnt + r]` (or `-1` if skipped).
+/// `mem_sam_pe_batch` then runs SIMD SW over all enqueued pairs and `mem_matesw_batch_post`
+/// consumes the results.
 #[doc = "Original function: mem_matesw_batch_pre:930"]
 pub fn mem_matesw_batch_pre(
     opt: &mem_opt_t,
@@ -1921,10 +1952,12 @@ pub fn mem_matesw_batch_pre(
     pcnt
 }
 
-// Consume the batched SW results for one (pair, direction-quadruple) group. For each direction r,
-// look up the pcnt index recorded by mem_matesw_batch_pre in gar[gcnt + r]: if non-negative,
-// reuse myaln[index]; if -1 (rare re-routing case), fall back to a synchronous ksw_align2 here.
-// Successful alignments are inserted into ma sorted by descending score.
+/// Consume the batched SW results for one `(pair, direction-quadruple)` group.
+///
+/// For each direction `r`, look up the `pcnt` index recorded by `mem_matesw_batch_pre` in
+/// `gar[gcnt + r]`: if non-negative, reuse `myaln[index]`; if `-1` (rare re-routing case), fall
+/// back to a synchronous `ksw_align2` here. Successful alignments are inserted into `ma` sorted
+/// by descending score.
 #[doc = "Original function: mem_matesw_batch_post:1095"]
 pub fn mem_matesw_batch_post(
     opt: &mem_opt_t,

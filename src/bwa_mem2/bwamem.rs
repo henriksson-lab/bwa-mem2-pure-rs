@@ -677,6 +677,7 @@ fn stable_alnreg_hash(id: i64, p: &mem_alnreg_t) -> u64 {
     hash_64(x ^ u64::from(p.is_alt))
 }
 
+/// Compute the maximum allowed gap length for a query of the given length, capped at `2 * opt.w`.
 #[doc = "Original function: cal_max_gap:66"]
 #[inline]
 pub fn cal_max_gap(opt: &mem_opt_t, qlen: i32) -> i32 {
@@ -691,6 +692,7 @@ pub fn cal_max_gap(opt: &mem_opt_t, qlen: i32) -> i32 {
     }
 }
 
+/// Allocate and zero-initialize the per-thread SMEM auxiliary buffer array (`BATCH_SIZE` entries).
 #[doc = "Original function: smem_aux_init:80"]
 pub fn smem_aux_init() -> Vec<smem_aux_t> {
     let mut a = Vec::with_capacity(BATCH_SIZE);
@@ -700,6 +702,7 @@ pub fn smem_aux_init() -> Vec<smem_aux_t> {
     a
 }
 
+/// Free all per-entry working buffers in the SMEM auxiliary array and clear it.
 #[doc = "Original function: smem_aux_destroy:93"]
 pub fn smem_aux_destroy(a: &mut Vec<smem_aux_t>) {
     for item in a.iter_mut() {
@@ -711,6 +714,8 @@ pub fn smem_aux_destroy(a: &mut Vec<smem_aux_t>) {
     a.clear();
 }
 
+/// Allocate a `mem_opt_t` with BWA-MEM2 default parameters (match/mismatch scores, gap penalties,
+/// thresholds, thread count, etc.) and fill the substitution matrix via `bwa_fill_scmat`.
 #[doc = "Original function: mem_opt_init:107"]
 pub fn mem_opt_init() -> Box<mem_opt_t> {
     let mut o = Box::new(mem_opt_t::default());
@@ -751,11 +756,13 @@ pub fn mem_opt_init() -> Box<mem_opt_t> {
     o
 }
 
+/// Sort alignment regions in place by reference end position (ascending).
 #[doc = "Original function: sort_alnreg_re:162"]
 pub fn sort_alnreg_re(_n: i32, a: &mut [mem_alnreg_t]) {
     ks_introsort_mem_ars2(a);
 }
 
+/// Sort alignment regions in place by score (descending), with `rb`/`qb` as tiebreakers.
 #[doc = "Original function: sort_alnreg_score:166"]
 pub fn sort_alnreg_score(_n: i32, a: &mut [mem_alnreg_t]) {
     ks_introsort_mem_ars(a);
@@ -1030,6 +1037,10 @@ fn ks_introsort_mem_ars(a: &mut [mem_alnreg_t]) {
     }
 }
 
+/// Try to merge two alignment regions `a` and `b` by running a banded global alignment across
+/// the joined query and reference windows. Returns the merged score (and updates `*w_out` to the
+/// bandwidth used) if the merge is colinear, within the bandwidth limits, and the alignment score
+/// is within `PATCH_MIN_SC_RATIO` of the predicted score; otherwise returns 0.
 #[doc = "Original function: mem_patch_reg:175"]
 pub fn mem_patch_reg(
     opt: &mem_opt_t,
@@ -1109,6 +1120,8 @@ pub fn mem_patch_reg(
     score
 }
 
+/// De-duplicate overlapping alignment regions and merge near-collinear ones via `mem_patch_reg`.
+/// Assumes `a` is already sorted by reference end position. Returns the new count of survivors.
 #[doc = "Original function: mem_dedup_patch:239"]
 pub fn mem_dedup_patch(
     opt: &mem_opt_t,
@@ -1211,6 +1224,9 @@ pub fn mem_dedup_patch(
     n
 }
 
+/// Sort alignment regions by reference end position, run `mem_dedup_patch` to drop redundant
+/// hits and merge collinear ones, then re-sort by score and strip score-tied duplicates.
+/// Returns the final number of regions.
 #[doc = "Original function: mem_sort_dedup_patch:292"]
 pub fn mem_sort_dedup_patch(
     opt: &mem_opt_t,
@@ -1248,7 +1264,10 @@ pub fn mem_sort_dedup_patch(
     m as i32
 }
 
-// return 1 if the seed is merged into the chain
+/// Test whether seed `p` can be appended to chain `c` and merge it if so.
+///
+/// Returns 1 if the seed was merged (already-contained seeds also return 1), 0 if a new chain
+/// should be opened for it (different reference, opposite strand, or gap/bandwidth exceeded).
 #[doc = "Original function: test_and_merge:357"]
 #[inline]
 pub fn test_and_merge(
@@ -1306,6 +1325,9 @@ pub fn test_and_merge(
     0 // request to add a new chain
 }
 
+/// Score a seed by running a short Smith-Waterman extension over a `MEM_SHORT_EXT`-flanked window
+/// around the seed. Returns -1 if the seed is already long enough (no SW needed) or if the window
+/// would exceed `MEM_SHORT_LEN`; otherwise returns the local SW alignment score.
 #[doc = "Original function: mem_seed_sw:401"]
 #[inline]
 pub fn mem_seed_sw(
@@ -1406,6 +1428,8 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Compute a chain weight: the minimum of (sum of unique query coverage) and (sum of unique
+/// reference coverage) by the chain's seeds, capped at `(1<<30) - 1`.
 #[doc = "Original function: mem_chain_weight:429"]
 #[inline]
 pub fn mem_chain_weight(c: &mem_chain_t) -> i32 {
@@ -1572,6 +1596,8 @@ fn ks_introsort_mem_flt(a: &mut [mem_chain_t]) {
     }
 }
 
+/// Format the chain vector into a human-readable debug string (one line per chain plus seed
+/// summaries: score, length, query begin, reference begin, contig name, strand, contig position).
 #[doc = "Original function: mem_print_chain:450"]
 pub fn mem_print_chain(bns: &bntseq_t, chn: &[mem_chain_t]) -> String {
     let mut out = String::new();
@@ -1620,6 +1646,10 @@ thread_local! {
     )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
 }
 
+/// For each chain, drop short seeds whose `mem_seed_sw` score falls below `min_HSP_score`.
+/// Seeds shorter than `MEM_SHORT_LEN` get rescored by SW; longer seeds keep their length-based
+/// score. Short reads (where the minimum-length threshold exceeds `MEM_SEEDSW_COEF * l_query`)
+/// are skipped entirely.
 #[doc = "Original function: mem_flt_chained_seeds:472"]
 pub fn mem_flt_chained_seeds(
     opt: &mem_opt_t,
@@ -1665,6 +1695,10 @@ pub fn mem_flt_chained_seeds(
     }
 }
 
+/// Filter the chains array: weight each chain via `mem_chain_weight`, drop chains below
+/// `opt.min_chain_weight`, then within each per-read run sort by weight (descending) and shadow
+/// out overlapping chains. Caps the number of extended-survivor chains by `opt.max_chain_extend`
+/// (per upstream off-by-one semantics — see CLAUDE.md). Returns the surviving chain count.
 #[doc = "Original function: mem_chain_flt:506"]
 pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _tid: i32) -> i32 {
     if n_chn_ == 0 {
@@ -1809,6 +1843,11 @@ pub fn kv_push__L564(_arg0: crate::support::Opaque, _arg1: crate::support::Opaqu
     crate::support::stub::<()>("kv_push")
 }
 
+/// Collect SMEMs (Super-Maximal Exact Matches) for a batch of reads via the FM-index.
+///
+/// Runs three SMEM passes per read: the initial all-positions pass, a re-seeding pass at the
+/// midpoint of any SMEM longer than `split_len`, and (if `opt.max_mem_intv > 0`) a final
+/// long-MEM pass. Sorts SMEMs by `(rid, m, n)` and writes the total count to `tot_smem`.
 #[doc = "Original function: mem_collect_smem:626"]
 pub fn mem_collect_smem(
     fmi: &FMI_search,
@@ -1968,10 +2007,12 @@ pub fn mem_collect_smem(
     MEM_COLLECT_QUERY_CUM_LEN.with(|c| *c.borrow_mut() = query_cum_len_ar);
 }
 
-// NEW ONE — the reworked SA-to-reference chain assembler. For each read in `seq_`, iterates the
-// already-grouped SMEMs in `matchArray` (`getSMEMs* + sortSMEMs` upstream), pulls suffix-array
-// hits via `get_sa_entries_prefetch`, and feeds them through `test_and_merge` against a per-read
-// kbtree of chains. Identical to upstream's `mem_chain` plus the SA-prefetch optimization.
+/// NEW ONE — the reworked SA-to-reference chain assembler.
+///
+/// For each read in `seq_`, iterates the already-grouped SMEMs in `matchArray`
+/// (`getSMEMs* + sortSMEMs` upstream), pulls suffix-array hits via `get_sa_entries_prefetch`,
+/// and feeds them through `test_and_merge` against a per-read kbtree of chains. Identical to
+/// upstream's `mem_chain` plus the SA-prefetch optimization.
 #[doc = "Original function: mem_chain_seeds:806"]
 pub fn mem_chain_seeds(
     fmi: &FMI_search,
@@ -2386,6 +2427,13 @@ pub fn mem_chain_seeds(
     MEM_CHAIN_SEEDS_SA_COORD.with(|c| *c.borrow_mut() = sa_coord);
 }
 
+/// Per-thread kernel 1: SMEM collection and chain construction.
+///
+/// Runs `mem_collect_smem` for FM-index SMEM gathering, `mem_chain_seeds` for SA-to-reference
+/// chain assembly, `mem_chain_flt` for per-read chain filtering, then `mem_flt_chained_seeds`
+/// to score-filter per-chain seeds. Reallocates the per-thread working buffers
+/// (`matchArray`/`min_intv_ar`/`query_pos_ar`/`enc_qdb`/`rid`) when the cumulative read length
+/// exceeds the cached `wsize_mem` bound.
 #[doc = "Original function: mem_kernel1_core:976"]
 pub fn mem_kernel1_core(
     fmi: &FMI_search,
@@ -2519,6 +2567,11 @@ pub fn mem_kernel1_core(
     1
 }
 
+/// Per-thread kernel 2: banded Smith-Waterman extension across all reads/chains.
+///
+/// Runs `mem_chain2aln_across_reads_V2` to produce per-read alignment regions, frees the
+/// per-read chain seeds, collapses purged regions (`qe == qb`), de-duplicates/merges via
+/// `mem_sort_dedup_patch`, and finally tags ALT-contig hits with `is_alt = 1`.
 #[doc = "Original function: mem_kernel2_core:1093"]
 pub fn mem_kernel2_core(
     fmi: &FMI_search,
@@ -2652,6 +2705,7 @@ pub fn mem_kernel2_core(
     1
 }
 
+/// Worker entry point for the alignment kernel; dispatches a chunk of reads to `mem_kernel2_core`.
 #[doc = "Original function: worker_aln:1175"]
 pub fn worker_aln(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     let opt = data.opt.as_deref().expect("worker opt");
@@ -2671,7 +2725,10 @@ pub fn worker_aln(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     );
 }
 
-// Kernel, called by threads
+/// Worker entry point for the BWT/SMEM kernel, called by threads.
+///
+/// Lazily 2-bit-encodes each read's sequence into `seq_nt4` if not already populated, then
+/// dispatches a chunk to `mem_kernel1_core`.
 #[doc = "Original function: worker_bwt:1193"]
 pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     let opt = data.opt.as_deref().expect("worker opt");
@@ -2699,6 +2756,9 @@ pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     );
 }
 
+/// Partition the paired-end mate-SW pair array by SW score-byte width: 8-bit pairs go to
+/// the front of `seqPairArrayLeft128[tid]`, 16-bit pairs to the back. Returns the count of
+/// 8-bit pairs (i.e. the boundary index).
 #[doc = "Original function: sort_classify:1216"]
 pub fn sort_classify(mmc: &mut mem_cache, pcnt: i64, tid: i32) -> i64 {
     let tid_usize = tid as usize;
@@ -2733,6 +2793,12 @@ pub fn sort_classify(mmc: &mut mem_cache, pcnt: i64, tid: i32) -> i64 {
     pos8 as i64
 }
 
+/// Worker entry point for the SAM-emission kernel.
+///
+/// For paired-end input runs the batched mate-rescue pipeline (`mem_sam_pe_batch_pre` →
+/// `sort_classify` → `mem_sam_pe_batch` → `mem_sam_pe_batch_post`). For single-end input
+/// runs `mem_mark_primary_se` (plus optional `mem_reorder_primary5` under `-5`) then
+/// `mem_reg2sam` per read.
 #[doc = "Original function: worker_sam:1245"]
 pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
     if data.opt.as_ref().expect("worker opt missing").flag & MEM_F_PE != 0 {
@@ -2927,6 +2993,12 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
     }
 }
 
+/// Top-level batch driver: maps a chunk of `n` reads through the three kernels (BWT/SMEM,
+/// banded-SW extension, SAM emission) and infers PE insert-size statistics if applicable.
+///
+/// In paired-end mode the BWT and aln passes are fused per-chunk (the C++ runs them as two
+/// separate `kt_for` passes); insert-size distribution is inferred from data via `mem_pestat`
+/// when `pes0` is None.
 #[doc = "Original function: mem_process_seqs:1338"]
 pub fn mem_process_seqs(
     opt: &mut mem_opt_t,
@@ -3073,7 +3145,10 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
     *seqs = std::mem::take(&mut w.seqs);
 }
 
-// similar to the loop in mem_chain_flt()
+/// Core loop of single-end primary marking (similar to the inner loop in `mem_chain_flt`).
+///
+/// Walks the (score-sorted) regions and for each overlapping pair sets the later one's
+/// `secondary` index to the earlier one and accumulates `sub`/`sub_n` substitute-score stats.
 #[doc = "Original function: mem_mark_primary_se_core:1392"]
 pub fn mem_mark_primary_se_core(
     opt: &mem_opt_t,
@@ -3122,6 +3197,11 @@ pub fn kv_push__L1399(_arg0: crate::support::Opaque, _arg1: crate::support::Opaq
     crate::support::stub::<()>("kv_push")
 }
 
+/// Mark primary/secondary single-end alignments for one read.
+///
+/// Hashes IDs, sorts by score (with ALT preference and hash tiebreaker), runs
+/// `mem_mark_primary_se_core` to assign secondary pointers, then if ALT and non-ALT hits coexist
+/// repeats the primary pass restricted to non-ALT regions. Returns the count of non-ALT regions.
 #[doc = "Original function: mem_mark_primary_se:1420"]
 pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: i64) -> i32 {
     if n == 0 {
@@ -3210,6 +3290,12 @@ pub fn mem_mark_primary_se(opt: &mem_opt_t, n: i32, a: &mut [mem_alnreg_t], id: 
     n_pri
 }
 
+/// Compute an approximate single-end MAPQ for an alignment region.
+///
+/// Combines score margin over the suboptimal hit (`a.sub`/`a.csub`), alignment identity, and
+/// (when `opt.mapQ_coef_len > 0`) a length-scaled coefficient; penalises by `log(sub_n+1)`
+/// when multiple near-tie hits exist; clamps to `[0, MEM_MAPQ_MAX]`; finally scales by
+/// `(1 - frac_rep)` to discount repeat-heavy alignments. Returns 0 for unmapped/sub>=score.
 #[doc = "Original function: mem_approx_mapq_se:1470"]
 #[inline]
 pub fn mem_approx_mapq_se(opt: &mem_opt_t, a: &mem_alnreg_t) -> i32 {
@@ -3251,6 +3337,9 @@ pub fn mem_approx_mapq_se(opt: &mem_opt_t, a: &mem_alnreg_t) -> i32 {
     (f64::from(mapq) * (1.0 - f64::from(a.frac_rep)) + 0.499) as i32
 }
 
+/// Re-pick the primary alignment to be the 5'-most non-ALT region scoring at least `T`, and
+/// rewrite `secondary`/`secondary_all` pointers to reflect the swap. No-op if there's only
+/// one primary candidate or if the leftmost is already at index 0. Used under `-5`.
 #[doc = "Original function: mem_reorder_primary5:1496"]
 #[inline]
 pub fn mem_reorder_primary5(T: i32, a: &mut mem_alnreg_v) {
@@ -3290,7 +3379,14 @@ pub fn mem_reorder_primary5(T: i32, a: &mut mem_alnreg_v) {
     }
 }
 
-// TODO (future plan): group hits into a uint64_t[] array. This will be cleaner and more flexible
+/// Convert a read's `mem_alnreg_v` into SAM record text on `s.sam`.
+///
+/// Filters out below-threshold and unwanted-secondary regions, runs `mem_reg2aln` on each
+/// surviving region to recover CIGAR/MD/MAPQ, optionally generates XA alt-hit tags, and writes
+/// `mem_aln2sam` lines into a `kstring_t`. If no region passes the threshold, emits an unmapped
+/// record instead.
+///
+/// TODO (future plan): group hits into a `Vec<u64>` array — cleaner and more flexible.
 #[doc = "Original function: mem_reg2sam:1521"]
 pub fn mem_reg2sam(
     opt: &mem_opt_t,
@@ -3395,6 +3491,8 @@ pub fn mem_reg2sam(
     MEM_REG2SAM_AA_SCRATCH.with(|c| *c.borrow_mut() = aa);
 }
 
+/// Append the CIGAR string for an alignment to `str_`, rewriting soft/hard clips for
+/// supplementary records and emitting `*` for unaligned alignments.
 #[doc = "Original function: add_cigar:1579"]
 #[inline]
 pub fn add_cigar(
@@ -3437,6 +3535,12 @@ pub fn add_cigar_fields(
     }
 }
 
+/// Format one alignment (`list[which]`) into a SAM record and append it to `str_`.
+///
+/// Sets the SAM flag bits from primary/secondary/supplementary, paired/mate-mapped/strand state;
+/// emits the eleven mandatory fields (QNAME, FLAG, RNAME, POS, MAPQ, CIGAR, mate RNAME/POS/TLEN,
+/// SEQ, QUAL); then the optional `NM:i:`, `MD:Z:`, `AS:i:`, `XS:i:`, `RG:Z:`, `SA:Z:`, `XA:Z:`,
+/// `XR:Z:` and supplementary-alignment tags. Used by both single-end and paired-end SAM output.
 #[doc = "Original function: mem_aln2sam:1592"]
 pub fn mem_aln2sam(
     opt: &mem_opt_t,
@@ -3793,6 +3897,13 @@ pub fn mem_aln2sam(
     kputc(i32::from(b'\n'), str_);
 }
 
+/// Build a `mem_aln_t` (CIGAR/MD/MAPQ/NM/position) for one alignment region.
+///
+/// Returns an unmapped record (`rid = -1`, `flag |= 0x4`) when `ar` is None or has negative
+/// coordinates. Otherwise runs `bwa_gen_cigar2` (retrying with widening bandwidth up to 3 times
+/// when the global SW score disagrees with `ar.truesc`), squeezes leading/trailing deletions,
+/// then adds 5'/3' clipping ops for unaligned query flanks. Computes MAPQ via
+/// `mem_approx_mapq_se` for primary regions only.
 #[doc = "Original function: mem_reg2aln:1732"]
 pub fn mem_reg2aln(
     opt: &mem_opt_t,
@@ -3934,6 +4045,10 @@ pub fn mem_reg2aln(
     a
 }
 
+/// Infer the SW bandwidth required to recover a score `score` from two sequences of length
+/// `l1`/`l2` under match score `a` and gap open/extend `q`/`r`. Returns 0 when `l1 == l2` and
+/// the score is within two-gaps of the perfect-match upper bound; otherwise the bandwidth
+/// derived from the score gap, clamped to at least `|l1 - l2|`.
 #[doc = "Original function: infer_bw:1811"]
 #[inline]
 pub fn infer_bw(l1: i32, l2: i32, score: i32, a: i32, q: i32, r: i32) -> i32 {
@@ -3948,6 +4063,7 @@ pub fn infer_bw(l1: i32, l2: i32, score: i32, a: i32, q: i32, r: i32) -> i32 {
     w
 }
 
+/// Sum reference-consuming CIGAR ops (M, D) to compute the reference span of an alignment.
 #[doc = "Original function: get_rlen:1820"]
 #[inline]
 pub fn get_rlen(n_cigar: i32, cigar: &[u32]) -> i32 {
@@ -3961,6 +4077,9 @@ pub fn get_rlen(n_cigar: i32, cigar: &[u32]) -> i32 {
     l
 }
 
+/// Reallocate `ptr` from `csize` to `nsize` elements (grow-only — shrinking is unsupported and
+/// returns the input unchanged), zero-filling the new tail and copying the existing contents.
+/// The C++ original returns a 64-byte-aligned pointer; Rust uses a `Vec<T>`.
 #[doc = "Original function: _mm_realloc:1834"]
 pub fn mm_realloc<T: Copy + Default>(ptr: &[T], csize: i64, nsize: i64, _dsize: i16) -> Vec<T> {
     if nsize <= csize {
@@ -3972,8 +4091,12 @@ pub fn mm_realloc<T: Copy + Default>(ptr: &[T], csize: i64, nsize: i64, _dsize: 
     nptr
 }
 
-// NOTE: shift these new version of functions from bntseq.cpp to bntseq.cpp,
-// once they are incorporated in the code.
+/// Return a reference-strand slice of `ref_string` covering `[beg, end)`, normalising the
+/// window to `[0, 2*l_pac)`. Returns `None` (with `*len = 0`) if the window bridges the
+/// forward-reverse boundary, since the C++ version drops such requests.
+///
+/// NOTE: shift these new version of functions from `bntseq.cpp` to `bntseq.cpp` once they
+/// are incorporated in the code.
 #[doc = "Original function: bns_get_seq_v2:1851"]
 #[inline]
 pub fn bns_get_seq_v2<'a>(
@@ -4009,6 +4132,9 @@ pub fn bns_get_seq_v2<'a>(
     seq
 }
 
+/// Resolve the reference contig containing `mid`, clamp `[*beg, *end)` to that contig's bounds
+/// (flipping to the reverse strand if `mid` lies on the reverse half), and return a slice of
+/// `ref_string` over the resulting window. Writes the contig id into `*rid`.
 #[doc = "Original function: bns_fetch_seq_v2:1890"]
 #[inline]
 pub fn bns_fetch_seq_v2<'a>(
@@ -4048,6 +4174,10 @@ pub fn bns_fetch_seq_v2<'a>(
     seq.expect("sequence window")
 }
 
+/// Bucket-sort SW seq-pairs into three score-byte-width classes (8-bit / 16-bit / scalar
+/// long-pair fallback) using a histogram on `h0 + min(len1, len2) * score_a`. Writes the
+/// per-class counts to `numPairs128`/`numPairs16`/`numPairs1` and partitions `pairArray`
+/// in place via `tempArray`.
 #[doc = "Original function: sortPairsLenExt:1926"]
 pub fn sortPairsLenExt(
     pairArray: &mut [SeqPair],
@@ -4139,6 +4269,8 @@ pub fn sortPairsLenExt(
     pairArray[..count].copy_from_slice(&tempArray[..count]);
 }
 
+/// Counting-sort the SW seq-pairs by `len1` ascending (histogram + cumulative-sum + scatter
+/// through `tempArray`). Used to batch same-length pairs together for the SIMD SW kernels.
 #[doc = "Original function: sortPairsLen:2025"]
 #[inline]
 pub fn sortPairsLen(
@@ -4209,7 +4341,14 @@ thread_local! {
     static USE_CURRENT_RAYON_POOL: Cell<bool> = const { Cell::new(false) };
 }
 
-// Restructured BSW parent function
+/// Restructured banded Smith-Waterman parent function: convert every chain in `chain_ar` into
+/// one or more alignment regions in `av_v`.
+///
+/// For each read, sorts chains/seeds by score, sets up left/right extension `SeqPair` batches
+/// (split into 128/16/scalar by `sortPairsLenExt`), invokes the SIMD u8/i16 SW kernels in
+/// `BandedPairWiseSW`, and folds the resulting scores back into the per-chain `mem_alnreg_t`s.
+/// Reuses thread-local scratch buffers (`Chain2alnScratch`) across calls to amortise the
+/// large per-call allocations (`left_pairs`/`right_pairs`/seq buffers).
 #[doc = "Original function: mem_chain2aln_across_reads_V2:2069"]
 pub fn mem_chain2aln_across_reads_V2(
     opt: &mem_opt_t,

@@ -20,6 +20,8 @@ fn usage_text() -> &'static str {
     "Usage: bwa-mem2 <command> <arguments>\nCommands:\n  index         create index\n  mem           alignment\n  version       print version number\n"
 }
 
+/// Print the top-level `bwa-mem2 <command> <arguments>` usage banner to
+/// stderr and return `1`. Matches `usage` in `bwa-mem2/src/main.cpp`.
 #[doc = "Original function: usage:43"]
 pub fn usage() -> i32 {
     eprint!("{}", usage_text());

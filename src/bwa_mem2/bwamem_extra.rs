@@ -35,6 +35,9 @@ pub struct __smem_i {
     pub tmpvec: [Box<bwtintv_v>; 2],
 }
 
+/// Initialise an SMEM iterator bound to a BWT, with default `min_intv=1`,
+/// `max_len=INT_MAX` and `max_intv=0`. The query is set separately via
+/// [`smem_set_query`].
 #[doc = "Original function: smem_itr_init:52"]
 pub fn smem_itr_init(bwt: &bwt_t) -> __smem_i {
     __smem_i {
@@ -54,9 +57,14 @@ pub fn smem_itr_init(bwt: &bwt_t) -> __smem_i {
     }
 }
 
+/// Destroy an SMEM iterator. In upstream C++ this frees the per-iterator
+/// scratch `bwtintv_v` buffers; the Rust port relies on `Drop` and only needs
+/// to consume the value.
 #[doc = "Original function: smem_itr_destroy:67"]
 pub fn smem_itr_destroy(_itr: __smem_i) {}
 
+/// Bind a 2-bit-encoded query of length `len` to the iterator and rewind the
+/// scan cursor to position 0.
 #[doc = "Original function: smem_set_query:76"]
 pub fn smem_set_query(itr: &mut __smem_i, len: i32, query: &[u8]) {
     itr.query = query[..usize::try_from(len).expect("len")].to_vec();
@@ -64,6 +72,8 @@ pub fn smem_set_query(itr: &mut __smem_i, len: i32, query: &[u8]) {
     itr.len = len;
 }
 
+/// Override the iterator's SMEM filtering thresholds (minimum SA interval
+/// size, maximum match length, maximum SA interval).
 #[doc = "Original function: smem_config:83"]
 pub fn smem_config(itr: &mut __smem_i, min_intv: i32, max_len: i32, max_intv: u64) {
     itr.min_intv = min_intv;
@@ -107,6 +117,9 @@ pub fn mem_align1(
     panic!("mem_align1 is inside #if 0 in upstream bwa-mem2/src/bwamem_extra.cpp")
 }
 
+/// Return the index of the primary alignment that hit `i` should be reported
+/// under in the `XA` tag, or `-1` if it shouldn't be reported. Requires the
+/// alignment's score to exceed the primary's by at least `XA_drop_ratio`.
 #[doc = "Original function: get_pri_idx:122"]
 pub fn get_pri_idx(XA_drop_ratio: f64, a: &[mem_alnreg_t], i: i32) -> i32 {
     let i = i as usize;
@@ -125,10 +138,17 @@ thread_local! {
         std::cell::RefCell::new((Vec::new(), Vec::new(), kstring_t::default(), Vec::new()));
 }
 
-// Okay, returning strings is bad, but this has happened a lot elsewhere. If I have
-// time, I need serious code cleanup. (comment carried from upstream C++)
-//
-// ONLY works after `mem_mark_primary_se()`.
+/// Build the per-primary `XA:Z:` SAM-tag strings for each alignment in `a`.
+///
+/// Returns a vector with one entry per element of `a`: `Some(xa)` for primary
+/// hits whose secondaries qualify, `None` otherwise. Each `XA` entry is a
+/// `;`-terminated list of `chr,pos,cigar,NM` tuples summarising the
+/// secondaries that hit the same primary.
+///
+/// ONLY works after `mem_mark_primary_se()`.
+///
+/// (Upstream comment: "Okay, returning strings is bad, but this has happened
+/// a lot elsewhere. If I have time, I need serious code cleanup.")
 #[doc = "Original function: mem_gen_alt:130"]
 pub fn mem_gen_alt(
     opt: &mem_opt_t,
