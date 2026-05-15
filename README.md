@@ -29,6 +29,23 @@ But:
 
 This blurb might be out of date. Go to [this page](https://github.com/henriksson-lab/rustification) for the latest information and further information about how we approach translation
 
+## Building the Binary
+
+A release build is required — the workload is CPU-bound and a debug build is roughly an order of magnitude slower.
+
+```sh
+cargo build --release --bin bwa-mem2-rs
+```
+
+The binary is written to `target/release/bwa-mem2-rs` and mirrors the upstream subcommands:
+
+```sh
+./target/release/bwa-mem2-rs index [-p prefix] <ref.fa>
+./target/release/bwa-mem2-rs mem -t <threads> -o out.sam <prefix> <r1.fq> [r2.fq]
+```
+
+mimalloc is enabled by default; opt out with `cargo build --release --bin bwa-mem2-rs --no-default-features`. For profiling builds that keep release optimizations plus debug symbols, use the `profiling` profile: `cargo build --profile profiling --bin bwa-mem2-rs` (output at `target/profiling/bwa-mem2-rs`).
+
 ## Library Usage
 
 Add the crate to your `Cargo.toml`:
