@@ -1,3 +1,7 @@
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
 

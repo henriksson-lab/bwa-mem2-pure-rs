@@ -1,6 +1,6 @@
 [package]
 name = "bwa-mem2-pure-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 autobins = false
 description = "Faithful Rust translation of bwa-mem2 for Burrows-Wheeler based sequence alignment"
@@ -43,7 +43,12 @@ clap = { version = "4", features = ["derive"] }
 cpu-time = "1.0"
 flate2 = "1"
 libc = "0.2"
+mimalloc = { version = "0.1", default-features = false, optional = true }
 rayon = "1.10"
+
+[features]
+default = ["mimalloc"]
+mimalloc = ["dep:mimalloc"]
 
 [profile.release]
 lto = "fat"
