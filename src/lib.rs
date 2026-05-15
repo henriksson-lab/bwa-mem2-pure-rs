@@ -5,7 +5,7 @@
     non_upper_case_globals
 )]
 
-pub mod generated;
+pub mod bwa_mem2;
 pub mod mem_api;
 pub mod output;
 pub mod support;

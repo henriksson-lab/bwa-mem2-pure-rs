@@ -1,6 +1,6 @@
 [package]
 name = "bwa-mem2-pure-rs"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 autobins = false
 description = "Faithful Rust translation of bwa-mem2 for Burrows-Wheeler based sequence alignment"
@@ -19,7 +19,7 @@ include = [
     "/src/output.rs",
     "/src/support.rs",
     "/src/bin/bwa-mem2-rs.rs",
-    "/src/generated/**",
+    "/src/bwa_mem2/**",
     "/scripts/benchmark-real-data.sh",
     "/scripts/conformance-bwa.sh",
     "/scripts/conformance-real-data-matrix.sh",

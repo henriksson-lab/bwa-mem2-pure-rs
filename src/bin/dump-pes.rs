@@ -1,11 +1,11 @@
-use bwa_mem2_rs::generated::bwa_cpp::bseq_read_orig;
-use bwa_mem2_rs::generated::bwamem_cpp::mem_opt_init;
-use bwa_mem2_rs::generated::bwamem_cpp::mem_process_seqs;
-use bwa_mem2_rs::generated::bwamem_h::worker_t;
-use bwa_mem2_rs::generated::fastmap_cpp::memoryAlloc;
-use bwa_mem2_rs::generated::fastmap_h::ktp_aux_t;
-use bwa_mem2_rs::generated::fmi_search_cpp::FMI_search;
-use bwa_mem2_rs::generated::kseq_h::kseq_t;
+use bwa_mem2_rs::bwa_mem2::bwa::bseq_read_orig;
+use bwa_mem2_rs::bwa_mem2::bwamem::mem_opt_init;
+use bwa_mem2_rs::bwa_mem2::bwamem::mem_process_seqs;
+use bwa_mem2_rs::bwa_mem2::bwamem::worker_t;
+use bwa_mem2_rs::bwa_mem2::fastmap::memoryAlloc;
+use bwa_mem2_rs::bwa_mem2::fastmap::ktp_aux_t;
+use bwa_mem2_rs::bwa_mem2::fmi_search::FMI_search;
+use bwa_mem2_rs::bwa_mem2::kseq::kseq_t;
 
 fn main() {
     let mut args = std::env::args().skip(1);

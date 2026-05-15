@@ -1,11 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::generated::bntseq_h::bntseq_t;
-use crate::generated::bwa_h::bseq1_t;
-use crate::generated::bwamem_cpp::{mem_opt_init, mem_process_seqs, with_current_rayon_pool};
-use crate::generated::bwamem_h::{mem_opt_t, worker_t};
-use crate::generated::fmi_search_cpp::FMI_search;
+use crate::bwa_mem2::bntseq::bntseq_t;
+use crate::bwa_mem2::bwa::bseq1_t;
+use crate::bwa_mem2::bwamem::{mem_opt_init, mem_process_seqs, with_current_rayon_pool};
+use crate::bwa_mem2::bwamem::{mem_opt_t, worker_t};
+use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::output::RunOutput;
 
 const MEM_F_PE: i32 = 0x2;
@@ -272,8 +272,8 @@ mod tests {
     use super::MemAligner;
     use super::MemAlignerBuilder;
     use super::MemReadPair;
-    use crate::generated::bntseq_cpp::bns_fasta2bntseq;
-    use crate::generated::fmi_search_cpp::FMI_search;
+    use crate::bwa_mem2::bntseq::bns_fasta2bntseq;
+    use crate::bwa_mem2::fmi_search::FMI_search;
     use crate::output::{RunOutput, SharedWriterOutput};
     use rayon::ThreadPoolBuilder;
     use std::fs;

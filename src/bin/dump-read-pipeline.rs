@@ -1,14 +1,14 @@
-use bwa_mem2_rs::generated::bwa_cpp::bseq_read_orig;
-use bwa_mem2_rs::generated::bwamem_cpp::{
+use bwa_mem2_rs::bwa_mem2::bwa::bseq_read_orig;
+use bwa_mem2_rs::bwa_mem2::bwamem::{
     mem_chain_flt, mem_chain_seeds, mem_collect_smem, mem_flt_chained_seeds, mem_mark_primary_se,
     mem_opt_init, worker_aln, worker_bwt,
 };
-use bwa_mem2_rs::generated::bwamem_h::mem_chain_v;
-use bwa_mem2_rs::generated::bwamem_h::worker_t;
-use bwa_mem2_rs::generated::fastmap_cpp::memoryAlloc;
-use bwa_mem2_rs::generated::fastmap_h::ktp_aux_t;
-use bwa_mem2_rs::generated::fmi_search_cpp::FMI_search;
-use bwa_mem2_rs::generated::kseq_h::kseq_t;
+use bwa_mem2_rs::bwa_mem2::bwamem::mem_chain_v;
+use bwa_mem2_rs::bwa_mem2::bwamem::worker_t;
+use bwa_mem2_rs::bwa_mem2::fastmap::memoryAlloc;
+use bwa_mem2_rs::bwa_mem2::fastmap::ktp_aux_t;
+use bwa_mem2_rs::bwa_mem2::fmi_search::FMI_search;
+use bwa_mem2_rs::bwa_mem2::kseq::kseq_t;
 
 fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
     let l_pac_usize = usize::try_from(l_pac).expect("l_pac");

@@ -1,18 +1,18 @@
-use bwa_mem2_pure_rs::generated::bwa_cpp::{bseq_read_orig, bwa_fill_scmat};
-use bwa_mem2_pure_rs::generated::bwa_h::bseq1_t;
-use bwa_mem2_pure_rs::generated::bwamem_cpp::{
+use bwa_mem2_pure_rs::bwa_mem2::bwa::{bseq_read_orig, bwa_fill_scmat};
+use bwa_mem2_pure_rs::bwa_mem2::bwa::bseq1_t;
+use bwa_mem2_pure_rs::bwa_mem2::bwamem::{
     mem_chain2aln_across_reads_V2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt,
 };
-use bwa_mem2_pure_rs::generated::bwamem_h::worker_t;
-use bwa_mem2_pure_rs::generated::bwamem_h::{mem_alnreg_v, mem_chain_v, mem_seed_t};
-use bwa_mem2_pure_rs::generated::bwamem_pair_cpp::{
+use bwa_mem2_pure_rs::bwa_mem2::bwamem::worker_t;
+use bwa_mem2_pure_rs::bwa_mem2::bwamem::{mem_alnreg_v, mem_chain_v, mem_seed_t};
+use bwa_mem2_pure_rs::bwa_mem2::bwamem_pair::{
     mem_pair, mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
 };
-use bwa_mem2_pure_rs::generated::fastmap_cpp::{memoryAlloc, update_a};
-use bwa_mem2_pure_rs::generated::fastmap_h::ktp_aux_t;
-use bwa_mem2_pure_rs::generated::fmi_search_cpp::FMI_search;
-use bwa_mem2_pure_rs::generated::kseq_h::kseq_t;
-use bwa_mem2_pure_rs::generated::ksw_h::kswr_t;
+use bwa_mem2_pure_rs::bwa_mem2::fastmap::{memoryAlloc, update_a};
+use bwa_mem2_pure_rs::bwa_mem2::fastmap::ktp_aux_t;
+use bwa_mem2_pure_rs::bwa_mem2::fmi_search::FMI_search;
+use bwa_mem2_pure_rs::bwa_mem2::kseq::kseq_t;
+use bwa_mem2_pure_rs::bwa_mem2::ksw::kswr_t;
 
 fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
     let l_pac_usize = usize::try_from(l_pac).expect("l_pac");
@@ -123,7 +123,7 @@ fn main() {
     worker.chain_ar.resize(n_usize, mem_chain_v::default());
     let want_seed_buf = usize::try_from(worker.nthreads.max(1))
         .expect("nthreads")
-        .saturating_mul(bwa_mem2_pure_rs::generated::macro_h::BATCH_SIZE)
+        .saturating_mul(bwa_mem2_pure_rs::bwa_mem2::r#macro::BATCH_SIZE)
         .saturating_mul(64);
     worker.seedBuf.resize(want_seed_buf, mem_seed_t::default());
     {

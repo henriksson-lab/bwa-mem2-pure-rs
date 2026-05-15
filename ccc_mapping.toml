@@ -1,7 +1,7 @@
 [[entries]]
 rust = "ctor"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 63
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 228
 rust_class = "FMI_search"
 other = "FMI_search::FMI_search"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -9,8 +9,8 @@ other_line = 44
 
 [[entries]]
 rust = "dtor"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 77
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 243
 rust_class = "FMI_search"
 other = "FMI_search::~FMI_search"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -18,8 +18,8 @@ other_line = 58
 
 [[entries]]
 rust = "pac_seq_len"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 87
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 252
 rust_class = "FMI_search"
 other = "FMI_search::pac_seq_len"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -27,8 +27,8 @@ other_line = 70
 
 [[entries]]
 rust = "pac2nt"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 97
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 263
 rust_class = "FMI_search"
 other = "FMI_search::pac2nt"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -36,8 +36,8 @@ other_line = 83
 
 [[entries]]
 rust = "build_fm_index"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 129
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 296
 rust_class = "FMI_search"
 other = "FMI_search::build_fm_index"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -45,8 +45,8 @@ other_line = 144
 
 [[entries]]
 rust = "build_index"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 227
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 491
 rust_class = "FMI_search"
 other = "FMI_search::build_index"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -54,8 +54,8 @@ other_line = 306
 
 [[entries]]
 rust = "load_index"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 273
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 540
 rust_class = "FMI_search"
 other = "FMI_search::load_index"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -63,8 +63,8 @@ other_line = 384
 
 [[entries]]
 rust = "getSMEMsOnePosOneThread"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 389
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 620
 rust_class = "FMI_search"
 other = "FMI_search::getSMEMsOnePosOneThread"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -72,8 +72,8 @@ other_line = 496
 
 [[entries]]
 rust = "getSMEMsAllPosOneThread"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 537
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 893
 rust_class = "FMI_search"
 other = "FMI_search::getSMEMsAllPosOneThread"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -81,8 +81,8 @@ other_line = 672
 
 [[entries]]
 rust = "bwtSeedStrategyAllPosOneThread"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 399
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 951
 rust_class = "FMI_search"
 other = "FMI_search::bwtSeedStrategyAllPosOneThread"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -90,8 +90,8 @@ other_line = 726
 
 [[entries]]
 rust = "getSMEMs"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 664
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1026
 rust_class = "FMI_search"
 other = "FMI_search::getSMEMs"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -99,16 +99,16 @@ other_line = 815
 
 [[entries]]
 rust = "compare_smem"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 89
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 210
 other = "compare_smem"
 other_path = "bwa-mem2/src/FMI_search.cpp"
 other_line = 987
 
 [[entries]]
 rust = "sortSMEMs"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 407
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1210
 rust_class = "FMI_search"
 other = "FMI_search::sortSMEMs"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -116,8 +116,8 @@ other_line = 1008
 
 [[entries]]
 rust = "backwardExt"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 395
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1230
 rust_class = "FMI_search"
 other = "FMI_search::backwardExt"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -125,8 +125,8 @@ other_line = 1025
 
 [[entries]]
 rust = "get_sa_entry"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 372
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1321
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entry"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -134,8 +134,8 @@ other_line = 1054
 
 [[entries]]
 rust = "get_sa_entries__L1062"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 409
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1333
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entries"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -143,8 +143,8 @@ other_line = 1062
 
 [[entries]]
 rust = "get_sa_entries__L1077"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 426
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1350
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entries"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -152,8 +152,8 @@ other_line = 1077
 
 [[entries]]
 rust = "get_sa_entry_compressed"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 391
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1391
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entry_compressed"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -161,8 +161,8 @@ other_line = 1103
 
 [[entries]]
 rust = "get_sa_entries__L1177"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 451
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1427
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entries"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -170,8 +170,8 @@ other_line = 1177
 
 [[entries]]
 rust = "call_one_step"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 491
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1469
 rust_class = "FMI_search"
 other = "FMI_search::call_one_step"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -179,8 +179,8 @@ other_line = 1202
 
 [[entries]]
 rust = "get_sa_entries_prefetch"
-rust_path = "src/generated/fmi_search_cpp.rs"
-rust_line = 527
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 1507
 rust_class = "FMI_search"
 other = "FMI_search::get_sa_entries_prefetch"
 other_path = "bwa-mem2/src/FMI_search.cpp"
@@ -188,16 +188,16 @@ other_line = 1257
 
 [[entries]]
 rust = "mm_countbits_64"
-rust_path = "src/generated/fmi_search_h.rs"
-rust_line = 61
+rust_path = "src/bwa_mem2/fmi_search.rs"
+rust_line = 47
 other = "_mm_countbits_64"
 other_path = "bwa-mem2/src/FMI_search.h"
 other_line = 61
 
 [[entries]]
 rust = "ctor"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 50
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3751
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::BandedPairWiseSW"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -205,8 +205,8 @@ other_line = 50
 
 [[entries]]
 rust = "dtor"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 97
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3789
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::~BandedPairWiseSW"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -214,8 +214,8 @@ other_line = 97
 
 [[entries]]
 rust = "getTicks"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 102
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3794
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getTicks"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -223,8 +223,8 @@ other_line = 102
 
 [[entries]]
 rust = "scalarBandedSWA"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 252
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3803
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::scalarBandedSWA"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -232,8 +232,8 @@ other_line = 116
 
 [[entries]]
 rust = "scalarBandedSWAWrapper"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 402
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4041
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::scalarBandedSWAWrapper"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -241,24 +241,24 @@ other_line = 242
 
 [[entries]]
 rust = "sortPairsLen__L356"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 66
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3427
 other = "sortPairsLen"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 356
 
 [[entries]]
 rust = "sortPairsId__L393"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 71
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3437
 other = "sortPairsId"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 393
 
 [[entries]]
 rust = "getScores8__L412"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 431
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4086
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -266,8 +266,8 @@ other_line = 412
 
 [[entries]]
 rust = "smithWatermanBatchWrapper8__L436"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 444
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4099
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -275,8 +275,8 @@ other_line = 436
 
 [[entries]]
 rust = "smithWaterman256_8"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 457
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4112
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman256_8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -284,8 +284,8 @@ other_line = 713
 
 [[entries]]
 rust = "getScores16__L1117"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 482
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4138
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -293,8 +293,8 @@ other_line = 1117
 
 [[entries]]
 rust = "smithWatermanBatchWrapper16__L1143"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 495
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4151
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -302,8 +302,8 @@ other_line = 1143
 
 [[entries]]
 rust = "smithWaterman256_16"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 508
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4164
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman256_16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -311,24 +311,24 @@ other_line = 1412
 
 [[entries]]
 rust = "sortPairsLen__L1909"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 76
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3447
 other = "sortPairsLen"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 1909
 
 [[entries]]
 rust = "sortPairsId__L1952"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 87
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3458
 other = "sortPairsId"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 1952
 
 [[entries]]
 rust = "getScores8__L1970"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 533
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4190
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -336,8 +336,8 @@ other_line = 1970
 
 [[entries]]
 rust = "smithWatermanBatchWrapper8__L1997"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 546
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4203
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -345,8 +345,8 @@ other_line = 1997
 
 [[entries]]
 rust = "smithWaterman512_8"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 559
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4216
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman512_8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -354,8 +354,8 @@ other_line = 2263
 
 [[entries]]
 rust = "getScores16__L2664"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 584
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4241
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -363,8 +363,8 @@ other_line = 2664
 
 [[entries]]
 rust = "smithWatermanBatchWrapper16__L2690"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 597
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4254
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -372,8 +372,8 @@ other_line = 2690
 
 [[entries]]
 rust = "smithWaterman512_16"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 610
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4267
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman512_16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -381,32 +381,32 @@ other_line = 2962
 
 [[entries]]
 rust = "mm_blendv_epi16"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 92
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3471
 other = "_mm_blendv_epi16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 3364
 
 [[entries]]
 rust = "sortPairsLen__L3410"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 97
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3482
 other = "sortPairsLen"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 3410
 
 [[entries]]
 rust = "sortPairsId__L3448"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 108
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3493
 other = "sortPairsId"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 3448
 
 [[entries]]
 rust = "getScores16__L3469"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 635
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4293
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -414,8 +414,8 @@ other_line = 3469
 
 [[entries]]
 rust = "smithWatermanBatchWrapper16__L3492"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 648
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4306
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -423,8 +423,8 @@ other_line = 3492
 
 [[entries]]
 rust = "smithWaterman128_16"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 661
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4319
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman128_16"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -432,16 +432,16 @@ other_line = 3757
 
 [[entries]]
 rust = "mm_blendv_epi8"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 119
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 3506
 other = "_mm_blendv_epi8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
 other_line = 4152
 
 [[entries]]
 rust = "getScores8__L4198"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 686
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4345
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::getScores8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -449,8 +449,8 @@ other_line = 4198
 
 [[entries]]
 rust = "smithWatermanBatchWrapper8__L4223"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 699
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4358
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWatermanBatchWrapper8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -458,8 +458,8 @@ other_line = 4223
 
 [[entries]]
 rust = "smithWaterman128_8"
-rust_path = "src/generated/bandedswa_cpp.rs"
-rust_line = 712
+rust_path = "src/bwa_mem2/bandedswa.rs"
+rust_line = 4371
 rust_class = "BandedPairWiseSW"
 other = "BandedPairWiseSW::smithWaterman128_8"
 other_path = "bwa-mem2/src/bandedSWA.cpp"
@@ -467,1160 +467,1160 @@ other_line = 4485
 
 [[entries]]
 rust = "bns_dump"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 73
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 190
 other = "bns_dump"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 73
 
 [[entries]]
 rust = "bns_restore_core"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 140
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 226
 other = "bns_restore_core"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 106
 
 [[entries]]
 rust = "bns_restore"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 216
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 308
 other = "bns_restore"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 188
 
 [[entries]]
 rust = "bns_destroy"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 247
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 340
 other = "bns_destroy"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 230
 
 [[entries]]
 rust = "add1"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 256
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 349
 other = "add1"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 249
 
 [[entries]]
 rust = "bns_fasta2bntseq"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 312
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 419
 other = "bns_fasta2bntseq"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 298
 
 [[entries]]
 rust = "bwa_fa2pac"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 361
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 478
 other = "bwa_fa2pac"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 359
 
 [[entries]]
 rust = "bns_pos2rid"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 389
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 507
 other = "bns_pos2rid"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 378
 
 [[entries]]
 rust = "bns_intv2rid"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 416
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 535
 other = "bns_intv2rid"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 394
 
 [[entries]]
 rust = "bns_cnt_ambi"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 432
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 555
 other = "bns_cnt_ambi"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 404
 
 [[entries]]
 rust = "bns_get_seq"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 461
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 585
 other = "bns_get_seq"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 427
 
 [[entries]]
 rust = "bns_fetch_seq"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 497
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 696
 other = "bns_fetch_seq"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 453
 
 [[entries]]
 rust = "bns_dump"
-rust_path = "src/generated/bntseq_cpp.rs"
-rust_line = 108
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 190
 other = "bns_dump"
 other_path = "bwa-mem2/src/bntseq.cpp"
 other_line = 73
 
 [[entries]]
 rust = "bns_depos"
-rust_path = "src/generated/bntseq_h.rs"
-rust_line = 40
+rust_path = "src/bwa_mem2/bntseq.rs"
+rust_line = 52
 other = "bns_depos"
 other_path = "bwa-mem2/src/bntseq.h"
 other_line = 87
 
 [[entries]]
 rust = "trim_readno"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 26
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 95
 other = "trim_readno"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 62
 
 [[entries]]
 rust = "kseq2bseq1"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 39
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 109
 other = "kseq2bseq1"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 68
 
 [[entries]]
 rust = "bseq_read"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 48
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 134
 other = "bseq_read"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 78
 
 [[entries]]
 rust = "bseq_read_orig"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 53
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 147
 other = "bseq_read_orig"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 170
 
 [[entries]]
 rust = "bseq_read_one_fasta_file"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 98
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 203
 other = "bseq_read_one_fasta_file"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 218
 
 [[entries]]
 rust = "bseq_classify"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 104
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 214
 other = "bseq_classify"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 226
 
 [[entries]]
 rust = "bwa_fill_scmat"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 143
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 255
 other = "bwa_fill_scmat"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 248
 
 [[entries]]
 rust = "bwa_gen_cigar2"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 160
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 275
 other = "bwa_gen_cigar2"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 260
 
 [[entries]]
 rust = "bwa_gen_cigar"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 306
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 497
 other = "bwa_gen_cigar"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 349
 
 [[entries]]
 rust = "bwa_idx_infer_prefix"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 325
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 518
 other = "bwa_idx_infer_prefix"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 358
 
 [[entries]]
 rust = "bwa_idx_load_bwt"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 330
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 523
 other = "bwa_idx_load_bwt"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 384
 
 [[entries]]
 rust = "bwa_idx_load_from_disk"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 335
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 528
 other = "bwa_idx_load_from_disk"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 402
 
 [[entries]]
 rust = "bwa_idx_load"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 340
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 536
 other = "bwa_idx_load"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 433
 
 [[entries]]
 rust = "bwa_idx_destroy"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 345
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 544
 other = "bwa_idx_destroy"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 438
 
 [[entries]]
 rust = "bwa_mem2idx"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 350
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 549
 other = "bwa_mem2idx"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 452
 
 [[entries]]
 rust = "bwa_idx2mem"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 355
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 558
 other = "bwa_idx2mem"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 477
 
 [[entries]]
 rust = "bwa_print_sam_hdr"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 360
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 563
 other = "bwa_print_sam_hdr"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 523
 
 [[entries]]
 rust = "bwa_escape"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 399
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 602
 other = "bwa_escape"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 567
 
 [[entries]]
 rust = "bwa_set_rg"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 423
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 626
 other = "bwa_set_rg"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 583
 
 [[entries]]
 rust = "bwa_insert_header"
-rust_path = "src/generated/bwa_cpp.rs"
-rust_line = 455
+rust_path = "src/bwa_mem2/bwa.rs"
+rust_line = 660
 other = "bwa_insert_header"
 other_path = "bwa-mem2/src/bwa.cpp"
 other_line = 612
 
 [[entries]]
 rust = "cal_max_gap"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 14
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 682
 other = "cal_max_gap"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 66
 
 [[entries]]
 rust = "smem_aux_init"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 23
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 695
 other = "smem_aux_init"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 80
 
 [[entries]]
 rust = "smem_aux_destroy"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 32
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 704
 other = "smem_aux_destroy"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 93
 
 [[entries]]
 rust = "mem_opt_init"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 43
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 715
 other = "mem_opt_init"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 107
 
 [[entries]]
 rust = "sort_alnreg_re"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 83
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 755
 other = "sort_alnreg_re"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 162
 
 [[entries]]
 rust = "sort_alnreg_score"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 88
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 760
 other = "sort_alnreg_score"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 166
 
 [[entries]]
 rust = "mem_patch_reg"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 98
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1034
 other = "mem_patch_reg"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 175
 
 [[entries]]
 rust = "mem_dedup_patch"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 170
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1113
 other = "mem_dedup_patch"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 239
 
 [[entries]]
 rust = "mem_sort_dedup_patch"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 252
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1215
 other = "mem_sort_dedup_patch"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 292
 
 [[entries]]
 rust = "test_and_merge"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 288
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1254
 other = "test_and_merge"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 357
 
 [[entries]]
 rust = "mem_seed_sw"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 361
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1311
 other = "mem_seed_sw"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 401
 
 [[entries]]
 rust = "mem_chain_weight"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 416
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1411
 other = "mem_chain_weight"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 429
 
 [[entries]]
 rust = "mem_print_chain"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 456
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1576
 other = "mem_print_chain"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 450
 
 [[entries]]
 rust = "mem_flt_chained_seeds"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 484
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1624
 other = "mem_flt_chained_seeds"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 472
 
 [[entries]]
 rust = "mem_chain_flt"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 528
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1669
 other = "mem_chain_flt"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 506
 
 [[entries]]
 rust = "kv_push__L564"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 564
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1808
 other = "kv_push"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 564
 
 [[entries]]
 rust = "mem_collect_smem"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 636
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1813
 other = "mem_collect_smem"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 626
 
 [[entries]]
 rust = "mem_chain_seeds"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 793
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 1976
 other = "mem_chain_seeds"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 806
 
 [[entries]]
 rust = "mem_kernel1_core"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 941
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2390
 other = "mem_kernel1_core"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 976
 
 [[entries]]
 rust = "mem_kernel2_core"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1087
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2523
 other = "mem_kernel2_core"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1093
 
 [[entries]]
 rust = "worker_aln"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1164
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2656
 other = "worker_aln"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1175
 
 [[entries]]
 rust = "worker_bwt"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1208
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2676
 other = "worker_bwt"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1193
 
 [[entries]]
 rust = "sort_classify"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1233
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2703
 other = "sort_classify"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1216
 
 [[entries]]
 rust = "worker_sam"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1334
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2737
 other = "worker_sam"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1245
 
 [[entries]]
 rust = "mem_process_seqs"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1399
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 2931
 other = "mem_process_seqs"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1338
 
 [[entries]]
 rust = "mem_mark_primary_se_core"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1340
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3078
 other = "mem_mark_primary_se_core"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1392
 
 [[entries]]
 rust = "kv_push__L1399"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1399
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3121
 other = "kv_push"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1399
 
 [[entries]]
 rust = "mem_mark_primary_se"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1294
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3126
 other = "mem_mark_primary_se"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1420
 
 [[entries]]
 rust = "mem_approx_mapq_se"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1371
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3215
 other = "mem_approx_mapq_se"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1470
 
 [[entries]]
 rust = "mem_reorder_primary5"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1400
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3256
 other = "mem_reorder_primary5"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1496
 
 [[entries]]
 rust = "mem_reg2sam"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1444
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3295
 other = "mem_reg2sam"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1521
 
 [[entries]]
 rust = "add_cigar"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1505
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3400
 other = "add_cigar"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1579
 
 [[entries]]
 rust = "mem_aln2sam"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1521
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3441
 other = "mem_aln2sam"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1592
 
 [[entries]]
 rust = "mem_reg2aln"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1778
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3797
 other = "mem_reg2aln"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1732
 
 [[entries]]
 rust = "infer_bw"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1906
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3939
 other = "infer_bw"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1811
 
 [[entries]]
 rust = "get_rlen"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1918
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3953
 other = "get_rlen"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1820
 
 [[entries]]
 rust = "mm_realloc"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 2012
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3965
 other = "_mm_realloc"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1834
 
 [[entries]]
 rust = "bns_get_seq_v2"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1155
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 3979
 other = "bns_get_seq_v2"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1851
 
 [[entries]]
 rust = "bns_fetch_seq_v2"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1187
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 4014
 other = "bns_fetch_seq_v2"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1890
 
 [[entries]]
 rust = "sortPairsLenExt"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1243
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 4052
 other = "sortPairsLenExt"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 1926
 
 [[entries]]
 rust = "sortPairsLen"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1326
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 4144
 other = "sortPairsLen"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 2025
 
 [[entries]]
 rust = "mem_chain2aln_across_reads_V2"
-rust_path = "src/generated/bwamem_cpp.rs"
-rust_line = 1353
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 4214
 other = "mem_chain2aln_across_reads_V2"
 other_path = "bwa-mem2/src/bwamem.cpp"
 other_line = 2069
 
 [[entries]]
 rust = "abc"
-rust_path = "src/generated/bwamem_h.rs"
-rust_line = 9
+rust_path = "src/bwa_mem2/bwamem.rs"
+rust_line = 274
 other = "abc"
 other_path = "bwa-mem2/src/bwamem.h"
 other_line = 114
 
 [[entries]]
 rust = "smem_itr_init"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 27
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 39
 other = "smem_itr_init"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 52
 
 [[entries]]
 rust = "smem_itr_destroy"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 43
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 58
 other = "smem_itr_destroy"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 67
 
 [[entries]]
 rust = "smem_set_query"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 47
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 61
 other = "smem_set_query"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 76
 
 [[entries]]
 rust = "smem_config"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 54
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 68
 other = "smem_config"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 83
 
 [[entries]]
 rust = "smem_next"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 61
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 75
 other = "smem_next"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 90
 
 [[entries]]
 rust = "mem_align1"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 81
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 99
 other = "mem_align1"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 107
 
 [[entries]]
 rust = "get_pri_idx"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 86
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 111
 other = "get_pri_idx"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 122
 
 [[entries]]
 rust = "mem_gen_alt"
-rust_path = "src/generated/bwamem_extra_cpp.rs"
-rust_line = 97
+rust_path = "src/bwa_mem2/bwamem_extra.rs"
+rust_line = 133
 other = "mem_gen_alt"
 other_path = "bwa-mem2/src/bwamem_extra.cpp"
 other_line = 130
 
 [[entries]]
 rust = "mem_infer_dir"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 51
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 79
 other = "mem_infer_dir"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 58
 
 [[entries]]
 rust = "cal_sub"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 60
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 93
 other = "cal_sub"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 67
 
 [[entries]]
 rust = "mem_pestat"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 75
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 117
 other = "mem_pestat"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 81
 
 [[entries]]
 rust = "mem_matesw"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 160
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 216
 other = "mem_matesw"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 150
 
 [[entries]]
 rust = "mem_pair"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 305
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 488
 other = "mem_pair"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 285
 
 [[entries]]
 rust = "mem_sam_pe"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 398
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 638
 other = "mem_sam_pe"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 353
 
 [[entries]]
 rust = "mem_sam_pe_batch_pre"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 605
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1067
 other = "mem_sam_pe_batch_pre"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 553
 
 [[entries]]
 rust = "revseq"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 654
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1125
 other = "revseq"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 604
 
 [[entries]]
 rust = "mem_sam_pe_batch"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 664
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1139
 other = "mem_sam_pe_batch"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 612
 
 [[entries]]
 rust = "mem_sam_pe_batch_post"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 706
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1274
 other = "mem_sam_pe_batch_post"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 713
 
 [[entries]]
 rust = "mem_matesw_batch_pre"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 938
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1718
 other = "mem_matesw_batch_pre"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 930
 
 [[entries]]
 rust = "mem_matesw_batch_post"
-rust_path = "src/generated/bwamem_pair_cpp.rs"
-rust_line = 1066
+rust_path = "src/bwa_mem2/bwamem_pair.rs"
+rust_line = 1929
 other = "mem_matesw_batch_post"
 other_path = "bwa-mem2/src/bwamem_pair.cpp"
 other_line = 1095
 
 [[entries]]
 rust = "bwa_index"
-rust_path = "src/generated/bwtindex_cpp.rs"
-rust_line = 15
+rust_path = "src/bwa_mem2/bwtindex.rs"
+rust_line = 23
 other = "bwa_index"
 other_path = "bwa-mem2/src/bwtindex.cpp"
 other_line = 43
 
 [[entries]]
 rust = "bwa_idx_build"
-rust_path = "src/generated/bwtindex_cpp.rs"
-rust_line = 42
+rust_path = "src/bwa_mem2/bwtindex.rs"
+rust_line = 50
 other = "bwa_idx_build"
 other_path = "bwa-mem2/src/bwtindex.cpp"
 other_line = 61
 
 [[entries]]
 rust = "cpuid"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 229
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 476
 other = "__cpuid"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 51
 
 [[entries]]
 rust = "HTStatus"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 247
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 494
 other = "HTStatus"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 63
 
 [[entries]]
 rust = "memoryAlloc"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 278
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 527
 other = "memoryAlloc"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 100
 
 [[entries]]
 rust = "kt_pipeline"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 498
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 583
 other = "kt_pipeline"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 189
 
 [[entries]]
 rust = "ktp_worker"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 513
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 604
 other = "ktp_worker"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 327
 
 [[entries]]
 rust = "process"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 518
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 609
 other = "process"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 368
 
 [[entries]]
 rust = "update_a"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 602
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 705
 other = "update_a"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 547
 
 [[entries]]
 rust = "usage"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 638
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 742
 other = "usage"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 563
 
 [[entries]]
 rust = "main_mem"
-rust_path = "src/generated/fastmap_cpp.rs"
-rust_line = 643
+rust_path = "src/bwa_mem2/fastmap.rs"
+rust_line = 758
 other = "main_mem"
 other_path = "bwa-mem2/src/fastmap.cpp"
 other_line = 616
 
 [[entries]]
 rust = "ac_X31_hash_string"
-rust_path = "src/generated/khash_h.rs"
-rust_line = 383
+rust_path = "src/bwa_mem2/khash.rs"
+rust_line = 13
 other = "__ac_X31_hash_string"
 other_path = "bwa-mem2/src/khash.h"
 other_line = 383
 
 [[entries]]
 rust = "ac_Wang_hash"
-rust_path = "src/generated/khash_h.rs"
-rust_line = 400
+rust_path = "src/bwa_mem2/khash.rs"
+rust_line = 18
 other = "__ac_Wang_hash"
 other_path = "bwa-mem2/src/khash.h"
 other_line = 400
 
 [[entries]]
 rust = "socket_wait"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 65
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 48
 other = "socket_wait"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 65
 
 [[entries]]
 rust = "socket_connect"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 80
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 56
 other = "socket_connect"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 80
 
 [[entries]]
 rust = "write_bytes"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 102
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 64
 other = "write_bytes"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 102
 
 [[entries]]
 rust = "http_open"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 117
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 73
 other = "http_open"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 117
 
 [[entries]]
 rust = "kftp_get_response"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 191
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 78
 other = "kftp_get_response"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 191
 
 [[entries]]
 rust = "kftp_send_cmd"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 215
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 83
 other = "kftp_send_cmd"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 215
 
 [[entries]]
 rust = "ftp_open"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 222
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 92
 other = "ftp_open"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 222
 
 [[entries]]
 rust = "cmd2argv"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 76
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 97
 other = "cmd2argv"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 278
 
 [[entries]]
 rust = "kopen"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 85
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 111
 other = "kopen"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 312
 
 [[entries]]
 rust = "kclose"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 117
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 150
 other = "kclose"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 386
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/kopen_cpp.rs"
-rust_line = 127
+rust_path = "src/bwa_mem2/kopen.rs"
+rust_line = 163
 other = "main"
 other_path = "bwa-mem2/src/kopen.cpp"
 other_line = 401
 
 [[entries]]
 rust = "ks_getuntil"
-rust_path = "src/generated/kseq_h.rs"
-rust_line = 176
+rust_path = "src/bwa_mem2/kseq.rs"
+rust_line = 466
 other = "ks_getuntil"
 other_path = "bwa-mem2/src/kseq.h"
 other_line = 152
 
 [[entries]]
 rust = "ksprintf"
-rust_path = "src/generated/kstring_cpp.rs"
-rust_line = 10
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 212
 other = "ksprintf"
 other_path = "bwa-mem2/src/kstring.cpp"
 other_line = 34
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/kstring_cpp.rs"
-rust_line = 41
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 243
 other = "main"
 other_path = "bwa-mem2/src/kstring.cpp"
 other_line = 55
 
 [[entries]]
 rust = "ks_resize"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 50
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 64
 other = "ks_resize"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 53
 
 [[entries]]
 rust = "kputsn"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 57
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 72
 other = "kputsn"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 62
 
 [[entries]]
 rust = "kputs"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 69
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 85
 other = "kputs"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 75
 
 [[entries]]
 rust = "kputc"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 74
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 91
 other = "kputc"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 80
 
 [[entries]]
 rust = "kputw"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 95
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 128
 other = "kputw"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 92
 
 [[entries]]
 rust = "kputuw"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 104
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 143
 other = "kputuw"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 109
 
 [[entries]]
 rust = "kputl"
-rust_path = "src/generated/kstring_h.rs"
-rust_line = 113
+rust_path = "src/bwa_mem2/kstring.rs"
+rust_line = 153
 other = "kputl"
 other_path = "bwa-mem2/src/kstring.h"
 other_line = 126
 
 [[entries]]
 rust = "ksw_qinit"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 26
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 89
 other = "ksw_qinit"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 62
 
 [[entries]]
 rust = "ksw_u8"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 55
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 119
 other = "ksw_u8"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 111
 
 [[entries]]
 rust = "ksw_i16"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 99
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 183
 other = "ksw_i16"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 234
 
 [[entries]]
 rust = "revseq"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 141
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1051
 other = "revseq"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 340
 
 [[entries]]
 rust = "ksw_align2"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 182
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1172
 other = "ksw_align2"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 347
 
 [[entries]]
 rust = "ksw_align2_orig_bak"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 234
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1252
 other = "ksw_align2_orig_bak"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 383
 
 [[entries]]
 rust = "ksw_align"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 252
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1272
 other = "ksw_align"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 419
 
 [[entries]]
 rust = "ksw_extend2"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 268
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1299
 other = "ksw_extend2"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 432
 
 [[entries]]
 rust = "ksw_extend"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 449
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1508
 other = "ksw_extend"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 535
 
 [[entries]]
 rust = "push_cigar"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 185
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1535
 other = "push_cigar"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 546
 
 [[entries]]
 rust = "ksw_global2"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 202
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1555
 other = "ksw_global2"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 558
 
 [[entries]]
 rust = "ksw_global"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 363
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1751
 other = "ksw_global"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 670
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/ksw_cpp.rs"
-rust_line = 706
+rust_path = "src/bwa_mem2/ksw.rs"
+rust_line = 1770
 other = "main"
 other_path = "bwa-mem2/src/ksw.cpp"
 other_line = 706
 
 [[entries]]
 rust = "ctor"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 59
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 218
 rust_class = "kswv"
 other = "kswv::kswv"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1628,8 +1628,8 @@ other_line = 114
 
 [[entries]]
 rust = "dtor"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 110
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 273
 rust_class = "kswv"
 other = "kswv::~kswv"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1637,8 +1637,8 @@ other_line = 157
 
 [[entries]]
 rust = "getScores8"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 124
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 288
 rust_class = "kswv"
 other = "kswv::getScores8"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1646,8 +1646,8 @@ other_line = 164
 
 [[entries]]
 rust = "kswvBatchWrapper8"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 138
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 307
 rust_class = "kswv"
 other = "kswv::kswvBatchWrapper8"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1655,8 +1655,8 @@ other_line = 177
 
 [[entries]]
 rust = "getScores16"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 214
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 448
 rust_class = "kswv"
 other = "kswv::getScores16"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1664,8 +1664,8 @@ other_line = 713
 
 [[entries]]
 rust = "kswvBatchWrapper16"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 228
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 466
 rust_class = "kswv"
 other = "kswv::kswvBatchWrapper16"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1673,8 +1673,8 @@ other_line = 725
 
 [[entries]]
 rust = "kswv512_16"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 304
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 689
 rust_class = "kswv"
 other = "kswv::kswv512_16"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1682,8 +1682,8 @@ other_line = 933
 
 [[entries]]
 rust = "bwa_fill_scmat"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 412
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 1497
 rust_class = "kswv"
 other = "kswv::bwa_fill_scmat"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1691,8 +1691,8 @@ other_line = 1231
 
 [[entries]]
 rust = "ksw_qinit"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 428
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 1529
 rust_class = "kswv"
 other = "kswv::ksw_qinit"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1700,8 +1700,8 @@ other_line = 1256
 
 [[entries]]
 rust = "kswvScalar_u8"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 496
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 1610
 rust_class = "kswv"
 other = "kswv::kswvScalar_u8"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1709,8 +1709,8 @@ other_line = 1306
 
 [[entries]]
 rust = "kswvScalar_i16"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 537
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 1652
 rust_class = "kswv"
 other = "kswv::kswvScalar_i16"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1718,8 +1718,8 @@ other_line = 1434
 
 [[entries]]
 rust = "kswvScalarWrapper"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 578
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 1698
 rust_class = "kswv"
 other = "kswv::kswvScalarWrapper"
 other_path = "bwa-mem2/src/kswv.cpp"
@@ -1727,104 +1727,104 @@ other_line = 1550
 
 [[entries]]
 rust = "parseCmdLine"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 1636
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 174
 other = "parseCmdLine"
 other_path = "bwa-mem2/src/kswv.cpp"
 other_line = 1636
 
 [[entries]]
 rust = "loadPairs"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 1686
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 179
 other = "loadPairs"
 other_path = "bwa-mem2/src/kswv.cpp"
 other_line = 1686
 
 [[entries]]
 rust = "find_stats"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 1738
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 189
 other = "find_stats"
 other_path = "bwa-mem2/src/kswv.cpp"
 other_line = 1738
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/kswv_cpp.rs"
-rust_line = 1751
+rust_path = "src/bwa_mem2/kswv.rs"
+rust_line = 200
 other = "main"
 other_path = "bwa-mem2/src/kswv.cpp"
 other_line = 1751
 
 [[entries]]
 rust = "steal_work"
-rust_path = "src/generated/kthread_cpp.rs"
-rust_line = 41
+rust_path = "src/bwa_mem2/kthread.rs"
+rust_line = 39
 other = "steal_work"
 other_path = "bwa-mem2/src/kthread.cpp"
 other_line = 41
 
 [[entries]]
 rust = "ktf_worker"
-rust_path = "src/generated/kthread_cpp.rs"
-rust_line = 53
+rust_path = "src/bwa_mem2/kthread.rs"
+rust_line = 44
 other = "ktf_worker"
 other_path = "bwa-mem2/src/kthread.cpp"
 other_line = 53
 
 [[entries]]
 rust = "kt_for"
-rust_path = "src/generated/kthread_cpp.rs"
-rust_line = 80
+rust_path = "src/bwa_mem2/kthread.rs"
+rust_line = 49
 other = "kt_for"
 other_path = "bwa-mem2/src/kthread.cpp"
 other_line = 80
 
 [[entries]]
 rust = "usage"
-rust_path = "src/generated/main_cpp.rs"
-rust_line = 16
+rust_path = "src/bwa_mem2/main.rs"
+rust_line = 24
 other = "usage"
 other_path = "bwa-mem2/src/main.cpp"
 other_line = 43
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/main_cpp.rs"
-rust_line = 22
+rust_path = "src/bwa_mem2/main.rs"
+rust_line = 40
 other = "main"
 other_path = "bwa-mem2/src/main.cpp"
 other_line = 53
 
 [[entries]]
 rust = "memcpy_bwamem"
-rust_path = "src/generated/memcpy_bwamem_cpp.rs"
-rust_line = 32
+rust_path = "src/bwa_mem2/memcpy_bwamem.rs"
+rust_line = 14
 other = "memcpy_bwamem"
 other_path = "bwa-mem2/src/memcpy_bwamem.cpp"
 other_line = 32
 
 [[entries]]
 rust = "find_opt"
-rust_path = "src/generated/profiling_cpp.rs"
-rust_line = 36
+rust_path = "src/bwa_mem2/profiling.rs"
+rust_line = 14
 other = "find_opt"
 other_path = "bwa-mem2/src/profiling.cpp"
 other_line = 36
 
 [[entries]]
 rust = "display_stats"
-rust_path = "src/generated/profiling_cpp.rs"
-rust_line = 54
+rust_path = "src/bwa_mem2/profiling.rs"
+rust_line = 25
 other = "display_stats"
 other_path = "bwa-mem2/src/profiling.cpp"
 other_line = 54
 
 [[entries]]
 rust = "ctor"
-rust_path = "src/generated/read_index_ele_cpp.rs"
-rust_line = 14
+rust_path = "src/bwa_mem2/read_index_ele.rs"
+rust_line = 41
 rust_class = "indexEle"
 other = "indexEle::indexEle"
 other_path = "bwa-mem2/src/read_index_ele.cpp"
@@ -1832,8 +1832,8 @@ other_line = 40
 
 [[entries]]
 rust = "dtor"
-rust_path = "src/generated/read_index_ele_cpp.rs"
-rust_line = 19
+rust_path = "src/bwa_mem2/read_index_ele.rs"
+rust_line = 48
 rust_class = "indexEle"
 other = "indexEle::~indexEle"
 other_path = "bwa-mem2/src/read_index_ele.cpp"
@@ -1841,8 +1841,8 @@ other_line = 46
 
 [[entries]]
 rust = "bwa_idx_load_ele"
-rust_path = "src/generated/read_index_ele_cpp.rs"
-rust_line = 39
+rust_path = "src/bwa_mem2/read_index_ele.rs"
+rust_line = 68
 rust_class = "indexEle"
 other = "indexEle::bwa_idx_load_ele"
 other_path = "bwa-mem2/src/read_index_ele.cpp"
@@ -1850,8 +1850,8 @@ other_line = 60
 
 [[entries]]
 rust = "bwa_idx_infer_prefix"
-rust_path = "src/generated/read_index_ele_cpp.rs"
-rust_line = 66
+rust_path = "src/bwa_mem2/read_index_ele.rs"
+rust_line = 96
 rust_class = "indexEle"
 other = "indexEle::bwa_idx_infer_prefix"
 other_path = "bwa-mem2/src/read_index_ele.cpp"
@@ -1859,352 +1859,352 @@ other_line = 96
 
 [[entries]]
 rust = "cpuidex"
-rust_path = "src/generated/runsimd_cpp.rs"
-rust_line = 26
+rust_path = "src/bwa_mem2/runsimd.rs"
+rust_line = 34
 other = "__cpuidex"
 other_path = "bwa-mem2/src/runsimd.cpp"
 other_line = 58
 
 [[entries]]
 rust = "x86_simd"
-rust_path = "src/generated/runsimd_cpp.rs"
-rust_line = 49
+rust_path = "src/bwa_mem2/runsimd.rs"
+rust_line = 57
 other = "x86_simd"
 other_path = "bwa-mem2/src/runsimd.cpp"
 other_line = 72
 
 [[entries]]
 rust = "exe_path"
-rust_path = "src/generated/runsimd_cpp.rs"
-rust_line = 135
+rust_path = "src/bwa_mem2/runsimd.rs"
+rust_line = 146
 other = "exe_path"
 other_path = "bwa-mem2/src/runsimd.cpp"
 other_line = 95
 
 [[entries]]
 rust = "test_and_launch"
-rust_path = "src/generated/runsimd_cpp.rs"
-rust_line = 165
+rust_path = "src/bwa_mem2/runsimd.rs"
+rust_line = 178
 other = "test_and_launch"
 other_path = "bwa-mem2/src/runsimd.cpp"
 other_line = 152
 
 [[entries]]
 rust = "main"
-rust_path = "src/generated/runsimd_cpp.rs"
-rust_line = 203
+rust_path = "src/bwa_mem2/runsimd.rs"
+rust_line = 221
 other = "main"
 other_path = "bwa-mem2/src/runsimd.cpp"
 other_line = 176
 
 [[entries]]
 rust = "getCounts"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 52
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 13
 other = "getCounts"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 52
 
 [[entries]]
 rust = "getBuckets"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 59
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 23
 other = "getBuckets"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 59
 
 [[entries]]
 rust = "LMSsort1"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 68
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 33
 other = "LMSsort1"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 68
 
 [[entries]]
 rust = "LMSpostproc1"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 111
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 46
 other = "LMSpostproc1"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 111
 
 [[entries]]
 rust = "LMSsort2"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 159
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 56
 other = "LMSsort2"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 159
 
 [[entries]]
 rust = "LMSpostproc2"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 219
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 69
 other = "LMSpostproc2"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 219
 
 [[entries]]
 rust = "induceSA"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 261
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 78
 other = "induceSA"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 261
 
 [[entries]]
 rust = "computeBWT"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 294
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 91
 other = "computeBWT"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 294
 
 [[entries]]
 rust = "stage1sort"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 335
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 104
 other = "stage1sort"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 335
 
 [[entries]]
 rust = "stage3sort"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 395
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 117
 other = "stage3sort"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 395
 
 [[entries]]
 rust = "suffixsort"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 426
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 132
 other = "suffixsort"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 426
 
 [[entries]]
 rust = "saisxx"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 556
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 144
 other = "saisxx"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 556
 
 [[entries]]
 rust = "saisxx_bwt"
-rust_path = "src/generated/sais_h.rs"
-rust_line = 578
+rust_path = "src/bwa_mem2/sais.rs"
+rust_line = 1365
 other = "saisxx_bwt"
 other_path = "bwa-mem2/src/sais.h"
 other_line = 578
 
 [[entries]]
 rust = "err_xopen_core"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 123
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 212
 other = "err_xopen_core"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 56
 
 [[entries]]
 rust = "err_xreopen_core"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 134
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 227
 other = "err_xreopen_core"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 67
 
 [[entries]]
 rust = "err_xzopen_core"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 142
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 235
 other = "err_xzopen_core"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 75
 
 [[entries]]
 rust = "err_fatal"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 156
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 252
 other = "err_fatal"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 90
 
 [[entries]]
 rust = "err_fatal_core"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 162
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 258
 other = "err_fatal_core"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 101
 
 [[entries]]
 rust = "err_fatal_simple"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 168
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 264
 other = "_err_fatal_simple"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 112
 
 [[entries]]
 rust = "err_fatal_simple_core"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 174
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 270
 other = "_err_fatal_simple_core"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 118
 
 [[entries]]
 rust = "err_fwrite"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 180
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 276
 other = "err_fwrite"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 124
 
 [[entries]]
 rust = "err_fread_noeof"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 190
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 286
 other = "err_fread_noeof"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 132
 
 [[entries]]
 rust = "err_gzread"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 205
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 301
 other = "err_gzread"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 142
 
 [[entries]]
 rust = "err_fseek"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 223
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 319
 other = "err_fseek"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 156
 
 [[entries]]
 rust = "err_ftell"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 237
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 333
 other = "err_ftell"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 166
 
 [[entries]]
 rust = "err_printf"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 245
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 341
 other = "err_printf"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 176
 
 [[entries]]
 rust = "err_fprintf"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 254
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 350
 other = "err_fprintf"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 188
 
 [[entries]]
 rust = "err_fputc"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 263
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 359
 other = "err_fputc"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 200
 
 [[entries]]
 rust = "err_fgets"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 272
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 368
 other = "err_fgets"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 211
 
 [[entries]]
 rust = "err_fputs"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 291
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 387
 other = "err_fputs"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 222
 
 [[entries]]
 rust = "err_puts"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 299
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 395
 other = "err_puts"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 233
 
 [[entries]]
 rust = "err_fflush"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 308
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 404
 other = "err_fflush"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 244
 
 [[entries]]
 rust = "err_fclose"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 319
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 421
 other = "err_fclose"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 271
 
 [[entries]]
 rust = "err_gzclose"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 327
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 429
 other = "err_gzclose"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 278
 
 [[entries]]
 rust = "cputime"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 111
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 444
 other = "cputime"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 293
 
 [[entries]]
 rust = "realtime"
-rust_path = "src/generated/utils_cpp.rs"
-rust_line = 116
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 449
 other = "realtime"
 other_path = "bwa-mem2/src/utils.cpp"
 other_line = 300
 
 [[entries]]
 rust = "rdtsc__L53"
-rust_path = "src/generated/utils_h.rs"
-rust_line = 24
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 44
 other = "__rdtsc"
 other_path = "bwa-mem2/src/utils.h"
 other_line = 53
 
 [[entries]]
 rust = "rdtsc__L60"
-rust_path = "src/generated/utils_h.rs"
-rust_line = 29
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 49
 other = "__rdtsc"
 other_path = "bwa-mem2/src/utils.h"
 other_line = 60
 
 [[entries]]
 rust = "hash_64"
-rust_path = "src/generated/utils_h.rs"
-rust_line = 34
+rust_path = "src/bwa_mem2/utils.rs"
+rust_line = 55
 other = "hash_64"
 other_path = "bwa-mem2/src/utils.h"
 other_line = 117

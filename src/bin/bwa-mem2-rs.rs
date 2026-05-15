@@ -26,7 +26,7 @@ fn main() {
         }
     }
 
-    std::process::exit(bwa_mem2_pure_rs::generated::main_cpp::main(&argv));
+    std::process::exit(bwa_mem2_pure_rs::bwa_mem2::main::main(&argv));
 }
 
 #[cfg(target_os = "linux")]
