@@ -2,7 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
-* 2026-05-15: mimalloc now on by default for binary. About 10% faster
+* 2026-05-15: the `bwa-mem2-rs` binary can be built with mimalloc for about 10% better wall time
 * 2026-04-30: Index generation now as fast as original
 * 2026-04-26: Passing all tests so far, speed on par with original. More testing needed though - use on your own risk!
 
@@ -34,7 +34,7 @@ This blurb might be out of date. Go to [this page](https://github.com/henriksson
 A release build is required — the workload is CPU-bound and a debug build is roughly an order of magnitude slower.
 
 ```sh
-cargo build --release --bin bwa-mem2-rs
+cargo build --release --bin bwa-mem2-rs --features mimalloc
 ```
 
 The binary is written to `target/release/bwa-mem2-rs` and mirrors the upstream subcommands:
@@ -44,7 +44,7 @@ The binary is written to `target/release/bwa-mem2-rs` and mirrors the upstream s
 ./target/release/bwa-mem2-rs mem -t <threads> -o out.sam <prefix> <r1.fq> [r2.fq]
 ```
 
-mimalloc is enabled by default; opt out with `cargo build --release --bin bwa-mem2-rs --no-default-features`. For profiling builds that keep release optimizations plus debug symbols, use the `profiling` profile: `cargo build --profile profiling --bin bwa-mem2-rs` (output at `target/profiling/bwa-mem2-rs`).
+The `mimalloc` feature is required for the shipped CLI binary and is not enabled by default for library users. For profiling builds that keep release optimizations plus debug symbols, use the `profiling` profile: `cargo build --profile profiling --bin bwa-mem2-rs --features mimalloc` (output at `target/profiling/bwa-mem2-rs`).
 
 ## Library Usage
 
@@ -52,7 +52,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bwa-mem2-pure-rs = "0.1"
+bwa-mem2-pure-rs = "0.2"
 ```
 
 Load an existing `bwa-mem2` index once, then align paired reads in batches:
@@ -94,7 +94,7 @@ fn main() -> Result<(), String> {
 
 The index files must already exist for `index_prefix`, for example from `bwa-mem2-rs index -p ref/ecoli_rel606 ref/ecoli_rel606.fasta`. For server applications that already use Rayon, pass an existing `Arc<rayon::ThreadPool>` with `.thread_pool(pool)` to share it instead of creating an internal pool. The `output` module also provides `StdioOutput` and `SharedWriterOutput` for stdout/stderr-style library capture.
 
-We recommend that library consumers register [`mimalloc`](https://docs.rs/mimalloc/latest/mimalloc/) (or another high-performance allocator such as `jemallocator`) as the global allocator in their own binary. The default glibc allocator scales poorly under the per-thread allocation pressure of `mem`; on the 700k-read E. coli fixture, mimalloc reduces wall time by roughly 11% at `-t 1` and 17% at `-t 4`. The shipped `bwa-mem2-rs` binary already uses mimalloc by default (opt out with `--no-default-features`).
+Library consumers do not get [`mimalloc`](https://docs.rs/mimalloc/latest/mimalloc/) through default features. We recommend registering mimalloc, or another high-performance allocator such as `jemallocator`, as the global allocator in your own binary if alignment throughput matters. The default glibc allocator scales poorly under the per-thread allocation pressure of `mem`; on the 700k-read E. coli fixture, mimalloc reduces wall time by roughly 11% at `-t 1` and 17% at `-t 4`. The shipped `bwa-mem2-rs` binary uses mimalloc when built with `--features mimalloc`.
 
 The published crate only ships the `bwa-mem2-rs` binary plus the library. Additional `src/bin/dump-*.rs` tools in the git repository (e.g. `dump-pe-batch-read`) are development-only and intentionally excluded from the crates.io package — build them from a git checkout if needed.
 

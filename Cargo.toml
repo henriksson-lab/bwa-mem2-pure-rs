@@ -33,6 +33,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "bwa-mem2-rs"
 path = "src/bin/bwa-mem2-rs.rs"
+required-features = ["mimalloc"]
 
 [[bin]]
 name = "dump-pe-batch-read"
@@ -47,7 +48,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 rayon = "1.10"
 
 [features]
-default = ["mimalloc"]
+default = []
 mimalloc = ["dep:mimalloc"]
 
 [profile.release]
