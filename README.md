@@ -6,6 +6,8 @@ A faithful Rust translation of `bwa-mem2`
 * 2026-04-30: Index generation now as fast as original
 * 2026-04-26: Passing all tests so far, speed on par with original. More testing needed though - use on your own risk!
 
+Anyone interested in BWA-MEM2 might also be interested in [BWA-MEM3](https://github.com/fg-labs/bwa-mem3). BWA-MEM3 adds features and has correctness fixes but is in C++; while our BWA-MEM2-RS crate aims to replicate the original BWA-MEM2 C++ codebase behavior faithfully, but in Rust.
+
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code! 
 
 Most users should probably first see if the existing original code works for them, unless they have reason otherwise. The original source
