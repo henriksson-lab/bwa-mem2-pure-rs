@@ -3984,7 +3984,7 @@ impl BandedPairWiseSW {
                     let mut m_score = *eh_h.get_unchecked(j);
                     let mut e = *eh_e.get_unchecked(j);
                     *eh_h.get_unchecked_mut(j) = h1; // save H(i, j-1) for the next row
-                    // separating H and M to disallow a cigar like "100M3I3D20M"
+                                                     // separating H and M to disallow a cigar like "100M3I3D20M"
                     m_score = if m_score != 0 {
                         m_score + i32::from(*qprof.get_unchecked(j))
                     } else {
@@ -3994,7 +3994,7 @@ impl BandedPairWiseSW {
                     let mut h = m_score.max(e);
                     h = h.max(f);
                     h1 = h; // save H(i, j) to h1 for the next column
-                    // record the position where the row max is achieved (m is stored at eh[mj+1])
+                            // record the position where the row max is achieved (m is stored at eh[mj+1])
                     if h >= m {
                         mj = j as i32;
                         m = h;
@@ -4030,11 +4030,9 @@ impl BandedPairWiseSW {
                 max_i = i_i32;
                 max_j = mj;
                 *max_off = (*max_off).max((mj - i_i32).abs());
-            } else {
-                // Match C++ SIMD ZSCORE8/ZSCORE16 (bandedSWA.cpp): no `if zdrop > 0` guard.
-                // For zdrop > 0 this is equivalent (the `> zdrop` check has the same triggering
-                // pattern). At zdrop=0, this triggers when the score gap is positive — matching
-                // upstream SIMD's aggressive exit, where the C++ scalar's guard would have skipped.
+            } else if self.zdrop > 0 {
+                // Match upstream scalar BandedPairWiseSW::scalarBandedSWA: z-drop is disabled
+                // when zdrop <= 0. The SIMD kernels have their own ZSCORE handling.
                 let di = i_i32 - max_i;
                 let dj = mj - max_j;
                 if di > dj {
@@ -4613,6 +4611,70 @@ mod tests {
             0,
         );
         assert_eq!(p8[0].score, p16[0].score);
+    }
+
+    #[test]
+    fn scalar_banded_swa_zdrop_zero_disables_zdrop() {
+        let q = [0_u8, 0, 0, 0, 0, 1, 1, 1, 1, 1];
+        let t = [0_u8, 0, 0, 0, 0, 3, 1, 1, 1, 1];
+
+        let sw_zero = BandedPairWiseSW::ctor(6, 1, 6, 1, 0, 0, &mat(), 2, 4, 1);
+        let sw_large = BandedPairWiseSW::ctor(6, 1, 6, 1, 1_000_000, 0, &mat(), 2, 4, 1);
+
+        let mut zero_qle = 0;
+        let mut zero_tle = 0;
+        let mut zero_gtle = 0;
+        let mut zero_gscore = 0;
+        let mut zero_max_off = 0;
+        let zero_score = sw_zero.scalarBandedSWA(
+            q.len() as i32,
+            &q,
+            t.len() as i32,
+            &t,
+            10,
+            20,
+            &mut zero_qle,
+            &mut zero_tle,
+            &mut zero_gtle,
+            &mut zero_gscore,
+            &mut zero_max_off,
+        );
+
+        let mut large_qle = 0;
+        let mut large_tle = 0;
+        let mut large_gtle = 0;
+        let mut large_gscore = 0;
+        let mut large_max_off = 0;
+        let large_score = sw_large.scalarBandedSWA(
+            q.len() as i32,
+            &q,
+            t.len() as i32,
+            &t,
+            10,
+            20,
+            &mut large_qle,
+            &mut large_tle,
+            &mut large_gtle,
+            &mut large_gscore,
+            &mut large_max_off,
+        );
+
+        assert_eq!(zero_score, large_score);
+        assert_eq!(
+            (zero_qle, zero_tle, zero_gtle, zero_gscore, zero_max_off),
+            (
+                large_qle,
+                large_tle,
+                large_gtle,
+                large_gscore,
+                large_max_off
+            )
+        );
+        assert_eq!(zero_score, 34);
+        assert_eq!(
+            (zero_qle, zero_tle, zero_gtle, zero_gscore),
+            (10, 10, 10, 34)
+        );
     }
 
     #[test]

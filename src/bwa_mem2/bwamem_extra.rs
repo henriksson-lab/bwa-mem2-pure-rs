@@ -12,7 +12,6 @@ use crate::bwa_mem2::bwamem::{mem_alnreg_t, mem_alnreg_v, mem_opt_t, mem_reg2aln
 use crate::bwa_mem2::bwt::{bwt_t, bwtintv_v};
 use crate::bwa_mem2::kstring::{kputc, kputl, kputs, kputw, kstring_t};
 
-
 // --- bwamem_extra.cpp ---
 
 // SMEM iterator interface.
@@ -82,7 +81,7 @@ pub fn smem_config(itr: &mut __smem_i, min_intv: i32, max_len: i32, max_intv: u6
 }
 
 #[doc = "Original function: smem_next:90"]
-pub fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
+pub(crate) fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
     itr.tmpvec[0].n = 0;
     itr.tmpvec[1].n = 0;
     itr.matches.n = 0;
@@ -106,7 +105,7 @@ pub fn smem_next(itr: &mut __smem_i) -> Option<&bwtintv_v> {
 /// The difference from `mem_align1_core()` is that this routine: 1) calls
 /// `mem_mark_primary_se()`; 2) does not modify the input sequence.
 #[doc = "Original function: mem_align1:107"]
-pub fn mem_align1(
+pub(crate) fn mem_align1(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -124,9 +123,7 @@ pub fn mem_align1(
 pub fn get_pri_idx(XA_drop_ratio: f64, a: &[mem_alnreg_t], i: i32) -> i32 {
     let i = i as usize;
     let k = a[i].secondary_all;
-    if k >= 0
-        && (a[i].score as f64) >= (a[k as usize].score as f64) * XA_drop_ratio
-    {
+    if k >= 0 && (a[i].score as f64) >= (a[k as usize].score as f64) * XA_drop_ratio {
         k
     } else {
         -1

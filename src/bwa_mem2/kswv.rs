@@ -7,7 +7,7 @@
 
 //! Port of `bwa-mem2/src/kswv.h` + `bwa-mem2/src/kswv.cpp`.
 
-use crate::bwa_mem2::ksw::{KSW_XBYTE, KSW_XSTART, ksw_align2, ksw_i16_slices, ksw_qmax, ksw_u8_slices};
+use crate::bwa_mem2::ksw::{ksw_align2, ksw_i16_slices, ksw_qmax, ksw_u8_slices, KSW_XBYTE};
 
 // --- kswv.h ---
 
@@ -170,13 +170,22 @@ fn disable_kswv16_avx512() -> bool {
     *FLAG.get_or_init(|| std::env::var_os("BWA_DISABLE_KSWV16").is_some())
 }
 
+#[inline]
+fn kswv512_u8_saturated_score(score: u8, shift: u8) -> i32 {
+    if u16::from(score) + u16::from(shift) < u16::from(u8::MAX) {
+        i32::from(score)
+    } else {
+        i32::from(u8::MAX)
+    }
+}
+
 #[doc = "Original function: parseCmdLine:1636"]
-pub fn parseCmdLine(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+pub(crate) fn parseCmdLine(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
     crate::support::stub::<()>("parseCmdLine")
 }
 
 #[doc = "Original function: loadPairs:1686"]
-pub fn loadPairs(
+pub(crate) fn loadPairs(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -186,7 +195,7 @@ pub fn loadPairs(
 }
 
 #[doc = "Original function: find_stats:1738"]
-pub fn find_stats(
+pub(crate) fn find_stats(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -197,7 +206,7 @@ pub fn find_stats(
 }
 
 #[doc = "Original function: main:1751"]
-pub fn main(
+pub(crate) fn main(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -804,7 +813,7 @@ impl kswv {
         }
         #[inline]
         unsafe fn cmpge_epi16_mask(a: __m512i, b: __m512i) -> u32 {
-            unsafe { _mm512_cmpgt_epi16_mask(a, b) | _mm512_cmpeq_epi16_mask(a, b) }
+            _mm512_cmpgt_epi16_mask(a, b) | _mm512_cmpeq_epi16_mask(a, b)
         }
 
         let nrow_us = nrow.max(0) as usize;
@@ -822,13 +831,13 @@ impl kswv {
         row_max.clear();
         row_max.resize(nrow_us.max(1) * SIMD_WIDTH16, -1);
 
-        let zero = unsafe { _mm512_setzero_si512() };
-        let one = unsafe { _mm512_set1_epi16(1) };
-        let minus1 = unsafe { _mm512_set1_epi16(-1) };
-        let e_del = unsafe { _mm512_set1_epi16(self.e_del as i16) };
-        let oe_del = unsafe { _mm512_set1_epi16((self.o_del + self.e_del) as i16) };
-        let e_ins = unsafe { _mm512_set1_epi16(self.e_ins as i16) };
-        let oe_ins = unsafe { _mm512_set1_epi16((self.o_ins + self.e_ins) as i16) };
+        let zero = _mm512_setzero_si512();
+        let one = _mm512_set1_epi16(1);
+        let minus1 = _mm512_set1_epi16(-1);
+        let e_del = _mm512_set1_epi16(self.e_del as i16);
+        let oe_del = _mm512_set1_epi16((self.o_del + self.e_del) as i16);
+        let e_ins = _mm512_set1_epi16(self.e_ins as i16);
+        let oe_ins = _mm512_set1_epi16((self.o_ins + self.e_ins) as i16);
 
         let mut perm = [0_i16; SIMD_WIDTH16];
         perm[0] = i16::from(self.w_match);
@@ -873,7 +882,7 @@ impl kswv {
         let endsc_v = unsafe { load_i16x32(endsc.as_ptr()) };
 
         let mut gmax = zero;
-        let mut te_v = unsafe { _mm512_set1_epi16(-1) };
+        let mut te_v = _mm512_set1_epi16(-1);
         let mut qe_v = zero;
         let mut exit0 = u32::MAX;
         let mut max_v: __m512i;
@@ -895,48 +904,48 @@ impl kswv {
             let s1 = unsafe { load_i16x32(seq1_soa.as_ptr().add(i * SIMD_WIDTH16)) };
             let mut e11 = zero;
             imax_v = zero;
-            let mut iqe_v = unsafe { _mm512_set1_epi16(-1) };
+            let mut iqe_v = _mm512_set1_epi16(-1);
             let mut l_v = zero;
             for j in 0..ncol_us {
                 let h00 = unsafe { load_i16x32(h0.as_ptr().add(j * SIMD_WIDTH16)) };
                 let s2 = unsafe { load_i16x32(seq2_soa.as_ptr().add(j * SIMD_WIDTH16)) };
                 let f11 = unsafe { load_i16x32(f_buf.as_ptr().add((j + 1) * SIMD_WIDTH16)) };
-                let xor_v = unsafe { _mm512_xor_si512(s1, s2) };
-                let sbt = unsafe { _mm512_permutexvar_epi16(xor_v, perm_v) };
+                let xor_v = _mm512_xor_si512(s1, s2);
+                let sbt = _mm512_permutexvar_epi16(xor_v, perm_v);
                 // Detect AMBIG (i16 = -1) at i16 granularity then fuse the zero-blend with the
                 // add: m11 = !invalid ? add(h00, sbt) : 0. Saves 1 SIMD op vs the prior
                 // add → movepi8 → mask_blend_epi8 chain.
-                let or_v = unsafe { _mm512_or_si512(s1, s2) };
-                let invalid_i16: u32 = unsafe { _mm512_movepi16_mask(or_v) };
-                let m11 = unsafe { _mm512_mask_add_epi16(zero, !invalid_i16, h00, sbt) };
+                let or_v = _mm512_or_si512(s1, s2);
+                let invalid_i16: u32 = _mm512_movepi16_mask(or_v);
+                let m11 = _mm512_mask_add_epi16(zero, !invalid_i16, h00, sbt);
                 // Fold the max chain into a tree to halve the critical path: original was
                 // `((m11 max e11) max f11) max 0` (chain 3 deep); now `(m11 max e11) max
                 // (f11 max 0)` is two parallel maxes followed by one combiner (depth 2).
-                let me = unsafe { _mm512_max_epi16(m11, e11) };
-                let f0 = unsafe { _mm512_max_epi16(f11, zero) };
-                let h11 = unsafe { _mm512_max_epi16(me, f0) };
-                let cmp0 = unsafe { _mm512_cmpgt_epi16_mask(h11, imax_v) };
-                imax_v = unsafe { _mm512_max_epi16(imax_v, h11) };
-                iqe_v = unsafe { _mm512_mask_blend_epi16(cmp0, iqe_v, l_v) };
-                let gap_e = unsafe { _mm512_sub_epi16(h11, oe_ins) };
-                e11 = unsafe { _mm512_sub_epi16(e11, e_ins) };
-                e11 = unsafe { _mm512_max_epi16(gap_e, e11) };
-                let gap_d = unsafe { _mm512_sub_epi16(h11, oe_del) };
-                let mut f21 = unsafe { _mm512_sub_epi16(f11, e_del) };
-                f21 = unsafe { _mm512_max_epi16(gap_d, f21) };
+                let me = _mm512_max_epi16(m11, e11);
+                let f0 = _mm512_max_epi16(f11, zero);
+                let h11 = _mm512_max_epi16(me, f0);
+                let cmp0 = _mm512_cmpgt_epi16_mask(h11, imax_v);
+                imax_v = _mm512_max_epi16(imax_v, h11);
+                iqe_v = _mm512_mask_blend_epi16(cmp0, iqe_v, l_v);
+                let gap_e = _mm512_sub_epi16(h11, oe_ins);
+                e11 = _mm512_sub_epi16(e11, e_ins);
+                e11 = _mm512_max_epi16(gap_e, e11);
+                let gap_d = _mm512_sub_epi16(h11, oe_del);
+                let mut f21 = _mm512_sub_epi16(f11, e_del);
+                f21 = _mm512_max_epi16(gap_d, f21);
                 unsafe { store_i16x32(h1.as_mut_ptr().add((j + 1) * SIMD_WIDTH16), h11) };
                 unsafe { store_i16x32(f_buf.as_mut_ptr().add((j + 1) * SIMD_WIDTH16), f21) };
-                l_v = unsafe { _mm512_add_epi16(l_v, one) };
+                l_v = _mm512_add_epi16(l_v, one);
             }
 
             // Block I: store the previous row's max for the score2 search below.
             if i > 0 {
-                let mut msk = unsafe { _mm512_cmpgt_epi16_mask(imax_v, pimax_v) } | mask_v;
+                let mut msk = _mm512_cmpgt_epi16_mask(imax_v, pimax_v) | mask_v;
                 // Combined: stored = (!msk && minsc_mask && exit0) ? pimax : minus1. Saves 2
                 // blends vs the original 3-blend chain. Note: minus1 is the "fill" sentinel here
                 // (vs zero in the u8 wrapper).
                 let keep = !msk & minsc_mask & exit0;
-                let stored = unsafe { _mm512_mask_blend_epi16(keep, minus1, pimax_v) };
+                let stored = _mm512_mask_blend_epi16(keep, minus1, pimax_v);
                 unsafe { store_i16x32(row_max.as_mut_ptr().add((i - 1) * SIMD_WIDTH16), stored) };
                 msk &= u32::MAX;
                 mask_v = !msk;
@@ -946,10 +955,10 @@ impl kswv {
 
             // Block II: update per-lane gmax/te/qe; lanes where gmax >= endsc are marked dead
             // (cleared from exit0) so they no longer contribute to subsequent rows.
-            let cmp0 = unsafe { _mm512_cmpgt_epi16_mask(imax_v, gmax) } & exit0;
-            gmax = unsafe { _mm512_mask_blend_epi16(cmp0, gmax, imax_v) };
-            te_v = unsafe { _mm512_mask_blend_epi16(cmp0, te_v, i_v) };
-            qe_v = unsafe { _mm512_mask_blend_epi16(cmp0, qe_v, iqe_v) };
+            let cmp0 = _mm512_cmpgt_epi16_mask(imax_v, gmax) & exit0;
+            gmax = _mm512_mask_blend_epi16(cmp0, gmax, imax_v);
+            te_v = _mm512_mask_blend_epi16(cmp0, te_v, i_v);
+            qe_v = _mm512_mask_blend_epi16(cmp0, qe_v, iqe_v);
             let stop_mask = unsafe { cmpge_epi16_mask(gmax, endsc_v) } & endsc_mask_a;
             exit0 &= !stop_mask;
             rows_done = i + 1;
@@ -958,13 +967,13 @@ impl kswv {
                 break;
             }
             std::mem::swap(h0, h1);
-            i_v = unsafe { _mm512_add_epi16(i_v, one) };
+            i_v = _mm512_add_epi16(i_v, one);
         }
 
         if rows_done > 0 {
             // Combined: stored = (!mask_v && minsc_mask && exit0) ? pimax : minus1. Saves 2 blends.
             let keep = !mask_v & minsc_mask & exit0;
-            let stored = unsafe { _mm512_mask_blend_epi16(keep, minus1, pimax_v) };
+            let stored = _mm512_mask_blend_epi16(keep, minus1, pimax_v);
             unsafe {
                 store_i16x32(
                     row_max.as_mut_ptr().add((rows_done - 1) * SIMD_WIDTH16),
@@ -1018,18 +1027,18 @@ impl kswv {
             maxl = maxl.max(lo);
             minh = minh.min(hi);
         }
-        max_v = unsafe { _mm512_set1_epi16(-1) };
-        te_v = unsafe { _mm512_set1_epi16(-1) };
+        max_v = _mm512_set1_epi16(-1);
+        te_v = _mm512_set1_epi16(-1);
         let low_v = unsafe { load_i16x32(low.as_ptr()) };
         let high_v = unsafe { load_i16x32(high.as_ptr()) };
 
         for row in 0..(maxl.max(0) as usize) {
-            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let row_i = _mm512_set1_epi16(row as i16);
             let rmax = unsafe { load_i16x32(row_max.as_ptr().add(row * SIMD_WIDTH16)) };
-            let mask1 = unsafe { _mm512_cmpgt_epi16_mask(low_v, row_i) };
-            let mask2 = unsafe { _mm512_cmpgt_epi16_mask(rmax, max_v) } & mask1;
-            max_v = unsafe { _mm512_mask_blend_epi16(mask2, max_v, rmax) };
-            te_v = unsafe { _mm512_mask_blend_epi16(mask2, te_v, row_i) };
+            let mask1 = _mm512_cmpgt_epi16_mask(low_v, row_i);
+            let mask2 = _mm512_cmpgt_epi16_mask(rmax, max_v) & mask1;
+            max_v = _mm512_mask_blend_epi16(mask2, max_v, rmax);
+            te_v = _mm512_mask_blend_epi16(mask2, te_v, row_i);
         }
 
         // Bounded scan above the band: require row < rlen so we don't read past valid rowMax.
@@ -1042,13 +1051,13 @@ impl kswv {
         let rlen_v = unsafe { load_i16x32(rlen.as_ptr()) };
         let start = (minh + 1).max(0) as usize;
         for row in start..limit {
-            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let row_i = _mm512_set1_epi16(row as i16);
             let rmax = unsafe { load_i16x32(row_max.as_ptr().add(row * SIMD_WIDTH16)) };
-            let mask1 = unsafe { _mm512_cmpgt_epi16_mask(row_i, high_v) };
-            let mut mask2 = unsafe { _mm512_cmpgt_epi16_mask(rmax, max_v) } & mask1;
-            mask2 &= unsafe { _mm512_cmpgt_epi16_mask(rlen_v, row_i) };
-            max_v = unsafe { _mm512_mask_blend_epi16(mask2, max_v, rmax) };
-            te_v = unsafe { _mm512_mask_blend_epi16(mask2, te_v, row_i) };
+            let mask1 = _mm512_cmpgt_epi16_mask(row_i, high_v);
+            let mut mask2 = _mm512_cmpgt_epi16_mask(rmax, max_v) & mask1;
+            mask2 &= _mm512_cmpgt_epi16_mask(rlen_v, row_i);
+            max_v = _mm512_mask_blend_epi16(mask2, max_v, rmax);
+            te_v = _mm512_mask_blend_epi16(mask2, te_v, row_i);
         }
 
         let mut score2 = [0_i16; SIMD_WIDTH16];
@@ -1197,11 +1206,11 @@ impl kswv {
         }
         #[inline]
         unsafe fn cmpge_epu8_mask(a: __m512i, b: __m512i) -> u64 {
-            unsafe { _mm512_cmpgt_epu8_mask(a, b) | _mm512_cmpeq_epu8_mask(a, b) }
+            _mm512_cmpgt_epu8_mask(a, b) | _mm512_cmpeq_epu8_mask(a, b)
         }
         #[inline]
         unsafe fn cmpgt_epi16_mask(a: __m512i, b: __m512i) -> u32 {
-            unsafe { _mm512_cmpgt_epi16_mask(a, b) }
+            _mm512_cmpgt_epi16_mask(a, b)
         }
 
         let nrow_us = nrow.max(0) as usize;
@@ -1220,14 +1229,14 @@ impl kswv {
         row_max.clear();
         row_max.resize(nrow_us.max(1) * SIMD_WIDTH8, 0);
 
-        let zero = unsafe { _mm512_setzero_si512() };
-        let one = unsafe { _mm512_set1_epi8(1) };
+        let zero = _mm512_setzero_si512();
+        let one = _mm512_set1_epi8(1);
         let mut shift = self.w_match.min(self.w_mismatch).min(self.w_ambig) as u8;
         let mdiff = self.w_match.max(self.w_mismatch).max(self.w_ambig) as u8;
         let qmax = mdiff;
         shift = 0_u8.wrapping_sub(shift);
-        let sft = unsafe { _mm512_set1_epi8(shift as i8) };
-        let cmax = unsafe { _mm512_set1_epi8(-1) };
+        let sft = _mm512_set1_epi8(shift as i8);
+        let cmax = _mm512_set1_epi8(-1);
 
         let mut perm = [0_i8; SIMD_WIDTH8];
         perm[0] = self.w_match;
@@ -1272,15 +1281,15 @@ impl kswv {
         }
         let minsc_v = unsafe { load_u8x64(minsc.as_ptr()) };
         let endsc_v = unsafe { load_u8x64(endsc.as_ptr()) };
-        let e_del = unsafe { _mm512_set1_epi8(self.e_del as i8) };
-        let oe_del = unsafe { _mm512_set1_epi8((self.o_del + self.e_del) as i8) };
-        let e_ins = unsafe { _mm512_set1_epi8(self.e_ins as i8) };
-        let oe_ins = unsafe { _mm512_set1_epi8((self.o_ins + self.e_ins) as i8) };
-        let five = unsafe { _mm512_set1_epi8(5) };
+        let e_del = _mm512_set1_epi8(self.e_del as i8);
+        let oe_del = _mm512_set1_epi8((self.o_del + self.e_del) as i8);
+        let e_ins = _mm512_set1_epi8(self.e_ins as i8);
+        let oe_ins = _mm512_set1_epi8((self.o_ins + self.e_ins) as i8);
+        let five = _mm512_set1_epi8(5);
 
         let mut gmax = zero;
-        let mut te_lo = unsafe { _mm512_set1_epi16(-1) };
-        let mut te_hi = unsafe { _mm512_set1_epi16(-1) };
+        let mut te_lo = _mm512_set1_epi16(-1);
+        let mut te_hi = _mm512_set1_epi16(-1);
         let mut qe_v = zero;
         let mut exit0 = u64::MAX;
         let mut pimax = zero;
@@ -1296,59 +1305,59 @@ impl kswv {
             let s1 = unsafe { load_u8x64(seq1_soa.as_ptr().add(i * SIMD_WIDTH8)) };
             let mut e11 = zero;
             let mut imax = zero;
-            let mut iqe = unsafe { _mm512_set1_epi8(-1) };
+            let mut iqe = _mm512_set1_epi8(-1);
             let mut l_v = zero;
             for j in 0..ncol_us {
                 let h00 = unsafe { load_u8x64(h0.as_ptr().add(j * SIMD_WIDTH8)) };
                 let s2 = unsafe { load_u8x64(seq2_soa.as_ptr().add(j * SIMD_WIDTH8)) };
                 let f11 = unsafe { load_u8x64(f_buf.as_ptr().add((j + 1) * SIMD_WIDTH8)) };
-                let xor_v = unsafe { _mm512_xor_si512(s1, s2) };
-                let mut sbt = unsafe { _mm512_shuffle_epi8(perm_v, xor_v) };
-                let cmpq = unsafe { _mm512_cmpeq_epu8_mask(s2, five) };
-                sbt = unsafe { _mm512_mask_blend_epi8(cmpq, sbt, sft) };
-                let or_v = unsafe { _mm512_or_si512(s1, s2) };
-                let invalid = unsafe { _mm512_movepi8_mask(or_v) };
-                let m11_raw = unsafe { _mm512_adds_epu8(h00, sbt) };
+                let xor_v = _mm512_xor_si512(s1, s2);
+                let mut sbt = _mm512_shuffle_epi8(perm_v, xor_v);
+                let cmpq = _mm512_cmpeq_epu8_mask(s2, five);
+                sbt = _mm512_mask_blend_epi8(cmpq, sbt, sft);
+                let or_v = _mm512_or_si512(s1, s2);
+                let invalid = _mm512_movepi8_mask(or_v);
+                let m11_raw = _mm512_adds_epu8(h00, sbt);
                 // Fused: m11 = (!invalid) ? subs_epu8(m11_raw, sft) : 0. Saves the separate
                 // blend(invalid, m11, zero) before the subs.
-                let m11 = unsafe { _mm512_mask_subs_epu8(zero, !invalid, m11_raw, sft) };
-                let mut h11 = unsafe { _mm512_max_epu8(m11, e11) };
-                h11 = unsafe { _mm512_max_epu8(h11, f11) };
-                let cmp0 = unsafe { _mm512_cmpgt_epu8_mask(h11, imax) };
-                imax = unsafe { _mm512_max_epu8(imax, h11) };
-                iqe = unsafe { _mm512_mask_blend_epi8(cmp0, iqe, l_v) };
-                let gap_e = unsafe { _mm512_subs_epu8(h11, oe_ins) };
-                e11 = unsafe { _mm512_subs_epu8(e11, e_ins) };
-                e11 = unsafe { _mm512_max_epu8(gap_e, e11) };
-                let gap_d = unsafe { _mm512_subs_epu8(h11, oe_del) };
-                let mut f21 = unsafe { _mm512_subs_epu8(f11, e_del) };
-                f21 = unsafe { _mm512_max_epu8(gap_d, f21) };
+                let m11 = _mm512_mask_subs_epu8(zero, !invalid, m11_raw, sft);
+                let mut h11 = _mm512_max_epu8(m11, e11);
+                h11 = _mm512_max_epu8(h11, f11);
+                let cmp0 = _mm512_cmpgt_epu8_mask(h11, imax);
+                imax = _mm512_max_epu8(imax, h11);
+                iqe = _mm512_mask_blend_epi8(cmp0, iqe, l_v);
+                let gap_e = _mm512_subs_epu8(h11, oe_ins);
+                e11 = _mm512_subs_epu8(e11, e_ins);
+                e11 = _mm512_max_epu8(gap_e, e11);
+                let gap_d = _mm512_subs_epu8(h11, oe_del);
+                let mut f21 = _mm512_subs_epu8(f11, e_del);
+                f21 = _mm512_max_epu8(gap_d, f21);
                 unsafe { store_u8x64(h1.as_mut_ptr().add((j + 1) * SIMD_WIDTH8), h11) };
                 unsafe { store_u8x64(f_buf.as_mut_ptr().add((j + 1) * SIMD_WIDTH8), f21) };
-                l_v = unsafe { _mm512_add_epi8(l_v, one) };
+                l_v = _mm512_add_epi8(l_v, one);
             }
 
             if i > 0 {
-                let msk = unsafe { _mm512_cmpgt_epu8_mask(imax, pimax) } | mask;
+                let msk = _mm512_cmpgt_epu8_mask(imax, pimax) | mask;
                 // Combined: pimax_out = (!msk && minsc_mask && exit0) ? pimax : 0. Saves 2 blends
                 // vs the original 3-blend chain.
                 let keep = !msk & minsc_mask & exit0;
-                let stored = unsafe { _mm512_mask_blend_epi8(keep, zero, pimax) };
+                let stored = _mm512_mask_blend_epi8(keep, zero, pimax);
                 unsafe { store_u8x64(row_max.as_mut_ptr().add((i - 1) * SIMD_WIDTH8), stored) };
                 mask = !msk;
             }
             pimax = imax;
             minsc_mask = unsafe { cmpge_epu8_mask(imax, minsc_v) } & minsc_mask_a;
 
-            let cmp0 = unsafe { _mm512_cmpgt_epu8_mask(imax, gmax) } & exit0;
-            gmax = unsafe { _mm512_mask_blend_epi8(cmp0, gmax, imax) };
-            let i_v = unsafe { _mm512_set1_epi16(i as i16) };
-            te_lo = unsafe { _mm512_mask_blend_epi16(cmp0 as u32, te_lo, i_v) };
-            te_hi = unsafe { _mm512_mask_blend_epi16((cmp0 >> SIMD_WIDTH16) as u32, te_hi, i_v) };
-            qe_v = unsafe { _mm512_mask_blend_epi8(cmp0, qe_v, iqe) };
+            let cmp0 = _mm512_cmpgt_epu8_mask(imax, gmax) & exit0;
+            gmax = _mm512_mask_blend_epi8(cmp0, gmax, imax);
+            let i_v = _mm512_set1_epi16(i as i16);
+            te_lo = _mm512_mask_blend_epi16(cmp0 as u32, te_lo, i_v);
+            te_hi = _mm512_mask_blend_epi16((cmp0 >> SIMD_WIDTH16) as u32, te_hi, i_v);
+            qe_v = _mm512_mask_blend_epi8(cmp0, qe_v, iqe);
 
             let stop_mask = unsafe { cmpge_epu8_mask(gmax, endsc_v) } & endsc_mask_a;
-            let left = unsafe { _mm512_adds_epu8(gmax, sft) };
+            let left = _mm512_adds_epu8(gmax, sft);
             let sat_mask = unsafe { cmpge_epu8_mask(left, cmax) };
             exit0 &= !(stop_mask | sat_mask);
             rows_done = i + 1;
@@ -1362,7 +1371,7 @@ impl kswv {
         if rows_done > 0 {
             // Combined: stored = (!mask && minsc_mask && exit0) ? pimax : 0. Saves 2 blends.
             let keep = !mask & minsc_mask & exit0;
-            let stored = unsafe { _mm512_mask_blend_epi8(keep, zero, pimax) };
+            let stored = _mm512_mask_blend_epi8(keep, zero, pimax);
             unsafe {
                 store_u8x64(
                     row_max.as_mut_ptr().add((rows_done - 1) * SIMD_WIDTH8),
@@ -1393,10 +1402,10 @@ impl kswv {
                     aln[ind].qb = aln[ind].qe - i32::from(qe[lane]);
                 }
             } else {
-                aln[ind].score = i32::from(score[lane]);
+                aln[ind].score = kswv512_u8_saturated_score(score[lane], shift);
                 aln[ind].te = i32::from(te[lane]);
                 aln[ind].qe = i32::from(qe[lane]);
-                if score[lane] != u8::MAX {
+                if aln[ind].score != i32::from(u8::MAX) {
                     qe[lane] = 1;
                     live += 1;
                 } else {
@@ -1424,25 +1433,24 @@ impl kswv {
         }
 
         let mut max_v = zero;
-        te_lo = unsafe { _mm512_set1_epi16(-1) };
-        te_hi = unsafe { _mm512_set1_epi16(-1) };
+        te_lo = _mm512_set1_epi16(-1);
+        te_hi = _mm512_set1_epi16(-1);
         let low_lo = unsafe { load_i16x32(low.as_ptr()) };
         let high_lo = unsafe { load_i16x32(high.as_ptr()) };
         let low_hi = unsafe { load_i16x32(low.as_ptr().add(SIMD_WIDTH16)) };
         let high_hi = unsafe { load_i16x32(high.as_ptr().add(SIMD_WIDTH16)) };
 
         for row in 0..(maxl.max(0) as usize) {
-            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let row_i = _mm512_set1_epi16(row as i16);
             let rmax = unsafe { load_u8x64(row_max.as_ptr().add(row * SIMD_WIDTH8)) };
             let mask_lo = unsafe { cmpgt_epi16_mask(low_lo, row_i) };
             let mask_hi = unsafe { cmpgt_epi16_mask(low_hi, row_i) };
-            let mut mask2 = unsafe { _mm512_cmpgt_epu8_mask(rmax, max_v) };
+            let mut mask2 = _mm512_cmpgt_epu8_mask(rmax, max_v);
             let mask1 = u64::from(mask_lo) | (u64::from(mask_hi) << SIMD_WIDTH16);
             mask2 &= mask1;
-            max_v = unsafe { _mm512_mask_blend_epi8(mask2, max_v, rmax) };
-            te_lo = unsafe { _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i) };
-            te_hi =
-                unsafe { _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i) };
+            max_v = _mm512_mask_blend_epi8(mask2, max_v, rmax);
+            te_lo = _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i);
+            te_hi = _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i);
         }
 
         let mut rlen = [0_i16; SIMD_WIDTH8];
@@ -1453,20 +1461,19 @@ impl kswv {
         let rlen_hi = unsafe { load_i16x32(rlen.as_ptr().add(SIMD_WIDTH16)) };
         let start = (minh + 1).max(0) as usize;
         for row in start..limit {
-            let row_i = unsafe { _mm512_set1_epi16(row as i16) };
+            let row_i = _mm512_set1_epi16(row as i16);
             let rmax = unsafe { load_u8x64(row_max.as_ptr().add(row * SIMD_WIDTH8)) };
             let mask_lo = unsafe { cmpgt_epi16_mask(row_i, high_lo) };
             let mask_hi = unsafe { cmpgt_epi16_mask(row_i, high_hi) };
-            let mut mask2 = unsafe { _mm512_cmpgt_epu8_mask(rmax, max_v) };
+            let mut mask2 = _mm512_cmpgt_epu8_mask(rmax, max_v);
             let mask1 = u64::from(mask_lo) | (u64::from(mask_hi) << SIMD_WIDTH16);
             let rmask_lo = unsafe { cmpgt_epi16_mask(rlen_lo, row_i) };
             let rmask_hi = unsafe { cmpgt_epi16_mask(rlen_hi, row_i) };
             let rmask = u64::from(rmask_lo) | (u64::from(rmask_hi) << SIMD_WIDTH16);
             mask2 &= mask1 & rmask;
-            max_v = unsafe { _mm512_mask_blend_epi8(mask2, max_v, rmax) };
-            te_lo = unsafe { _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i) };
-            te_hi =
-                unsafe { _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i) };
+            max_v = _mm512_mask_blend_epi8(mask2, max_v, rmax);
+            te_lo = _mm512_mask_blend_epi16(mask2 as u32, te_lo, row_i);
+            te_hi = _mm512_mask_blend_epi16((mask2 >> SIMD_WIDTH16) as u32, te_hi, row_i);
         }
 
         let mut score2 = [0_u8; SIMD_WIDTH8];
@@ -1647,7 +1654,7 @@ impl kswv {
             self.e_del,
             self.o_ins,
             self.e_ins,
-            xtra | KSW_XSTART,
+            xtra,
             None,
         );
         kswr_t {
@@ -1690,7 +1697,7 @@ impl kswv {
             self.e_del,
             self.o_ins,
             self.e_ins,
-            xtra | KSW_XSTART,
+            xtra,
             None,
         );
         kswr_t {
@@ -1865,8 +1872,8 @@ fn decode_soa_lane_u8_query_into(soa: &[u8], lane: usize, len: usize, out: &mut 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_soa_lane, decode_soa_lane_u8, decode_soa_lane_u8_query, kswr_t, kswv, SeqPair,
-        SIMD_WIDTH16, SIMD_WIDTH8,
+        decode_soa_lane, decode_soa_lane_u8, decode_soa_lane_u8_query, kswr_t, kswv,
+        kswv512_u8_saturated_score, SeqPair, SIMD_WIDTH16, SIMD_WIDTH8,
     };
 
     fn score_mat() -> [i8; 25] {
@@ -2130,6 +2137,13 @@ mod tests {
         soa[3 * SIMD_WIDTH8] = 3;
         assert_eq!(decode_soa_lane_u8(&soa, 0, 4), vec![0, 1, 4, 3]);
         assert_eq!(decode_soa_lane_u8_query(&soa, 0, 4), vec![0, 1, 4, 3]);
+    }
+
+    #[test]
+    fn kswv512_u8_saturated_score_uses_shifted_threshold() {
+        assert_eq!(kswv512_u8_saturated_score(250, 4), 250);
+        assert_eq!(kswv512_u8_saturated_score(251, 4), 255);
+        assert_eq!(kswv512_u8_saturated_score(255, 0), 255);
     }
 
     #[test]

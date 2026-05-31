@@ -8,20 +8,24 @@
 //! Port of `bwa-mem2/src/bwamem.h` + `bwa-mem2/src/bwamem.cpp`.
 
 use crate::bwa_mem2::bandedswa::{BandedPairWiseSW, SeqPair};
-use crate::bwa_mem2::bwa::{BWA_VERBOSE, bseq1_t, bwa_fill_scmat, bwa_gen_cigar2};
+use crate::bwa_mem2::bntseq::{bns_depos, bns_intv2rid, bns_pos2rid, bntseq_t};
+use crate::bwa_mem2::bwa::{bseq1_t, bwa_fill_scmat, bwa_gen_cigar2, BWA_VERBOSE};
+use crate::bwa_mem2::bwamem_extra::mem_gen_alt;
+use crate::bwa_mem2::bwamem_pair::{
+    mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
+};
 use crate::bwa_mem2::bwt::bwtintv_v;
 use crate::bwa_mem2::fmi_search::{FMI_search, SMEM};
+use crate::bwa_mem2::kstring::{
+    kputc, kputl, kputs, kputsn, kputw, ks_resize, ksprintf, kstring_t,
+};
+use crate::bwa_mem2::ksw::{ksw_align2, kswr_t, KSW_XBYTE, KSW_XSTART};
+use crate::bwa_mem2::r#macro::{BATCH_SIZE, SEEDS_PER_CHAIN};
+use crate::bwa_mem2::utils::hash_64;
+use rayon::{scope, ThreadPoolBuilder};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
-use rayon::{ThreadPoolBuilder, scope};
-use crate::bwa_mem2::bntseq::{bns_depos, bns_intv2rid, bns_pos2rid, bntseq_t};
-use crate::bwa_mem2::bwamem_extra::mem_gen_alt;
-use crate::bwa_mem2::bwamem_pair::{mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre};
-use crate::bwa_mem2::kstring::{kputc, kputl, kputs, kputsn, kputw, ks_resize, ksprintf, kstring_t};
-use crate::bwa_mem2::ksw::{KSW_XBYTE, KSW_XSTART, ksw_align2, kswr_t};
-use crate::bwa_mem2::r#macro::{BATCH_SIZE, SEEDS_PER_CHAIN};
-use crate::bwa_mem2::utils::hash_64;
 
 // --- bwamem.h ---
 
@@ -271,7 +275,7 @@ pub struct worker_t {
 }
 
 #[doc = "Original function: abc:114"]
-pub fn abc() {
+pub(crate) fn abc() {
     crate::support::stub::<()>("abc")
 }
 
@@ -291,13 +295,13 @@ const H0_: i32 = -99;
 const AVG_SEEDS_PER_READ: usize = 64;
 const MEM_MAPQ_COEF: f64 = 30.0;
 const MEM_MAPQ_MAX: i32 = 60;
-const MEM_F_PE: i32 = 0x2;
-const MEM_F_PRIMARY5: i32 = 0x800;
-const MEM_F_ALL: i32 = 0x8;
-const MEM_F_NO_MULTI: i32 = 0x10;
-const MEM_F_KEEP_SUPP_MAPQ: i32 = 0x1000;
-const MEM_F_REF_HDR: i32 = 0x100;
-const MEM_F_SOFTCLIP: i32 = 0x200;
+pub const MEM_F_PE: i32 = 0x2;
+pub const MEM_F_PRIMARY5: i32 = 0x800;
+pub const MEM_F_ALL: i32 = 0x8;
+pub const MEM_F_NO_MULTI: i32 = 0x10;
+pub const MEM_F_KEEP_SUPP_MAPQ: i32 = 0x1000;
+pub const MEM_F_REF_HDR: i32 = 0x100;
+pub const MEM_F_SOFTCLIP: i32 = 0x200;
 
 static COMPUTE_POOLS: LazyLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -325,8 +329,17 @@ const NT4_LUT: [u8; 256] = {
 fn seq_to_nt4(seq: &str) -> Vec<u8> {
     seq.as_bytes()
         .iter()
-        .map(|&c| NT4_LUT[c as usize])
+        .map(|&c| query_byte_to_nt4(c))
         .collect()
+}
+
+#[inline]
+fn query_byte_to_nt4(c: u8) -> u8 {
+    if c < 5 {
+        c
+    } else {
+        NT4_LUT[c as usize]
+    }
 }
 
 #[inline]
@@ -354,7 +367,9 @@ fn take_seeds_buf() -> Vec<mem_seed_t> {
     // doubling growth (1→2→4→8→16) costs 4 extra reallocs per cold chain. Pool reuse means
     // most calls hit the pop() path; this only affects the warm-up batch.
     CHAIN_SEEDS_POOL.with(|c| {
-        c.borrow_mut().pop().unwrap_or_else(|| Vec::with_capacity(8))
+        c.borrow_mut()
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(8))
     })
 }
 
@@ -405,6 +420,17 @@ pub fn nt4_cow(seq: &crate::bwa_mem2::bwa::bseq1_t) -> std::borrow::Cow<'_, [u8]
         std::borrow::Cow::Borrowed(&seq.seq_nt4)
     } else {
         std::borrow::Cow::Owned(seq_to_nt4(seq.seq.as_deref().unwrap_or("")))
+    }
+}
+
+pub(crate) fn query_string_for_aln(
+    seq: &crate::bwa_mem2::bwa::bseq1_t,
+) -> std::borrow::Cow<'_, str> {
+    let l_seq = seq.l_seq.max(0) as usize;
+    if seq.seq_nt4.len() >= l_seq {
+        std::borrow::Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(&seq.seq_nt4[..l_seq]) })
+    } else {
+        std::borrow::Cow::Borrowed(seq.seq.as_deref().unwrap_or(""))
     }
 }
 
@@ -513,12 +539,7 @@ fn run_worker_chunks_parallel(
                         unsafe {
                             // Chunks are disjoint in read-space, and `tid` selects distinct
                             // per-thread scratch lanes in `mem_cache`, matching the original kt_for boundary.
-                            worker_ptr.run(
-                                func,
-                                start as i32,
-                                (end - start) as i32,
-                                tid as i32,
-                            );
+                            worker_ptr.run(func, start as i32, (end - start) as i32, tid as i32);
                         }
                         chunk_idx += nthreads;
                     }
@@ -758,14 +779,25 @@ pub fn mem_opt_init() -> Box<mem_opt_t> {
 
 /// Sort alignment regions in place by reference end position (ascending).
 #[doc = "Original function: sort_alnreg_re:162"]
-pub fn sort_alnreg_re(_n: i32, a: &mut [mem_alnreg_t]) {
-    ks_introsort_mem_ars2(a);
+pub fn sort_alnreg_re(n: i32, a: &mut [mem_alnreg_t]) {
+    let active = active_alnreg_len(n, a.len());
+    ks_introsort_mem_ars2(&mut a[..active]);
 }
 
 /// Sort alignment regions in place by score (descending), with `rb`/`qb` as tiebreakers.
 #[doc = "Original function: sort_alnreg_score:166"]
-pub fn sort_alnreg_score(_n: i32, a: &mut [mem_alnreg_t]) {
-    ks_introsort_mem_ars(a);
+pub fn sort_alnreg_score(n: i32, a: &mut [mem_alnreg_t]) {
+    let active = active_alnreg_len(n, a.len());
+    ks_introsort_mem_ars(&mut a[..active]);
+}
+
+#[inline]
+fn active_alnreg_len(n: i32, len: usize) -> usize {
+    if n <= 0 {
+        0
+    } else {
+        (n as usize).min(len)
+    }
 }
 
 #[inline(always)]
@@ -1745,11 +1777,7 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
             // Move chains out of filtered into group (avoids cloning seeds Vec).
             // Filtered slots become default mem_chain_t (empty seeds Vec, no alloc).
             group.clear();
-            group.extend(
-                filtered[start..end]
-                    .iter_mut()
-                    .map(|c| std::mem::take(c)),
-            );
+            group.extend(filtered[start..end].iter_mut().map(|c| std::mem::take(c)));
             ks_introsort_mem_flt(group);
 
             // pairwise chain comparisons
@@ -1839,7 +1867,7 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
 }
 
 #[doc = "Original function: kv_push:564"]
-pub fn kv_push__L564(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+pub(crate) fn kv_push__L564(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
     crate::support::stub::<()>("kv_push")
 }
 
@@ -2287,10 +2315,7 @@ pub fn mem_chain_seeds(
     }
     let mut chains = ChainTree::new();
 
-    for chain in chain_ar
-        .iter_mut()
-        .take(nseq as usize)
-    {
+    for chain in chain_ar.iter_mut().take(nseq as usize) {
         clear_chain_a_pooled(&mut chain.a, KEEP_CHAIN_CAP);
         chain.n = 0;
         chain.m = 0;
@@ -2330,9 +2355,7 @@ pub fn mem_chain_seeds(
                     e = e.max(se);
                 }
             }
-            if pos >= num_smem - 1
-                || matchArray[pos_us].rid != matchArray[pos_us + 1].rid
-            {
+            if pos >= num_smem - 1 || matchArray[pos_us].rid != matchArray[pos_us + 1].rid {
                 break;
             }
         }
@@ -2539,10 +2562,7 @@ pub fn mem_kernel1_core(
     debug_rss("kernel1_after_chain_seeds");
 
     // Post-processing of collected smems/chains
-    for chn in chain_ar
-        .iter_mut()
-        .take(nseq as usize)
-    {
+    for chn in chain_ar.iter_mut().take(nseq as usize) {
         // chn.n is usize, fits in i32 for chain counts.
         chn.n = mem_chain_flt(opt, chn.n as i32, &mut chn.a, tid) as usize;
         chn.m = chn.a.len();
@@ -2551,10 +2571,7 @@ pub fn mem_kernel1_core(
 
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
-    for chn in chain_ar
-        .iter_mut()
-        .take(nseq as usize)
-    {
+    for chn in chain_ar.iter_mut().take(nseq as usize) {
         mem_flt_chained_seeds(opt, bns, pac, seq_, chn.n as i32, &mut chn.a);
     }
     debug_rss("kernel1_after_flt_chained");
@@ -2596,11 +2613,7 @@ pub fn mem_kernel2_core(
     mem_chain2aln_across_reads_V2(
         opt, bns, pac, seq_, nseq, chain_ar, regs, mmc, ref_string, tid,
     );
-    for (l, reg) in regs
-        .iter()
-        .take(nseq as usize)
-        .enumerate()
-    {
+    for (l, reg) in regs.iter().take(nseq as usize).enumerate() {
         if debug_trace_read(seq_[l].name.as_deref()) {
             eprintln!(
                 "[trace::kernel2:after_chain2aln] read={} regs={:?}",
@@ -2625,10 +2638,7 @@ pub fn mem_kernel2_core(
         }
     }
 
-    for chain in chain_ar
-        .iter_mut()
-        .take(nseq as usize)
-    {
+    for chain in chain_ar.iter_mut().take(nseq as usize) {
         clear_chain_a_pooled(&mut chain.a, KEEP_CHAIN_CAP);
         chain.n = 0;
         chain.m = 0;
@@ -2653,11 +2663,7 @@ pub fn mem_kernel2_core(
     // mem_sort_dedup_patch needs &mut [u8] (bwa_gen_cigar2 reverses in place + restores),
     // so we copy seq_nt4 into this buffer per read but keep the capacity.
     let mut encoded_query: Vec<u8> = Vec::new();
-    for (l, reg) in regs
-        .iter_mut()
-        .take(nseq as usize)
-        .enumerate()
-    {
+    for (l, reg) in regs.iter_mut().take(nseq as usize).enumerate() {
         let nt4 = nt4_cow(&seq_[l]);
         encoded_query.clear();
         encoded_query.extend_from_slice(&nt4);
@@ -3011,10 +3017,7 @@ pub fn mem_process_seqs(
     w.opt = Some(Box::new(opt.clone()));
     w.n_processed = n_processed;
     w.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
-    ensure_mem_cache_thread_slots(
-        &mut w.mmc,
-        w.nthreads.max(1) as usize,
-    );
+    ensure_mem_cache_thread_slots(&mut w.mmc, w.nthreads.max(1) as usize);
     w.seqs = std::mem::take(seqs);
     let n_usize = n.max(0) as usize;
     if w.regs.len() < n_usize {
@@ -3193,7 +3196,7 @@ pub fn mem_mark_primary_se_core(
 }
 
 #[doc = "Original function: kv_push:1399"]
-pub fn kv_push__L1399(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+pub(crate) fn kv_push__L1399(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
     crate::support::stub::<()>("kv_push")
 }
 
@@ -3397,8 +3400,9 @@ pub fn mem_reg2sam(
     extra_flag: i32,
     m: Option<&mem_aln_t>,
 ) {
+    let query_for_aln = query_string_for_aln(s);
     let mut xa = if (opt.flag & MEM_F_ALL) == 0 {
-        mem_gen_alt(opt, bns, pac, a, s.l_seq, s.seq.as_deref().unwrap_or(""))
+        mem_gen_alt(opt, bns, pac, a, s.l_seq, query_for_aln.as_ref())
     } else {
         vec![None; a.n]
     };
@@ -3421,22 +3425,14 @@ pub fn mem_reg2sam(
         }
         if p.secondary >= 0
             && (p.secondary as usize) < a.a.len()
-            && (p.score as f32)
-                < (a.a[p.secondary as usize].score as f32) * opt.drop_ratio
+            && (p.score as f32) < (a.a[p.secondary as usize].score as f32) * opt.drop_ratio
         {
             continue;
         }
 
-        let mut q = mem_reg2aln(
-            opt,
-            bns,
-            pac,
-            s.l_seq,
-            s.seq.as_deref().unwrap_or(""),
-            Some(p),
-        );
+        let mut q = mem_reg2aln(opt, bns, pac, s.l_seq, query_for_aln.as_ref(), Some(p));
         assert!(q.rid >= 0, "mem_reg2sam expected mapped alignment"); // this should not happen with the new code
-        // Take xa[k] by value (xa not used after this loop) — avoids the String clone.
+                                                                      // Take xa[k] by value (xa not used after this loop) — avoids the String clone.
         q.XA = std::mem::take(&mut xa[k]);
         q.flag |= extra_flag; // flag secondary
         if p.secondary >= 0 {
@@ -3465,7 +3461,7 @@ pub fn mem_reg2sam(
 
     if aa.is_empty() {
         // no alignments good enough; then write an unaligned record
-        let mut t = mem_reg2aln(opt, bns, pac, s.l_seq, s.seq.as_deref().unwrap_or(""), None);
+        let mut t = mem_reg2aln(opt, bns, pac, s.l_seq, query_for_aln.as_ref(), None);
         t.flag |= extra_flag;
         mem_aln2sam(opt, bns, &mut str_, s, 1, &[t], 0, m);
     } else {
@@ -3816,9 +3812,7 @@ pub fn mem_aln2sam(
         kputsn(b"\tXS:i:", 6, str_);
         kputw(p_ref.sub, str_);
     }
-    if crate::bwa_mem2::bwa::BWA_RG_ID_NONEMPTY
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
+    if crate::bwa_mem2::bwa::BWA_RG_ID_NONEMPTY.load(std::sync::atomic::Ordering::Relaxed) {
         let rg_id = crate::bwa_mem2::bwa::BWA_RG_ID
             .read()
             .expect("bwa_rg_id lock");
@@ -3966,7 +3960,7 @@ pub fn mem_reg2aln(
     let qe_us = qe as usize;
     let mut query_slice: Vec<u8> = query_.as_bytes()[qb_us..qe_us]
         .iter()
-        .map(|&c| NT4_LUT[c as usize])
+        .map(|&c| query_byte_to_nt4(c))
         .collect();
     loop {
         w2 = w2.min(opt.w << 2);
@@ -4639,8 +4633,7 @@ pub fn mem_chain2aln_across_reads_V2(
             let mut keep = 0_usize;
             for idx in 0..nump {
                 let sp = work_pairs[idx];
-                let a = &mut av_v[sp.seqid as usize].a
-                    [sp.regid as usize];
+                let a = &mut av_v[sp.seqid as usize].a[sp.regid as usize];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -4656,11 +4649,7 @@ pub fn mem_chain2aln_across_reads_V2(
                     a.w = a.w.max(w);
                     let chain = &chain_ar[sp.seqid as usize].a[a.c];
                     recompute_seedcov_for_aln(chain, a);
-                    if debug_trace_read(
-                        seq_[sp.seqid as usize]
-                            .name
-                            .as_deref(),
-                    ) {
+                    if debug_trace_read(seq_[sp.seqid as usize].name.as_deref()) {
                         eprintln!(
                             "[trace::chain2aln:left_done] read={} aln={} score={} qle={} tle={} gtle={} gscore={} qb={} rb={} qe={} re={}",
                             seq_[sp.seqid as usize].name.as_deref().unwrap_or(""),
@@ -4712,8 +4701,7 @@ pub fn mem_chain2aln_across_reads_V2(
             let mut keep = 0_usize;
             for idx in 0..nump {
                 let sp = work_pairs[idx];
-                let a = &mut av_v[sp.seqid as usize].a
-                    [sp.regid as usize];
+                let a = &mut av_v[sp.seqid as usize].a[sp.regid as usize];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -4764,8 +4752,7 @@ pub fn mem_chain2aln_across_reads_V2(
             let mut keep = 0_usize;
             for idx in 0..nump {
                 let sp = work_pairs[idx];
-                let a = &mut av_v[sp.seqid as usize].a
-                    [sp.regid as usize];
+                let a = &mut av_v[sp.seqid as usize].a[sp.regid as usize];
                 let prev = a.score;
                 a.score = sp.score;
                 if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY {
@@ -4794,8 +4781,7 @@ pub fn mem_chain2aln_across_reads_V2(
     }
 
     for sp in &mut right_pairs {
-        let a = &av_v[sp.seqid as usize].a
-            [sp.regid as usize];
+        let a = &av_v[sp.seqid as usize].a[sp.regid as usize];
         sp.h0 = a.score;
     }
     if !right_pairs.is_empty() {
@@ -4859,8 +4845,7 @@ pub fn mem_chain2aln_across_reads_V2(
                 let mut keep = 0_usize;
                 for idx in 0..nump {
                     let sp = work_pairs[idx];
-                    let a = &mut av_v[sp.seqid as usize].a
-                        [sp.regid as usize];
+                    let a = &mut av_v[sp.seqid as usize].a[sp.regid as usize];
                     let prev = a.score;
                     a.score = sp.score;
                     if a.score == prev || sp.max_off < (w >> 1) + (w >> 2) || i + 1 == MAX_BAND_TRY
@@ -4877,11 +4862,7 @@ pub fn mem_chain2aln_across_reads_V2(
                         a.w = a.w.max(w);
                         let chain = &chain_ar[sp.seqid as usize].a[a.c];
                         recompute_seedcov_for_aln(chain, a);
-                        if debug_trace_read(
-                            seq_[sp.seqid as usize]
-                                .name
-                                .as_deref(),
-                        ) {
+                        if debug_trace_read(seq_[sp.seqid as usize].name.as_deref()) {
                             eprintln!(
                             "[trace::chain2aln:right_done] read={} aln={} score={} h0={} qle={} tle={} gtle={} gscore={} qb={} rb={} qe={} re={}",
                             seq_[sp.seqid as usize].name.as_deref().unwrap_or(""),
@@ -5070,10 +5051,10 @@ mod tests {
     use super::*;
     use crate::bwa_mem2::bntseq::bns_fasta2bntseq;
     use crate::bwa_mem2::bntseq::{bntann1_t, bntseq_t};
-    use crate::bwa_mem2::bwa::bseq_read_orig;
     use crate::bwa_mem2::bwa::bseq1_t;
-    use crate::bwa_mem2::fastmap::memoryAlloc;
+    use crate::bwa_mem2::bwa::bseq_read_orig;
     use crate::bwa_mem2::fastmap::ktp_aux_t;
+    use crate::bwa_mem2::fastmap::memoryAlloc;
     use crate::bwa_mem2::fmi_search::FMI_search;
     use crate::bwa_mem2::kseq::kseq_t;
     use crate::bwa_mem2::r#macro::BATCH_SIZE;
@@ -5660,6 +5641,57 @@ mod tests {
                             || (regs[i - 1].rb == regs[i].rb && regs[i - 1].qb <= regs[i].qb)))
             );
         }
+    }
+
+    #[test]
+    fn sort_alnreg_helpers_sort_only_clamped_active_prefix() {
+        let mut regs = vec![
+            mem_alnreg_t {
+                re: 30,
+                score: 10,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                re: 10,
+                score: 30,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                re: 20,
+                score: 20,
+                ..Default::default()
+            },
+            mem_alnreg_t {
+                re: 5,
+                score: 40,
+                ..Default::default()
+            },
+        ];
+
+        sort_alnreg_re(3, &mut regs);
+        assert_eq!(
+            regs.iter().map(|x| x.re).collect::<Vec<_>>(),
+            vec![10, 20, 30, 5]
+        );
+
+        sort_alnreg_score(0, &mut regs);
+        assert_eq!(
+            regs.iter().map(|x| x.score).collect::<Vec<_>>(),
+            vec![30, 20, 10, 40]
+        );
+
+        sort_alnreg_score(99, &mut regs);
+        assert_eq!(
+            regs.iter().map(|x| x.score).collect::<Vec<_>>(),
+            vec![40, 30, 20, 10]
+        );
+
+        regs.swap(0, 3);
+        sort_alnreg_re(-7, &mut regs);
+        assert_eq!(
+            regs.iter().map(|x| x.re).collect::<Vec<_>>(),
+            vec![30, 10, 20, 5]
+        );
     }
 
     #[test]
@@ -7368,6 +7400,91 @@ mod tests {
         assert_eq!(aln.NM, 0);
         assert_eq!(aln.score, 4);
         assert_eq!(aln.sub, 2);
+    }
+
+    #[test]
+    fn mem_reg2aln_preserves_preencoded_nt4_query_bytes() {
+        let opt = mem_opt_init();
+        let forward = vec![0_u8, 1, 2, 3];
+        let pac = pack_seq(&forward);
+        let bns = bntseq_t {
+            l_pac: 4,
+            n_seqs: 1,
+            anns: vec![crate::bwa_mem2::bntseq::bntann1_t {
+                offset: 0,
+                len: 4,
+                name: "chr1".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let reg = mem_alnreg_t {
+            rb: 0,
+            re: 4,
+            qb: 1,
+            qe: 5,
+            rid: 0,
+            score: 4,
+            truesc: 4,
+            secondary: -1,
+            w: 100,
+            ..Default::default()
+        };
+        let encoded = std::str::from_utf8(&[3_u8, 0, 1, 2, 3, 4]).expect("nt4 utf8");
+        let aln = mem_reg2aln(&opt, &bns, &pac, 6, encoded, Some(&reg));
+        assert_eq!(aln.rid, 0);
+        assert_eq!(aln.NM, 0);
+        assert_eq!(std::str::from_utf8(&aln.md).expect("md"), "4");
+    }
+
+    #[test]
+    fn mem_reg2sam_preserves_preencoded_nt4_query_without_seq_text() {
+        let mut opt = (*mem_opt_init()).clone();
+        opt.flag |= MEM_F_ALL;
+        opt.T = 1;
+        let forward = vec![0_u8, 1, 2, 3];
+        let pac = pack_seq(&forward);
+        let bns = bntseq_t {
+            l_pac: 4,
+            n_seqs: 1,
+            anns: vec![crate::bwa_mem2::bntseq::bntann1_t {
+                offset: 0,
+                len: 4,
+                name: "chr1".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut s = bseq1_t {
+            l_seq: 4,
+            name: Some("read-nt4".into()),
+            seq: None,
+            qual: None,
+            seq_nt4: vec![0, 1, 2, 3],
+            ..Default::default()
+        };
+        let mut regs = mem_alnreg_v {
+            n: 1,
+            m: 1,
+            a: vec![mem_alnreg_t {
+                rb: 0,
+                re: 4,
+                qb: 0,
+                qe: 4,
+                rid: 0,
+                score: 4,
+                truesc: 4,
+                secondary: -1,
+                secondary_all: -1,
+                w: 100,
+                ..Default::default()
+            }],
+        };
+
+        mem_reg2sam(&opt, &bns, &pac, &mut s, &mut regs, 0, None);
+        let sam = s.sam.as_deref().expect("sam");
+        assert!(sam.starts_with("read-nt4\t0\tchr1\t1\t"), "{sam}");
+        assert!(sam.contains("\tACGT\t*\t"), "{sam}");
     }
 
     #[test]

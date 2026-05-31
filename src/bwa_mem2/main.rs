@@ -11,7 +11,6 @@ use crate::bwa_mem2::bwa::BWA_PG;
 use crate::bwa_mem2::bwtindex::bwa_index;
 use crate::bwa_mem2::fastmap::main_mem;
 
-
 // --- main.cpp ---
 
 const PACKAGE_VERSION: &str = "2.2.1";

@@ -7,21 +7,26 @@
 
 //! Port of `bwa-mem2/src/fastmap.h` + `bwa-mem2/src/fastmap.cpp`.
 
-use crate::bwa_mem2::bwa::{BWA_VERBOSE, bseq1_t, bseq_classify, bseq_read_orig, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr, bwa_set_rg};
-use crate::bwa_mem2::bwamem::{mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t};
+use crate::bwa_mem2::bandedswa::SeqPair;
+use crate::bwa_mem2::bntseq::bntseq_t;
+use crate::bwa_mem2::bwa::{
+    bseq1_t, bseq_classify, bseq_read_orig, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr,
+    bwa_set_rg, BWA_VERBOSE,
+};
+use crate::bwa_mem2::bwamem::{
+    mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t,
+};
+use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::bwa_mem2::kseq::kseq_t;
-use crate::bwa_mem2::utils::{ErrFile, err_fclose, err_xopen_core};
-use std::io::{BufReader, Cursor, Read, Write};
-use std::net::TcpStream;
-use std::process::Command;
-use std::sync::mpsc::sync_channel;
-use std::sync::{Arc, Mutex};
+use crate::bwa_mem2::utils::{err_fclose, err_xopen_core_lit, ErrFile};
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rayon::scope;
-use crate::bwa_mem2::bandedswa::SeqPair;
-use crate::bwa_mem2::bntseq::bntseq_t;
-use crate::bwa_mem2::fmi_search::FMI_search;
+use std::io::{BufReader, Cursor, Read, Write};
+use std::net::TcpStream;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 
 // --- fastmap.h ---
 
@@ -73,7 +78,7 @@ const MEM_F_KEEP_SUPP_MAPQ: i32 = 0x1000;
 #[derive(Debug, Parser)]
 #[command(name = "mem", disable_help_flag = true)]
 struct MemCli {
-    #[arg(short = 'o', visible_short_alias = 'f')]
+    #[arg(short = 'o', visible_short_alias = 'f', allow_hyphen_values = true)]
     output: Option<String>,
     #[arg(short = 't')]
     threads: Option<i32>,
@@ -101,11 +106,11 @@ struct MemCli {
     a: Option<i32>,
     #[arg(short = 'B')]
     b: Option<i32>,
-    #[arg(short = 'O')]
+    #[arg(short = 'O', allow_hyphen_values = true)]
     gap_open: Option<String>,
-    #[arg(short = 'E')]
+    #[arg(short = 'E', allow_hyphen_values = true)]
     gap_ext: Option<String>,
-    #[arg(short = 'L')]
+    #[arg(short = 'L', allow_hyphen_values = true)]
     clip_pen: Option<String>,
     #[arg(short = 'U')]
     pen_unpaired: Option<i32>,
@@ -119,7 +124,7 @@ struct MemCli {
     max_mem_intv: Option<u64>,
     #[arg(short = 'W')]
     min_chain_weight: Option<i32>,
-    #[arg(short = 'h')]
+    #[arg(short = 'h', allow_hyphen_values = true)]
     xa_hits: Option<String>,
     #[arg(short = '1')]
     no_mt_io: bool,
@@ -149,13 +154,13 @@ struct MemCli {
     fixed_chunk_size: Option<i64>,
     #[arg(short = 'v')]
     verbose: Option<i32>,
-    #[arg(short = 'R')]
+    #[arg(short = 'R', allow_hyphen_values = true)]
     read_group: Option<String>,
-    #[arg(short = 'H')]
+    #[arg(short = 'H', allow_hyphen_values = true)]
     header: Vec<String>,
-    #[arg(short = 'I')]
+    #[arg(short = 'I', allow_hyphen_values = true)]
     insert: Option<String>,
-    #[arg(short = 'x')]
+    #[arg(short = 'x', allow_hyphen_values = true)]
     mode: Option<String>,
     idxbase: String,
     in1: String,
@@ -163,41 +168,117 @@ struct MemCli {
 }
 
 fn parse_pair_i32(arg: &str) -> Option<(i32, Option<i32>)> {
-    let mut parts = arg
-        .split(|c: char| c.is_ascii_punctuation())
-        .filter(|s| !s.is_empty());
-    let first = parts.next()?.parse().ok()?;
-    let second = parts.next().and_then(|s| s.parse().ok());
+    let (first, end) = parse_strtol_i32_prefix(arg);
+    let rest = &arg[end..];
+    let second = if rest
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_punctuation())
+    {
+        let (value, consumed) = parse_strtol_i32_prefix(&rest[1..]);
+        (consumed > 0).then_some(value)
+    } else {
+        None
+    };
     Some((first, second))
 }
 
+fn parse_strtol_i32_prefix(arg: &str) -> (i32, usize) {
+    let bytes = arg.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let sign_start = i;
+    if matches!(bytes.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digits_start {
+        return (0, 0);
+    }
+    let value = arg[sign_start..i]
+        .parse::<i64>()
+        .unwrap_or_else(|_| {
+            if bytes[sign_start] == b'-' {
+                i64::MIN
+            } else {
+                i64::MAX
+            }
+        })
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    (value, i)
+}
+
+fn parse_strtod_prefix(arg: &str) -> (f64, usize) {
+    let bytes = arg.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let number_start = i;
+    if matches!(bytes.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let mut saw_digit = false;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        saw_digit = true;
+        i += 1;
+    }
+    if matches!(bytes.get(i), Some(b'.')) {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            saw_digit = true;
+            i += 1;
+        }
+    }
+    if saw_digit && matches!(bytes.get(i), Some(b'e' | b'E')) {
+        let exp_start = i;
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let exp_digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == exp_digits_start {
+            i = exp_start;
+        }
+    }
+    if !saw_digit {
+        return (0.0, 0);
+    }
+    let value = arg[number_start..i].parse::<f64>().unwrap_or(0.0);
+    (value, i)
+}
+
 fn parse_insert_stats(arg: &str) -> Option<mem_pestat_t> {
-    let parts: Vec<&str> = arg
-        .split(|c: char| c.is_ascii_punctuation())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return None;
-    }
-    let avg: f64 = parts[0].parse().ok()?;
+    let (avg, mut end) = parse_strtod_prefix(arg);
     let mut std = avg * 0.1;
-    let mut high;
-    let mut low;
-    if parts.len() > 1 {
-        std = parts[1].parse().ok()?;
+    if has_numeric_field_after_delim(&arg[end..]) {
+        let parsed = parse_strtod_prefix(&arg[end + 1..]);
+        std = parsed.0;
+        end += 1 + parsed.1;
     }
-    high = (avg + 4.0 * std + 0.499) as i32;
-    low = (avg - 4.0 * std + 0.499) as i32;
+    let mut high = (avg + 4.0 * std + 0.499) as i32;
+    let mut low = (avg - 4.0 * std + 0.499) as i32;
     if low < 1 {
         low = 1;
     }
-    if parts.len() > 2 {
+    if has_numeric_field_after_delim(&arg[end..]) {
         // C++ fastmap.cpp:772 uses `(int)(strtod(...) + .499)` (truncate-toward-zero of x+0.499),
         // not `.round()` which is half-away-from-zero. They diverge at x.5 (e.g. 100.5 → 100 vs 101).
-        high = (parts[2].parse::<f64>().ok()? + 0.499) as i32;
+        let parsed = parse_strtod_prefix(&arg[end + 1..]);
+        high = (parsed.0 + 0.499) as i32;
+        end += 1 + parsed.1;
     }
-    if parts.len() > 3 {
-        low = (parts[3].parse::<f64>().ok()? + 0.499) as i32;
+    if has_numeric_field_after_delim(&arg[end..]) {
+        let parsed = parse_strtod_prefix(&arg[end + 1..]);
+        low = (parsed.0 + 0.499) as i32;
     }
     Some(mem_pestat_t {
         avg,
@@ -206,6 +287,17 @@ fn parse_insert_stats(arg: &str) -> Option<mem_pestat_t> {
         low,
         failed: 0,
     })
+}
+
+fn has_numeric_field_after_delim(rest: &str) -> bool {
+    if !rest
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_punctuation())
+    {
+        return false;
+    }
+    parse_strtod_prefix(&rest[1..]).1 > 0
 }
 
 fn parse_http_url(url: &str) -> Option<(String, u16, String)> {
@@ -363,16 +455,56 @@ fn read_text_input(path: &str) -> Result<String, ()> {
     }
 }
 
+fn gzip_or_plain_bufread_from_read(
+    mut reader: Box<dyn Read + Send>,
+) -> Result<Box<dyn std::io::BufRead + Send>, ()> {
+    let mut magic = [0_u8; 2];
+    let n = reader.read(&mut magic).map_err(|_| ())?;
+    let prefix = magic[..n].to_vec();
+    let replay = Box::new(Cursor::new(prefix).chain(reader));
+    if n == 2 && magic == [0x1f, 0x8b] {
+        Ok(Box::new(BufReader::new(MultiGzDecoder::new(replay))))
+    } else {
+        Ok(Box::new(BufReader::new(replay)))
+    }
+}
+
 fn open_kseq_input(path: &str) -> Result<kseq_t, ()> {
     if path == "-" {
-        return Ok(kseq_t::from_reader(Box::new(BufReader::new(
-            std::io::stdin(),
-        ))));
+        return Ok(kseq_t::from_reader(gzip_or_plain_bufread_from_read(
+            Box::new(std::io::stdin()),
+        )?));
     }
-    if path.trim_start().starts_with('<')
-        || path.starts_with("http://")
-        || path.starts_with("ftp://")
-    {
+    if let Some(cmd) = path.trim_start().strip_prefix('<') {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd.trim())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|_| ())?;
+        let stdout = child.stdout.take().ok_or(())?;
+        return Ok(kseq_t::from_reader_with_child(
+            gzip_or_plain_bufread_from_read(Box::new(stdout))?,
+            child,
+        ));
+    }
+    if path.starts_with("http://") || path.starts_with("ftp://") {
+        for (program, args) in [("curl", vec!["-fsSL", path]), ("wget", vec!["-qO-", path])] {
+            let Ok(mut child) = Command::new(program)
+                .args(&args)
+                .stdout(Stdio::piped())
+                .spawn()
+            else {
+                continue;
+            };
+            let Some(stdout) = child.stdout.take() else {
+                continue;
+            };
+            return Ok(kseq_t::from_reader_with_child(
+                gzip_or_plain_bufread_from_read(Box::new(stdout))?,
+                child,
+            ));
+        }
         return read_text_input(path).map(|text| kseq_t::from_text(&text));
     }
     kseq_t::from_path(path).map_err(|_| ())
@@ -601,7 +733,7 @@ pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32
 }
 
 #[doc = "Original function: kt_pipeline:189"]
-pub fn kt_pipeline(
+pub(crate) fn kt_pipeline(
     shared: &mut ktp_aux_t,
     step: i32,
     data: Option<ktp_data_t>,
@@ -622,7 +754,7 @@ pub fn kt_pipeline(
 }
 
 #[doc = "Original function: ktp_worker:327"]
-pub fn ktp_worker(_arg0: crate::support::Opaque) {
+pub(crate) fn ktp_worker(_arg0: crate::support::Opaque) {
     crate::support::stub::<()>("ktp_worker")
 }
 
@@ -949,12 +1081,10 @@ pub fn main_mem(argv: &[String]) -> i32 {
         if hdr.starts_with('@') {
             hdr_line = bwa_insert_header(Some(hdr), hdr_line);
         } else {
-            let Ok(text) = std::fs::read_to_string(hdr) else {
-                eprintln!("[E::main_mem] failed to open header file `{hdr}`");
-                return 1;
-            };
-            for line in text.lines() {
-                hdr_line = bwa_insert_header(Some(line), hdr_line);
+            if let Ok(text) = std::fs::read_to_string(hdr) {
+                for line in text.lines() {
+                    hdr_line = bwa_insert_header(Some(line), hdr_line);
+                }
             }
         }
     }
@@ -973,18 +1103,10 @@ pub fn main_mem(argv: &[String]) -> i32 {
         return 1;
     };
 
-    let mut out = if let Some(path) = cli.output.as_deref() {
-        err_xopen_core("main_mem", path, "w")
-    } else {
-        ErrFile::Stdout
-    };
-    bwa_print_sam_hdr(bns, hdr_line.as_deref(), &mut out);
-
     let ks1 = match open_kseq_input(&cli.in1) {
         Ok(ks) => ks,
         Err(()) => {
             eprintln!("[E::main_mem] fail to open file `{}`.", cli.in1);
-            let _ = err_fclose(out);
             return 1;
         }
     };
@@ -1001,7 +1123,6 @@ pub fn main_mem(argv: &[String]) -> i32 {
             Ok(ks) => Some(ks),
             Err(()) => {
                 eprintln!("[E::main_mem] fail to open file `{}`.", in2);
-                let _ = err_fclose(out);
                 return 1;
             }
         }
@@ -1009,17 +1130,21 @@ pub fn main_mem(argv: &[String]) -> i32 {
         None
     };
 
+    let mut out = if let Some(path) = cli.output.as_deref() {
+        err_xopen_core_lit("main_mem", path, "w")
+    } else {
+        ErrFile::Stdout
+    };
+    bwa_print_sam_hdr(bns, hdr_line.as_deref(), &mut out);
+
+    let fixed_chunk_size = cli.fixed_chunk_size.filter(|v| *v > 0);
     let mut aux = ktp_aux_t {
         ks: Some(ks1),
         ks2: ks2,
         opt: Some(Box::new(opt.clone())),
         copy_comment: if cli.copy_comment { 1 } else { 0 },
-        task_size: cli
-            .fixed_chunk_size
-            .unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
-        actual_chunk_size: cli
-            .fixed_chunk_size
-            .unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
+        task_size: fixed_chunk_size.unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
+        actual_chunk_size: fixed_chunk_size.unwrap_or(opt.chunk_size * i64::from(opt.n_threads)),
         fp: Some(out),
         ..Default::default()
     };
@@ -1134,12 +1259,12 @@ fn usage_text(opt: &mem_opt_t) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cpuid, kt_pipeline, main_mem, memoryAlloc, process, read_text_input, update_a, usage_text,
-        HTStatus,
+        cpuid, kt_pipeline, main_mem, memoryAlloc, parse_insert_stats, parse_pair_i32, process,
+        read_text_input, update_a, usage_text, HTStatus, MemCli,
     };
     use crate::bwa_mem2::bntseq::bns_fasta2bntseq;
-    use crate::bwa_mem2::bwa::BWA_VERBOSE;
     use crate::bwa_mem2::bwa::bseq1_t;
+    use crate::bwa_mem2::bwa::BWA_VERBOSE;
     use crate::bwa_mem2::bwamem::mem_opt_init;
     use crate::bwa_mem2::bwamem::{
         mem_alnreg_v, mem_cache, mem_chain_v, mem_opt_t, mem_seed_t, worker_t,
@@ -1149,6 +1274,7 @@ mod tests {
     use crate::bwa_mem2::kseq::kseq_t;
     use crate::bwa_mem2::r#macro::BATCH_SIZE;
     use crate::bwa_mem2::utils::{err_fclose, err_xopen_core};
+    use clap::Parser;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::fs;
@@ -1430,6 +1556,84 @@ mod tests {
     }
 
     #[test]
+    fn parse_insert_stats_preserves_decimal_points() {
+        let pes = parse_insert_stats("250.5,25.5,360.5,140.5").expect("insert stats");
+        assert_eq!(pes.failed, 0);
+        assert_eq!(pes.avg, 250.5);
+        assert_eq!(pes.std, 25.5);
+        assert_eq!(pes.high, 360);
+        assert_eq!(pes.low, 140);
+    }
+
+    #[test]
+    fn parse_pair_i32_matches_strtol_prefix_rules() {
+        assert_eq!(parse_pair_i32("5x"), Some((5, None)));
+        assert_eq!(parse_pair_i32("5,7"), Some((5, Some(7))));
+        assert_eq!(parse_pair_i32("5,-7"), Some((5, Some(-7))));
+        assert_eq!(parse_pair_i32("5,+7"), Some((5, Some(7))));
+        assert_eq!(parse_pair_i32("-5"), Some((-5, None)));
+    }
+
+    #[test]
+    fn mem_cli_accepts_hyphen_leading_string_option_values() {
+        let argv = [
+            "mem",
+            "-O",
+            "-5,-7",
+            "-E",
+            "-2,-3",
+            "-L",
+            "-4,-6",
+            "-h",
+            "-1,-2",
+            "-I",
+            "-100,-20,-180,-5",
+            "-H",
+            "-header-file",
+            "-R",
+            "-rg-line",
+            "-o",
+            "-out.sam",
+            "-x",
+            "-mode",
+            "idx",
+            "reads.fq",
+        ];
+        let cli = MemCli::try_parse_from(argv).expect("parse mem cli");
+        assert_eq!(cli.gap_open.as_deref(), Some("-5,-7"));
+        assert_eq!(cli.gap_ext.as_deref(), Some("-2,-3"));
+        assert_eq!(cli.clip_pen.as_deref(), Some("-4,-6"));
+        assert_eq!(cli.xa_hits.as_deref(), Some("-1,-2"));
+        assert_eq!(cli.insert.as_deref(), Some("-100,-20,-180,-5"));
+        assert_eq!(cli.header, vec!["-header-file"]);
+        assert_eq!(cli.read_group.as_deref(), Some("-rg-line"));
+        assert_eq!(cli.output.as_deref(), Some("-out.sam"));
+        assert_eq!(cli.mode.as_deref(), Some("-mode"));
+        assert_eq!(cli.idxbase, "idx");
+        assert_eq!(cli.in1, "reads.fq");
+    }
+
+    #[test]
+    fn parse_insert_stats_accepts_signed_later_fields() {
+        let pes = parse_insert_stats("100,-20,+180,-5").expect("insert stats");
+        assert_eq!(pes.failed, 0);
+        assert_eq!(pes.avg, 100.0);
+        assert_eq!(pes.std, -20.0);
+        assert_eq!(pes.high, 180);
+        assert_eq!(pes.low, -4);
+    }
+
+    #[test]
+    fn parse_insert_stats_keeps_defaults_after_malformed_later_field() {
+        let pes = parse_insert_stats("100,20,x,5").expect("insert stats");
+        assert_eq!(pes.failed, 0);
+        assert_eq!(pes.avg, 100.0);
+        assert_eq!(pes.std, 20.0);
+        assert_eq!(pes.high, 180);
+        assert_eq!(pes.low, 20);
+    }
+
+    #[test]
     fn memoryalloc_builds_expected_worker_buffers() {
         let aux = ktp_aux_t {
             opt: Some(mem_opt_init()),
@@ -1708,6 +1912,39 @@ mod tests {
     }
 
     #[test]
+    fn main_mem_missing_read_input_does_not_write_sam_header() {
+        let mut dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        dir.push(format!("bwa_mem2_rs_main_mem_missing_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let prefix = dir.join("ref");
+        bns_fasta2bntseq(
+            Cursor::new(b">chr1\nACGTACGTACGT\n".as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
+        let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
+        assert_eq!(fmi.build_index(), 0);
+        fmi.dtor();
+
+        let missing = dir.join("missing.fq");
+        let out = dir.join("out.sam");
+        let argv = vec![
+            "mem".to_string(),
+            "-o".to_string(),
+            out.to_str().expect("utf8").to_string(),
+            prefix.to_str().expect("utf8").to_string(),
+            missing.to_str().expect("utf8").to_string(),
+        ];
+        assert_eq!(run_main_mem(&argv), 1);
+        assert!(!out.exists() || fs::read_to_string(&out).expect("sam").is_empty());
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
     fn main_mem_reads_gz_fastq_input() {
         let mut dir = std::env::temp_dir();
         let nanos = SystemTime::now()
@@ -1752,6 +1989,57 @@ mod tests {
         assert_eq!(run_main_mem(&argv), 0);
         let sam = fs::read_to_string(&out).expect("sam output");
         assert!(sam.contains("mmgz\t"), "{sam}");
+        assert!(sam.contains("\tchr1\t"), "{sam}");
+
+        fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    #[test]
+    fn main_mem_reads_gz_fastq_from_pipe_command() {
+        let mut dir = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        dir.push(format!("bwa_mem2_rs_main_mem_gz_pipe_{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let prefix = dir.join("ref");
+        let fasta = b">chr1\nACGTACGTACGT\n";
+        bns_fasta2bntseq(
+            Cursor::new(fasta.as_slice()),
+            prefix.to_str().expect("utf8"),
+            1,
+        );
+
+        let mut fmi = FMI_search::ctor(prefix.to_str().expect("utf8"));
+        assert_eq!(fmi.build_index(), 0);
+        fmi.load_index();
+        fmi.dtor();
+
+        let reads = dir.join("reads_pipe.fq.gz");
+        let file = fs::File::create(&reads).expect("create gz");
+        let mut enc = GzEncoder::new(file, Compression::default());
+        std::io::Write::write_all(&mut enc, b"@pipegz\nACGTAC\n+\nIIIIII\n")
+            .expect("write gz fastq");
+        enc.finish().expect("finish gz");
+
+        let out = dir.join("out.sam");
+        let argv = vec![
+            "mem".to_string(),
+            "-o".to_string(),
+            out.to_str().expect("utf8").to_string(),
+            "-t".to_string(),
+            "1".to_string(),
+            "-k".to_string(),
+            "2".to_string(),
+            "-T".to_string(),
+            "1".to_string(),
+            prefix.to_str().expect("utf8").to_string(),
+            format!("< cat {}", reads.display()),
+        ];
+        assert_eq!(run_main_mem(&argv), 0);
+        let sam = fs::read_to_string(&out).expect("sam output");
+        assert!(sam.contains("pipegz\t"), "{sam}");
         assert!(sam.contains("\tchr1\t"), "{sam}");
 
         fs::remove_dir_all(&dir).expect("cleanup");

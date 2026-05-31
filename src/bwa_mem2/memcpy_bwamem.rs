@@ -7,11 +7,10 @@
 
 //! Port of `bwa-mem2/src/memcpy_bwamem.h` + `bwa-mem2/src/memcpy_bwamem.cpp`.
 
-
 // --- memcpy_bwamem.cpp ---
 
 #[doc = "Original function: memcpy_bwamem:32"]
-pub fn memcpy_bwamem(
+pub(crate) fn memcpy_bwamem(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,

@@ -7,11 +7,11 @@
 
 //! Port of `bwa-mem2/src/fmi_search.h` + `bwa-mem2/src/fmi_search.cpp`.
 
+use crate::bwa_mem2::bwa::bseq1_t;
+use crate::bwa_mem2::read_index_ele::{indexEle, BWA_IDX_ALL};
+use crate::bwa_mem2::sais::sais_suffixes_i64_upstream_port_mapped;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use crate::bwa_mem2::bwa::bseq1_t;
-use crate::bwa_mem2::read_index_ele::{BWA_IDX_ALL, indexEle};
-use crate::bwa_mem2::sais::sais_suffixes_i64_upstream_port_mapped;
 
 // --- fmi_search.h ---
 
@@ -44,7 +44,7 @@ pub struct smem_struct {
 }
 
 #[doc = "Original function: _mm_countbits_64:61"]
-pub fn mm_countbits_64(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn mm_countbits_64(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("_mm_countbits_64")
 }
 
@@ -574,20 +574,9 @@ impl FMI_search {
         std::fs::write(&binary_ref_name, &binary_ref_seq).expect("write binary ref");
 
         let counts5 = [count[0], count[1], count[2], count[3], count[4]];
-        if pac_len < i64::from(i32::MAX) {
-            let suffixes = sais_suffixes_i64_upstream_port_mapped(reference_seq.as_bytes());
-            drop(reference_seq);
-            self.build_fm_index_from_suffixes(&prefix, &binary_ref_seq, pac_len, suffixes, &counts5)
-        } else {
-            let mut suffixes: Vec<i64> = (0..pac_len).collect();
-            suffixes.sort_by(|&a, &b| {
-                let sa = &reference_seq.as_bytes()[usize::try_from(a).expect("a")..];
-                let sb = &reference_seq.as_bytes()[usize::try_from(b).expect("b")..];
-                sa.cmp(sb)
-            });
-            drop(reference_seq);
-            self.build_fm_index_from_suffixes(&prefix, &binary_ref_seq, pac_len, suffixes, &counts5)
-        }
+        let suffixes = sais_suffixes_i64_upstream_port_mapped(reference_seq.as_bytes());
+        drop(reference_seq);
+        self.build_fm_index_from_suffixes(&prefix, &binary_ref_seq, pac_len, suffixes, &counts5)
     }
 
     /// Load the checkpointed FM-index from `<self.file_name>.bwt.2bit.64`
@@ -827,14 +816,8 @@ impl FMI_search {
                             use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                             let k_idx = (smem.l >> CP_SHIFT) as usize;
                             let l_idx = ((smem.l + smem.s) >> CP_SHIFT) as usize;
-                            _mm_prefetch(
-                                self.cp_occ.as_ptr().add(k_idx) as *const i8,
-                                _MM_HINT_T0,
-                            );
-                            _mm_prefetch(
-                                self.cp_occ.as_ptr().add(l_idx) as *const i8,
-                                _MM_HINT_T0,
-                            );
+                            _mm_prefetch(self.cp_occ.as_ptr().add(k_idx) as *const i8, _MM_HINT_T0);
+                            _mm_prefetch(self.cp_occ.as_ptr().add(l_idx) as *const i8, _MM_HINT_T0);
                         }
                     } else {
                         break;
@@ -859,10 +842,10 @@ impl FMI_search {
 
                     let mut p = 0_usize;
                     let j_u32 = j as u32; // j < x < readlength fits in u32.
-                    // Each backwardExt call reads cp_occ[smem.k>>CP_SHIFT] and
-                    // cp_occ[(smem.k+smem.s)>>CP_SHIFT]. The next iter's smem is prev_array[p+1]
-                    // (or [0] when first while breaks into second), known up-front. Warming those
-                    // lines hides the DRAM latency that dominates the SMEM hot loop.
+                                          // Each backwardExt call reads cp_occ[smem.k>>CP_SHIFT] and
+                                          // cp_occ[(smem.k+smem.s)>>CP_SHIFT]. The next iter's smem is prev_array[p+1]
+                                          // (or [0] when first while breaks into second), known up-front. Warming those
+                                          // lines hides the DRAM latency that dominates the SMEM hot loop.
                     #[cfg(target_arch = "x86_64")]
                     {
                         use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
@@ -1796,10 +1779,7 @@ impl FMI_search {
                     use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
                     let next_idx = (next_pos >> CP_SHIFT) as usize;
                     unsafe {
-                        _mm_prefetch(
-                            self.cp_occ.as_ptr().add(next_idx) as *const i8,
-                            _MM_HINT_T0,
-                        );
+                        _mm_prefetch(self.cp_occ.as_ptr().add(next_idx) as *const i8, _MM_HINT_T0);
                     }
                 }
                 let mut working = pos;

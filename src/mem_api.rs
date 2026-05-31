@@ -3,12 +3,10 @@ use std::sync::Arc;
 
 use crate::bwa_mem2::bntseq::bntseq_t;
 use crate::bwa_mem2::bwa::bseq1_t;
-use crate::bwa_mem2::bwamem::{mem_opt_init, mem_process_seqs, with_current_rayon_pool};
+use crate::bwa_mem2::bwamem::{mem_opt_init, mem_process_seqs, with_current_rayon_pool, MEM_F_PE};
 use crate::bwa_mem2::bwamem::{mem_opt_t, worker_t};
 use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::output::RunOutput;
-
-const MEM_F_PE: i32 = 0x2;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -81,6 +79,14 @@ impl MemAligner {
         let prefix = index_prefix
             .to_str()
             .ok_or_else(|| format!("index path is not valid UTF-8: {}", index_prefix.display()))?;
+        for suffix in [".bwt.2bit.64", ".ann", ".amb", ".pac"] {
+            let path = format!("{prefix}{suffix}");
+            if !Path::new(&path).is_file() {
+                return Err(format!(
+                    "failed to load bwa-mem2 index from {prefix}: missing {path}"
+                ));
+            }
+        }
         let mut fmi = FMI_search::ctor(prefix);
         fmi.load_index();
         if fmi.base.idx.bns.is_none() {
@@ -101,6 +107,14 @@ impl MemAligner {
             n_processed: 0,
             rayon_pool,
         })
+    }
+
+    pub fn opt(&self) -> &mem_opt_t {
+        &self.opt
+    }
+
+    pub fn opt_mut(&mut self) -> &mut mem_opt_t {
+        &mut self.opt
     }
 
     pub fn sam_header(&self) -> Result<String> {
@@ -306,6 +320,23 @@ mod tests {
     }
 
     #[test]
+    fn new_returns_err_for_missing_index_prefix() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "bwa_mem2_rs_missing_index_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let err = match MemAligner::new(&path, 1) {
+            Ok(_) => panic!("missing index should return Err"),
+            Err(err) => err,
+        };
+        assert!(err.contains("failed to load bwa-mem2 index"), "{err}");
+    }
+
+    #[test]
     fn output_capture_api_is_available() {
         let output = SharedWriterOutput::with_stream_labels(Vec::new());
         output.stdout(format_args!("@HD\tVN:1.6")).unwrap();
@@ -340,13 +371,16 @@ mod tests {
             .thread_pool(pool)
             .build()
             .expect("load generated index");
-        aligner.opt.flag &= !super::MEM_F_PE;
-        aligner.opt.min_seed_len = 2;
-        aligner.opt.split_factor = 1.5;
-        aligner.opt.split_width = 10;
-        aligner.opt.max_mem_intv = 20;
-        aligner.opt.min_chain_weight = 1;
-        aligner.opt.T = 1;
+        {
+            let opt = aligner.opt_mut();
+            opt.flag &= !super::MEM_F_PE;
+            opt.min_seed_len = 2;
+            opt.split_factor = 1.5;
+            opt.split_width = 10;
+            opt.max_mem_intv = 20;
+            opt.min_chain_weight = 1;
+            opt.T = 1;
+        }
         let mut pairs = Vec::new();
         let qual = b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII";
         for i in 0..20 {

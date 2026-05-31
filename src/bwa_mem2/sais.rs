@@ -10,7 +10,7 @@
 // --- sais.h ---
 
 #[doc = "Original function: getCounts:52"]
-pub fn getCounts(
+pub(crate) fn getCounts(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -20,7 +20,7 @@ pub fn getCounts(
 }
 
 #[doc = "Original function: getBuckets:59"]
-pub fn getBuckets(
+pub(crate) fn getBuckets(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -30,7 +30,7 @@ pub fn getBuckets(
 }
 
 #[doc = "Original function: LMSsort1:68"]
-pub fn LMSsort1(
+pub(crate) fn LMSsort1(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -43,7 +43,7 @@ pub fn LMSsort1(
 }
 
 #[doc = "Original function: LMSpostproc1:111"]
-pub fn LMSpostproc1(
+pub(crate) fn LMSpostproc1(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -53,7 +53,7 @@ pub fn LMSpostproc1(
 }
 
 #[doc = "Original function: LMSsort2:159"]
-pub fn LMSsort2(
+pub(crate) fn LMSsort2(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -66,7 +66,7 @@ pub fn LMSsort2(
 }
 
 #[doc = "Original function: LMSpostproc2:219"]
-pub fn LMSpostproc2(
+pub(crate) fn LMSpostproc2(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -75,7 +75,7 @@ pub fn LMSpostproc2(
 }
 
 #[doc = "Original function: induceSA:261"]
-pub fn induceSA(
+pub(crate) fn induceSA(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -88,7 +88,7 @@ pub fn induceSA(
 }
 
 #[doc = "Original function: computeBWT:294"]
-pub fn computeBWT(
+pub(crate) fn computeBWT(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -101,7 +101,7 @@ pub fn computeBWT(
 }
 
 #[doc = "Original function: stage1sort:335"]
-pub fn stage1sort(
+pub(crate) fn stage1sort(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -114,7 +114,7 @@ pub fn stage1sort(
 }
 
 #[doc = "Original function: stage3sort:395"]
-pub fn stage3sort(
+pub(crate) fn stage3sort(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -129,7 +129,7 @@ pub fn stage3sort(
 }
 
 #[doc = "Original function: suffixsort:426"]
-pub fn suffixsort(
+pub(crate) fn suffixsort(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -141,7 +141,7 @@ pub fn suffixsort(
 }
 
 #[doc = "Original function: saisxx:556"]
-pub fn saisxx(
+pub(crate) fn saisxx(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -1362,7 +1362,7 @@ mod real_sais_tests {
 }
 
 #[doc = "Original function: saisxx_bwt:578"]
-pub fn saisxx_bwt(
+pub(crate) fn saisxx_bwt(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,

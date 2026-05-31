@@ -7,11 +7,10 @@
 
 //! Port of `bwa-mem2/src/profiling.h` + `bwa-mem2/src/profiling.cpp`.
 
-
 // --- profiling.cpp ---
 
 #[doc = "Original function: find_opt:36"]
-pub fn find_opt(
+pub(crate) fn find_opt(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -22,6 +21,6 @@ pub fn find_opt(
 }
 
 #[doc = "Original function: display_stats:54"]
-pub fn display_stats(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn display_stats(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("display_stats")
 }

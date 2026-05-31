@@ -8,7 +8,10 @@
 //! Port of `bwa-mem2/src/kopen.cpp`.
 
 use std::fs::File;
+use std::process::{Child, ChildStdout, Command, Stdio};
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 // --- kopen.cpp ---
 
@@ -31,6 +34,8 @@ pub struct koaux_t {
     pub fd: i32,
     pub pid: i32,
     pub file: Option<File>,
+    pub child: Option<Child>,
+    pub pipe: Option<ChildStdout>,
 }
 
 impl Default for koaux_t {
@@ -40,12 +45,36 @@ impl Default for koaux_t {
             fd: -1,
             pid: 0,
             file: None,
+            child: None,
+            pipe: None,
         }
     }
 }
 
+fn spawn_stdout_command(command: &str, type_: i32) -> Option<koaux_t> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let pipe = child.stdout.take()?;
+    #[cfg(unix)]
+    let fd = pipe.as_raw_fd();
+    #[cfg(not(unix))]
+    let fd = -1;
+    Some(koaux_t {
+        type_,
+        fd,
+        pid: i32::try_from(child.id()).unwrap_or(0),
+        file: None,
+        child: Some(child),
+        pipe: Some(pipe),
+    })
+}
+
 #[doc = "Original function: socket_wait:65"]
-pub fn socket_wait(
+pub(crate) fn socket_wait(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -53,7 +82,7 @@ pub fn socket_wait(
 }
 
 #[doc = "Original function: socket_connect:80"]
-pub fn socket_connect(
+pub(crate) fn socket_connect(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -61,7 +90,7 @@ pub fn socket_connect(
 }
 
 #[doc = "Original function: write_bytes:102"]
-pub fn write_bytes(
+pub(crate) fn write_bytes(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -70,17 +99,17 @@ pub fn write_bytes(
 }
 
 #[doc = "Original function: http_open:117"]
-pub fn http_open(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn http_open(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("http_open")
 }
 
 #[doc = "Original function: kftp_get_response:191"]
-pub fn kftp_get_response(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn kftp_get_response(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("kftp_get_response")
 }
 
 #[doc = "Original function: kftp_send_cmd:215"]
-pub fn kftp_send_cmd(
+pub(crate) fn kftp_send_cmd(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -89,7 +118,7 @@ pub fn kftp_send_cmd(
 }
 
 #[doc = "Original function: ftp_open:222"]
-pub fn ftp_open(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn ftp_open(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("ftp_open")
 }
 
@@ -115,10 +144,9 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
 /// Open a file/stdin/http/ftp/pipe spec and return a `koaux_t` handle.
 ///
 /// Mirrors C's `void *kopen(const char *fn, int *_fd)`. `"-"` selects
-/// stdin; `"http://"` / `"ftp://"` and `"<"`-prefixed pipe specs are
-/// not yet wired up in the Rust port and return `None`. On success
-/// `fd_out` receives the underlying file descriptor (or `-1` for the
-/// File-backed scaffold path).
+/// stdin; `"http://"` / `"ftp://"` are streamed through curl/wget, and
+/// `"<"`-prefixed pipe specs are executed by the shell. On success
+/// `fd_out` receives the underlying file descriptor when available.
 ///
 /// # Arguments
 /// * `fn_` - filename or URL to open
@@ -127,6 +155,20 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
 pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     *fd_out = -1;
     if fn_.starts_with("http://") || fn_.starts_with("ftp://") {
+        let type_ = if fn_.starts_with("ftp://") {
+            KO_FTP
+        } else {
+            KO_HTTP
+        };
+        for command in [
+            format!("curl -fsSL {}", shell_escape(fn_)),
+            format!("wget -qO- {}", shell_escape(fn_)),
+        ] {
+            if let Some(aux) = spawn_stdout_command(&command, type_) {
+                *fd_out = aux.fd;
+                return Some(aux);
+            }
+        }
         return None;
     }
     if fn_ == "-" {
@@ -136,22 +178,22 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
             fd: 0,
             pid: 0,
             file: None,
+            child: None,
+            pipe: None,
         });
     }
 
-    // pipe open: upstream forks/execs a shell or argv built from cmd2argv when the path begins
-    // with '<'. The Rust scaffold isn't on the active read path, so reject for now.
     let trimmed = fn_.trim_start();
-    if trimmed.starts_with('<') {
-        return None;
+    if let Some(command) = trimmed.strip_prefix('<') {
+        let aux = spawn_stdout_command(command.trim(), KO_PIPE)?;
+        *fd_out = aux.fd;
+        return Some(aux);
     }
 
     let file = File::open(fn_).ok()?;
-    // The original C code returns a raw file descriptor that is later handed to
-    // gzdopen(), which then owns closing it. This Rust scaffold is not used by
-    // the active read path, and the exact ownership purpose here is not known;
-    // raw fd leakage may be a source of regression.
-    // let fd = file.as_raw_fd();
+    #[cfg(unix)]
+    let fd = file.as_raw_fd();
+    #[cfg(not(unix))]
     let fd = -1;
     *fd_out = fd;
     Some(koaux_t {
@@ -159,7 +201,13 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
         fd,
         pid: 0,
         file: Some(file),
+        child: None,
+        pipe: None,
     })
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Release a handle returned by `kopen`.
@@ -168,20 +216,21 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
 /// fd via the standard library rather than leaking it as the upstream
 /// C code does. Always returns 0.
 #[doc = "Original function: kclose:386"]
-pub fn kclose(aux: koaux_t) -> i32 {
-    if aux.type_ == KO_FILE {
-        if let Some(file) = aux.file {
-            // See the note in kopen(). Let File drop normally instead of
-            // intentionally leaking the raw fd.
-            // let _ = file.into_raw_fd();
-            drop(file);
-        }
+pub fn kclose(mut aux: koaux_t) -> i32 {
+    if let Some(file) = aux.file.take() {
+        drop(file);
+    }
+    if let Some(pipe) = aux.pipe.take() {
+        drop(pipe);
+    }
+    if let Some(mut child) = aux.child.take() {
+        let _ = child.wait();
     }
     0
 }
 
 #[doc = "Original function: main:401"]
-pub fn main(
+pub(crate) fn main(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -190,7 +239,7 @@ pub fn main(
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd2argv, kclose, kopen, KO_FILE, KO_STDIN};
+    use super::{cmd2argv, kclose, kopen, shell_escape, KO_FILE, KO_PIPE, KO_STDIN};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -218,6 +267,9 @@ mod tests {
         let mut fd = -1;
         let aux = kopen(path.to_str().expect("utf8"), &mut fd).expect("kopen");
         assert_eq!(aux.type_, KO_FILE);
+        #[cfg(unix)]
+        assert!(fd >= 0);
+        #[cfg(not(unix))]
         assert_eq!(fd, -1);
         assert_eq!(aux.fd, fd);
         assert_eq!(kclose(aux), 0);
@@ -234,10 +286,23 @@ mod tests {
     }
 
     #[test]
-    fn kopen_rejects_pipe_and_remote_paths_for_now() {
+    fn kopen_opens_pipe_command_and_reports_fd() {
         let mut fd = -1;
-        assert!(kopen("< cat ref.fa", &mut fd).is_none());
-        assert!(kopen("http://example.com/ref.fa", &mut fd).is_none());
-        assert!(kopen("ftp://example.com/ref.fa", &mut fd).is_none());
+        let aux = kopen("< printf ACGT", &mut fd).expect("pipe aux");
+        assert_eq!(aux.type_, KO_PIPE);
+        #[cfg(unix)]
+        assert!(fd >= 0);
+        #[cfg(not(unix))]
+        assert_eq!(fd, -1);
+        assert_eq!(aux.fd, fd);
+        assert_eq!(kclose(aux), 0);
+    }
+
+    #[test]
+    fn shell_escape_wraps_single_quoted_url_arguments() {
+        assert_eq!(
+            shell_escape("http://example/a'b"),
+            "'http://example/a'\\''b'"
+        );
     }
 }

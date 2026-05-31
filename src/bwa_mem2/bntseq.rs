@@ -7,11 +7,11 @@
 
 //! Port of `bwa-mem2/src/bntseq.h` + `bwa-mem2/src/bntseq.cpp`.
 
-use std::fs::File;
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use flate2::read::MultiGzDecoder;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Cursor, Read, Write};
+use std::path::Path;
 
 // --- bntseq.h ---
 
@@ -150,43 +150,80 @@ fn nt4(c: u8) -> u8 {
         b'A' | b'a' => 0,
         b'C' | b'c' => 1,
         b'G' | b'g' => 2,
-        b'T' | b't' | b'U' | b'u' => 3,
+        b'T' | b't' => 3,
         b'-' => 5,
         _ => 4,
     }
 }
 
+pub(crate) fn gzip_or_plain_reader_from_read(
+    mut reader: Box<dyn Read>,
+) -> std::io::Result<Box<dyn Read>> {
+    let mut magic = [0_u8; 2];
+    let n = reader.read(&mut magic)?;
+    let prefix = magic[..n].to_vec();
+    let replay = Box::new(Cursor::new(prefix).chain(reader));
+    if n == 2 && magic == [0x1f, 0x8b] {
+        Ok(Box::new(MultiGzDecoder::new(replay)))
+    } else {
+        Ok(replay)
+    }
+}
+
+pub(crate) fn gzip_or_plain_reader(file: File) -> std::io::Result<Box<dyn Read>> {
+    gzip_or_plain_reader_from_read(Box::new(file))
+}
+
 fn parse_fasta<R: BufRead>(reader: R) -> Vec<SequenceRecord> {
     let mut records = Vec::new();
-    let mut current: Option<SequenceRecord> = None;
-    for line in reader.lines() {
-        let line = line.expect("read fasta");
-        if let Some(rest) = line.strip_prefix('>') {
-            if let Some(record) = current.take() {
-                records.push(record);
-            }
-            let mut parts = rest.splitn(2, char::is_whitespace);
-            let name = parts.next().unwrap_or("").to_string();
-            let comment = parts
-                .next()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned);
-            current = Some(SequenceRecord {
-                name,
-                comment,
-                seq: Vec::new(),
-            });
-        } else if !line.is_empty() {
-            current
-                .as_mut()
-                .expect("FASTA sequence before header")
-                .seq
-                .extend_from_slice(line.trim().as_bytes());
+    let lines = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read fasta");
+    let mut i = 0;
+    while i < lines.len() {
+        let line = &lines[i];
+        let Some(marker) = line.as_bytes().first().copied() else {
+            i += 1;
+            continue;
+        };
+        if marker != b'>' && marker != b'@' {
+            i += 1;
+            continue;
         }
-    }
-    if let Some(record) = current {
-        records.push(record);
+
+        let rest = &line[1..];
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or("").to_string();
+        let comment = parts
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        i += 1;
+
+        let mut seq = Vec::new();
+        if marker == b'>' {
+            while i < lines.len() && !matches!(lines[i].as_bytes().first(), Some(b'>')) {
+                if !lines[i].is_empty() {
+                    seq.extend_from_slice(lines[i].as_bytes());
+                }
+                i += 1;
+            }
+        } else {
+            while i < lines.len() && !lines[i].starts_with('+') {
+                seq.extend_from_slice(lines[i].as_bytes());
+                i += 1;
+            }
+            if i < lines.len() && lines[i].starts_with('+') {
+                i += 1;
+                let mut qual_len = 0_usize;
+                while i < lines.len() && qual_len < seq.len() {
+                    qual_len += lines[i].len();
+                    i += 1;
+                }
+            }
+        }
+        records.push(SequenceRecord { name, comment, seq });
     }
     records
 }
@@ -338,19 +375,37 @@ pub fn bns_restore(prefix: &str) -> bntseq_t {
         for (i, ann) in bns.anns.iter().enumerate() {
             names.insert(ann.name.clone(), i);
         }
-        for line in BufReader::new(file).lines() {
-            let line = line.unwrap_or_else(|e| panic!("Error reading {alt_filename} : {e}"));
-            let token = line
-                .split(['\t', '\n', '\r', ' '])
-                .find(|part| !part.is_empty())
-                .unwrap_or("");
-            if token.starts_with('@') || token.is_empty() {
-                continue;
+        let mut token = Vec::new();
+        let mut skip_rest_of_line = false;
+        let mut mark_token = |token: &[u8]| {
+            if token.is_empty() || token.starts_with(b"@") {
+                return;
             }
-            if let Some(&idx) = names.get(token) {
+            let text = std::str::from_utf8(token)
+                .unwrap_or_else(|e| panic!("parse error reading {alt_filename}: {e}"));
+            if let Some(&idx) = names.get(text) {
                 bns.anns[idx].is_alt = 1;
             }
+        };
+        for byte in BufReader::new(file).bytes() {
+            let byte = byte.unwrap_or_else(|e| panic!("Error reading {alt_filename} : {e}"));
+            if skip_rest_of_line {
+                if byte == b'\n' || byte == b'\r' {
+                    skip_rest_of_line = false;
+                }
+                continue;
+            }
+            if byte == b'\t' || byte == b'\n' || byte == b'\r' {
+                mark_token(&token);
+                token.clear();
+                if byte == b'\t' {
+                    skip_rest_of_line = true;
+                }
+            } else {
+                token.push(byte);
+            }
         }
+        mark_token(&token);
     }
     bns
 }
@@ -524,25 +579,33 @@ pub fn bns_fasta2bntseq<R: BufRead>(reader: R, prefix: &str, for_only: i32) -> i
 pub fn bwa_fa2pac(argv: &[String]) -> i32 {
     let mut for_only = 0;
     let mut positional = Vec::new();
+    let mut end_options = false;
     for arg in &argv[1..] {
-        if arg == "-f" {
-            for_only = 1;
+        if !end_options && arg == "--" {
+            end_options = true;
+        } else if !end_options && arg.starts_with('-') && arg.len() > 1 {
+            if arg.as_bytes()[1..].iter().all(|&b| b == b'f') {
+                for_only = 1;
+            } else {
+                return 1;
+            }
         } else {
             positional.push(arg.clone());
         }
     }
-    if positional.is_empty() {
+    if positional.is_empty() || positional.len() > 2 {
         eprintln!("Usage: bwa fa2pac [-f] <in.fasta> [<out.prefix>]");
         return 1;
     }
     let input = &positional[0];
     let prefix = positional.get(1).unwrap_or(input);
-    let file = File::open(input).unwrap_or_else(|e| panic!("fail to open file '{input}' : {e}"));
-    let reader: Box<dyn Read> = if input.ends_with(".gz") {
-        Box::new(MultiGzDecoder::new(file))
+    let reader: Box<dyn Read> = if input == "-" {
+        Box::new(std::io::stdin())
     } else {
-        Box::new(file)
+        Box::new(File::open(input).unwrap_or_else(|e| panic!("fail to open file '{input}' : {e}")))
     };
+    let reader = gzip_or_plain_reader_from_read(reader)
+        .unwrap_or_else(|e| panic!("fail to open file '{input}' : {e}"));
     let reader = BufReader::new(reader);
     let _ = bns_fasta2bntseq(reader, prefix, for_only);
     0
@@ -714,12 +777,7 @@ fn decode_pac_forward_into(pac: &[u8], beg: i64, end: i64, out: &mut Vec<u8>) {
     // Middle: read each byte once, emit 4 bases via extend_from_slice (single bounds check).
     while k + 4 <= end {
         let byte = unsafe { *pac.get_unchecked((k >> 2) as usize) };
-        out.extend_from_slice(&[
-            (byte >> 6) & 3,
-            (byte >> 4) & 3,
-            (byte >> 2) & 3,
-            byte & 3,
-        ]);
+        out.extend_from_slice(&[(byte >> 6) & 3, (byte >> 4) & 3, (byte >> 2) & 3, byte & 3]);
         k += 4;
     }
     // Suffix
@@ -829,7 +887,7 @@ mod tests {
 
     use super::{
         add1, bns_cnt_ambi, bns_destroy, bns_dump, bns_fasta2bntseq, bns_fetch_seq, bns_get_seq,
-        bns_intv2rid, bns_pos2rid, bns_restore, bns_restore_core, bwa_fa2pac, parse_fasta,
+        bns_intv2rid, bns_pos2rid, bns_restore, bns_restore_core, bwa_fa2pac, nt4, parse_fasta,
         SequenceRecord,
     };
     use crate::bwa_mem2::bntseq::{bntamb1_t, bntann1_t, bntseq_t};
@@ -883,14 +941,33 @@ mod tests {
     #[test]
     fn fasta_parser_preserves_name_comment_and_sequence() {
         let records = parse_fasta(BufReader::new(
-            &b">chr1 comment one\nAC\nTG\n>chr2\nNN\n"[..],
+            &b">chr1  comment one \nAC \nTG\n>chr2\nNN\n"[..],
         ));
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].name, "chr1");
-        assert_eq!(records[0].comment.as_deref(), Some("comment one"));
-        assert_eq!(records[0].seq, b"ACTG");
+        assert_eq!(records[0].comment.as_deref(), Some(" comment one "));
+        assert_eq!(records[0].seq, b"AC TG");
         assert_eq!(records[1].name, "chr2");
         assert_eq!(records[1].comment, None);
+    }
+
+    #[test]
+    fn sequence_parser_accepts_fastq_like_kseq() {
+        let records = parse_fasta(BufReader::new(&b"@read0 note\nACGT\n+\nIIII\n"[..]));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "read0");
+        assert_eq!(records[0].comment.as_deref(), Some("note"));
+        assert_eq!(records[0].seq, b"ACGT");
+    }
+
+    #[test]
+    fn fasta_parser_keeps_at_prefixed_sequence_lines() {
+        let records = parse_fasta(BufReader::new(&b">chr1\nAC\n@ambiguous\n>chr2\nGT\n"[..]));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "chr1");
+        assert_eq!(records[0].seq, b"AC@ambiguous");
+        assert_eq!(records[1].name, "chr2");
+        assert_eq!(records[1].seq, b"GT");
     }
 
     #[test]
@@ -956,6 +1033,51 @@ mod tests {
         assert_eq!(bns.anns[0].is_alt, 0);
         assert_eq!(bns.anns[1].is_alt, 1);
         fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn bns_restore_alt_parsing_matches_tab_newline_delimiters() {
+        let prefix = temp_prefix("restore_alt_delims");
+        fs::write(
+            prefix.with_extension("ann"),
+            "12 2 7\n1 chr1 comment one\n0 5 0\n2 chr2 comment two\n5 7 1\n",
+        )
+        .expect("write ann");
+        fs::write(prefix.with_extension("amb"), "12 2 0\n").expect("write amb");
+        let mut pac = File::create(prefix.with_extension("pac")).expect("write pac");
+        pac.write_all(&[1, 2, 3, 4]).expect("pac bytes");
+        fs::write(prefix.with_extension("alt"), "chr2 comment\nchr1").expect("write alt");
+
+        let bns = bns_restore(prefix.to_str().expect("utf8"));
+        assert_eq!(bns.anns[0].is_alt, 1);
+        assert_eq!(bns.anns[1].is_alt, 0);
+        fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn bns_restore_alt_ignores_later_tab_fields() {
+        let prefix = temp_prefix("restore_alt_tab_skip");
+        fs::write(
+            prefix.with_extension("ann"),
+            "12 2 7\n1 chr1 comment one\n0 5 0\n2 chr2 comment two\n5 7 1\n",
+        )
+        .expect("write ann");
+        fs::write(prefix.with_extension("amb"), "12 2 0\n").expect("write amb");
+        let mut pac = File::create(prefix.with_extension("pac")).expect("write pac");
+        pac.write_all(&[1, 2, 3, 4]).expect("pac bytes");
+        fs::write(prefix.with_extension("alt"), "@HD\tchr1\nchr1\tchr2\n").expect("write alt");
+
+        let bns = bns_restore(prefix.to_str().expect("utf8"));
+        assert_eq!(bns.anns[0].is_alt, 1);
+        assert_eq!(bns.anns[1].is_alt, 0);
+        fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn nt4_treats_u_as_ambiguous_like_upstream_table() {
+        assert_eq!(nt4(b'U'), 4);
+        assert_eq!(nt4(b'u'), 4);
+        assert_eq!(nt4(b'T'), 3);
     }
 
     #[test]
@@ -1070,6 +1192,77 @@ mod tests {
         assert_eq!(bwa_fa2pac(&argv), 0);
         assert!(Path::new(&format!("{}.pac", prefix_out.display())).is_file());
         fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn bwa_fa2pac_rejects_unknown_options_like_getopt() {
+        let argv = vec!["bwa".to_string(), "-x".to_string(), "ref.fa".to_string()];
+        assert_eq!(bwa_fa2pac(&argv), 1);
+    }
+
+    #[test]
+    fn bwa_fa2pac_accepts_f_flag_after_positional_operand() {
+        let prefix = temp_prefix("argv_permute");
+        let fasta_path = prefix.with_extension("fa");
+        fs::write(&fasta_path, b">chr1\nACGT\n").expect("write fasta");
+        let prefix_out = prefix.with_extension("out");
+        let argv = vec![
+            "bwa".to_string(),
+            fasta_path.to_str().expect("utf8").to_string(),
+            "-f".to_string(),
+            prefix_out.to_str().expect("utf8").to_string(),
+        ];
+        assert_eq!(bwa_fa2pac(&argv), 0);
+        assert!(Path::new(&format!("{}.pac", prefix_out.display())).is_file());
+        fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn bwa_fa2pac_honors_option_permutation_and_terminator() {
+        let prefix = temp_prefix("argv_dash");
+        let dir = prefix.parent().expect("temp dir").to_path_buf();
+        let cwd = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(&dir).expect("chdir temp");
+        fs::write("-input.fa", b">chr1\nACGT\n").expect("write fasta");
+        let argv = vec![
+            "bwa".to_string(),
+            "-f".to_string(),
+            "--".to_string(),
+            "-input.fa".to_string(),
+            "out".to_string(),
+        ];
+        assert_eq!(bwa_fa2pac(&argv), 0);
+        assert!(Path::new("out.pac").is_file());
+        std::env::set_current_dir(cwd).expect("restore cwd");
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn bwa_fa2pac_accepts_clustered_f_flag_like_getopt() {
+        let prefix = temp_prefix("argv_cluster_f");
+        let fasta_path = prefix.with_extension("fa");
+        fs::write(&fasta_path, b">chr1\nACGT\n").expect("write fasta");
+        let prefix_out = prefix.with_extension("out");
+        let argv = vec![
+            "bwa".to_string(),
+            "-ff".to_string(),
+            fasta_path.to_str().expect("utf8").to_string(),
+            prefix_out.to_str().expect("utf8").to_string(),
+        ];
+        assert_eq!(bwa_fa2pac(&argv), 0);
+        assert!(Path::new(&format!("{}.pac", prefix_out.display())).is_file());
+        fs::remove_dir_all(prefix.parent().expect("temp dir")).expect("cleanup");
+    }
+
+    #[test]
+    fn bwa_fa2pac_rejects_extra_positional_operands() {
+        let argv = vec![
+            "bwa".to_string(),
+            "in.fa".to_string(),
+            "out".to_string(),
+            "extra".to_string(),
+        ];
+        assert_eq!(bwa_fa2pac(&argv), 1);
     }
 
     #[test]

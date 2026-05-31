@@ -7,13 +7,13 @@
 
 //! Port of `bwa-mem2/src/bwa.h` + `bwa-mem2/src/bwa.cpp`.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{LazyLock, Mutex, RwLock};
 use crate::bwa_mem2::bntseq::{bns_get_seq_into, bntseq_t};
 use crate::bwa_mem2::kseq::{kseq_read, kseq_t};
 use crate::bwa_mem2::kstring::{kputc, kputw, kstring_t};
 use crate::bwa_mem2::ksw::ksw_global2;
-use crate::bwa_mem2::utils::{ErrFile, err_fputc, err_fputs};
+use crate::bwa_mem2::utils::{err_fputc, err_fputs, ErrFile};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 // --- bwa.h ---
 
@@ -143,7 +143,7 @@ pub fn kseq2bseq1(ks: &mut kseq_t, s: &mut bseq1_t) {
 ///
 /// Reads chunks of records into `bseq1_t`. Currently a stub in this port.
 #[doc = "Original function: bseq_read:78"]
-pub fn bseq_read(
+pub(crate) fn bseq_read(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -565,17 +565,17 @@ pub fn bwa_gen_cigar(
 }
 
 #[doc = "Original function: bwa_idx_infer_prefix:358"]
-pub fn bwa_idx_infer_prefix(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn bwa_idx_infer_prefix(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx_infer_prefix")
 }
 
 #[doc = "Original function: bwa_idx_load_bwt:384"]
-pub fn bwa_idx_load_bwt(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn bwa_idx_load_bwt(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx_load_bwt")
 }
 
 #[doc = "Original function: bwa_idx_load_from_disk:402"]
-pub fn bwa_idx_load_from_disk(
+pub(crate) fn bwa_idx_load_from_disk(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -583,7 +583,7 @@ pub fn bwa_idx_load_from_disk(
 }
 
 #[doc = "Original function: bwa_idx_load:433"]
-pub fn bwa_idx_load(
+pub(crate) fn bwa_idx_load(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
 ) -> crate::support::Opaque {
@@ -591,12 +591,12 @@ pub fn bwa_idx_load(
 }
 
 #[doc = "Original function: bwa_idx_destroy:438"]
-pub fn bwa_idx_destroy(_arg0: crate::support::Opaque) {
+pub(crate) fn bwa_idx_destroy(_arg0: crate::support::Opaque) {
     crate::support::stub::<()>("bwa_idx_destroy")
 }
 
 #[doc = "Original function: bwa_mem2idx:452"]
-pub fn bwa_mem2idx(
+pub(crate) fn bwa_mem2idx(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -605,7 +605,7 @@ pub fn bwa_mem2idx(
 }
 
 #[doc = "Original function: bwa_idx2mem:477"]
-pub fn bwa_idx2mem(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn bwa_idx2mem(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("bwa_idx2mem")
 }
 

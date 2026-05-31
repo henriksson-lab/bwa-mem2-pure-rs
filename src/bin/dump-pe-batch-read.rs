@@ -1,15 +1,15 @@
-use bwa_mem2_pure_rs::bwa_mem2::bwa::{bseq_read_orig, bwa_fill_scmat};
 use bwa_mem2_pure_rs::bwa_mem2::bwa::bseq1_t;
+use bwa_mem2_pure_rs::bwa_mem2::bwa::{bseq_read_orig, bwa_fill_scmat};
+use bwa_mem2_pure_rs::bwa_mem2::bwamem::worker_t;
+use bwa_mem2_pure_rs::bwa_mem2::bwamem::{mem_alnreg_v, mem_chain_v, mem_seed_t};
 use bwa_mem2_pure_rs::bwa_mem2::bwamem::{
     mem_chain2aln_across_reads_V2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt,
 };
-use bwa_mem2_pure_rs::bwa_mem2::bwamem::worker_t;
-use bwa_mem2_pure_rs::bwa_mem2::bwamem::{mem_alnreg_v, mem_chain_v, mem_seed_t};
 use bwa_mem2_pure_rs::bwa_mem2::bwamem_pair::{
     mem_pair, mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
 };
-use bwa_mem2_pure_rs::bwa_mem2::fastmap::{memoryAlloc, update_a};
 use bwa_mem2_pure_rs::bwa_mem2::fastmap::ktp_aux_t;
+use bwa_mem2_pure_rs::bwa_mem2::fastmap::{memoryAlloc, update_a};
 use bwa_mem2_pure_rs::bwa_mem2::fmi_search::FMI_search;
 use bwa_mem2_pure_rs::bwa_mem2::kseq::kseq_t;
 use bwa_mem2_pure_rs::bwa_mem2::ksw::kswr_t;

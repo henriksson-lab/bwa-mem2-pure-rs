@@ -10,9 +10,10 @@
 use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::fmt;
 use std::fmt::Arguments;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // --- utils.h ---
@@ -41,12 +42,12 @@ pub struct pair64_v {
 }
 
 #[doc = "Original function: __rdtsc:53"]
-pub fn rdtsc__L53(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn rdtsc__L53(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__rdtsc")
 }
 
 #[doc = "Original function: __rdtsc:60"]
-pub fn rdtsc__L60(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn rdtsc__L60(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__rdtsc")
 }
 
@@ -174,21 +175,59 @@ impl ErrFile {
     }
 }
 
-#[derive(Debug)]
 pub enum ErrGzFile {
-    ReaderFile(MultiGzDecoder<BufReader<File>>),
-    ReaderStdin(MultiGzDecoder<BufReader<std::io::Stdin>>),
+    ReaderFile(Box<dyn Read + Send>),
+    ReaderStdin(Box<dyn Read + Send>),
     WriterFile(GzEncoder<File>),
     WriterStdout(GzEncoder<std::io::Stdout>),
 }
 
+struct ReplayReader {
+    prefix: Cursor<Vec<u8>>,
+    reader: Box<dyn Read + Send>,
+}
+
+impl Read for ReplayReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut n = self.prefix.read(buf)?;
+        if n < buf.len() {
+            n += self.reader.read(&mut buf[n..])?;
+        }
+        Ok(n)
+    }
+}
+
+impl fmt::Debug for ErrGzFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrGzFile::ReaderFile(_) => f.write_str("ReaderFile(..)"),
+            ErrGzFile::ReaderStdin(_) => f.write_str("ReaderStdin(..)"),
+            ErrGzFile::WriterFile(_) => f.write_str("WriterFile(..)"),
+            ErrGzFile::WriterStdout(_) => f.write_str("WriterStdout(..)"),
+        }
+    }
+}
+
 impl ErrGzFile {
+    fn reader_from_read(mut reader: Box<dyn Read + Send>) -> std::io::Result<Box<dyn Read + Send>> {
+        let mut magic = [0_u8; 2];
+        let n = reader.read(&mut magic)?;
+        let replay = ReplayReader {
+            prefix: Cursor::new(magic[..n].to_vec()),
+            reader,
+        };
+        if n == 2 && magic == [0x1f, 0x8b] {
+            Ok(Box::new(MultiGzDecoder::new(replay)))
+        } else {
+            Ok(Box::new(replay))
+        }
+    }
+
     fn open_path(path: &str, mode: &str) -> std::io::Result<Self> {
         if mode.contains('r') {
-            let file = File::open(path)?;
-            Ok(ErrGzFile::ReaderFile(MultiGzDecoder::new(BufReader::new(
-                file,
-            ))))
+            Ok(ErrGzFile::ReaderFile(Self::reader_from_read(Box::new(
+                File::open(path)?,
+            ))?))
         } else {
             let file = OpenOptions::new()
                 .write(true)
@@ -232,6 +271,13 @@ pub fn err_xopen_core(func: &str, fn_: &str, mode: &str) -> ErrFile {
     }
 }
 
+pub fn err_xopen_core_lit(func: &str, fn_: &str, mode: &str) -> ErrFile {
+    match ErrFile::open_path(fn_, mode) {
+        Ok(fp) => fp,
+        Err(err) => err_fatal(func, format_args!("fail to open file '{}' : {}", fn_, err)),
+    }
+}
+
 /// Reopen `fn_` with mode `mode`, replacing the existing handle. Aborts via
 /// [`err_fatal`] tagged with `func` on failure.
 #[doc = "Original function: err_xreopen_core:67"]
@@ -248,7 +294,10 @@ pub fn err_xreopen_core(func: &str, fn_: &str, mode: &str, _fp: ErrFile) -> ErrF
 pub fn err_xzopen_core(func: &str, fn_: &str, mode: &str) -> ErrGzFile {
     if fn_ == "-" {
         if mode.contains('r') {
-            return ErrGzFile::ReaderStdin(MultiGzDecoder::new(BufReader::new(std::io::stdin())));
+            return ErrGzFile::ReaderStdin(
+                ErrGzFile::reader_from_read(Box::new(std::io::stdin()))
+                    .unwrap_or_else(|e| err_fatal(func, format_args!("fail to open stdin: {}", e))),
+            );
         }
         // According to zlib.h, out-of-memory is the only reason gzdopen can fail;
         // the Rust port constructs the decoder/encoder directly so this branch is
@@ -515,7 +564,8 @@ mod tests {
     use super::{
         cputime, err_fclose, err_fflush, err_fgets, err_fprintf, err_fputc, err_fread_noeof,
         err_fseek, err_ftell, err_fwrite, err_gzclose, err_gzread, err_xopen_core,
-        err_xreopen_core, err_xzopen_core, format_error_line, realtime, ErrFile,
+        err_xopen_core_lit, err_xreopen_core, err_xzopen_core, format_error_line, realtime,
+        ErrFile,
     };
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -600,8 +650,37 @@ mod tests {
     }
 
     #[test]
+    fn err_xzopen_reads_plain_files_like_zlib() {
+        let path = temp_path("plain_gz_api");
+        fs::write(&path, b"plain-data").expect("write");
+
+        let mut gz = err_xzopen_core("test", path.to_str().expect("utf8"), "r");
+        let mut buf = [0_u8; 10];
+        assert_eq!(err_gzread(&mut gz, &mut buf, 10), 10);
+        assert_eq!(&buf, b"plain-data");
+        assert_eq!(err_gzclose(gz), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn stdin_stdout_handles_are_selected_for_dash() {
         assert!(matches!(err_xopen_core("test", "-", "r"), ErrFile::Stdin));
         assert!(matches!(err_xopen_core("test", "-", "w"), ErrFile::Stdout));
+    }
+
+    #[test]
+    fn err_xopen_core_lit_treats_dash_as_filename() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = temp_path("literal_dash_dir");
+        fs::create_dir(&dir).expect("mkdir");
+        std::env::set_current_dir(&dir).expect("chdir temp");
+
+        let mut stream = err_xopen_core_lit("test", "-", "w");
+        assert_eq!(err_fwrite(b"literal", 1, 7, &mut stream), 7);
+        assert_eq!(err_fclose(stream), 0);
+        assert_eq!(fs::read("-").expect("read"), b"literal");
+
+        std::env::set_current_dir(cwd).expect("restore cwd");
+        let _ = fs::remove_dir_all(dir);
     }
 }

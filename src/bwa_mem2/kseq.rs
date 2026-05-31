@@ -12,6 +12,7 @@ use flate2::read::MultiGzDecoder;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
+use std::process::Child;
 
 // --- kseq.h ---
 
@@ -34,10 +35,7 @@ fn trim_cr(line: &str) -> &str {
 
 fn split_header(header: &str) -> (String, Option<String>) {
     let (name, comment) = split_header_borrow(header);
-    (
-        name.to_string(),
-        comment.map(|c| c.to_string()),
-    )
+    (name.to_string(), comment.map(|c| c.to_string()))
 }
 
 #[inline]
@@ -141,6 +139,7 @@ pub struct __kstream_t {
     records: Vec<KseqRecord>,
     record_index: usize,
     reader: Option<Box<dyn BufRead + Send>>,
+    child: Option<Child>,
     pending_header: Option<String>,
     line_buf: String,
 }
@@ -156,6 +155,7 @@ impl fmt::Debug for __kstream_t {
             .field("records_len", &self.records.len())
             .field("record_index", &self.record_index)
             .field("has_reader", &self.reader.is_some())
+            .field("has_child", &self.child.is_some())
             .field("pending_header", &self.pending_header)
             .finish()
     }
@@ -172,6 +172,7 @@ impl Default for __kstream_t {
             records: Vec::new(),
             record_index: 0,
             reader: None,
+            child: None,
             pending_header: None,
             line_buf: String::new(),
         }
@@ -189,16 +190,23 @@ impl __kstream_t {
             records: parse_records(text),
             record_index: 0,
             reader: None,
+            child: None,
             pending_header: None,
             line_buf: String::new(),
         }
     }
 
     pub fn from_reader(reader: Box<dyn BufRead + Send>) -> Self {
-        Self {
-            reader: Some(reader),
-            ..Default::default()
-        }
+        let mut stream = Self::default();
+        stream.reader = Some(reader);
+        stream
+    }
+
+    pub fn from_reader_with_child(reader: Box<dyn BufRead + Send>, child: Child) -> Self {
+        let mut stream = Self::default();
+        stream.reader = Some(reader);
+        stream.child = Some(child);
+        stream
     }
 
     pub fn from_path(path: &str) -> std::io::Result<Self> {
@@ -213,6 +221,15 @@ impl __kstream_t {
             Ok(Self::from_reader(Box::new(BufReader::new(gz))))
         } else {
             Ok(Self::from_reader(Box::new(BufReader::new(file))))
+        }
+    }
+}
+
+impl Drop for __kstream_t {
+    fn drop(&mut self) {
+        let _ = self.reader.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
         }
     }
 }
@@ -242,6 +259,13 @@ impl kseq_t {
     pub fn from_reader(reader: Box<dyn BufRead + Send>) -> Self {
         Self {
             f: kstream_t::from_reader(reader),
+            ..Default::default()
+        }
+    }
+
+    pub fn from_reader_with_child(reader: Box<dyn BufRead + Send>, child: Child) -> Self {
+        Self {
+            f: kstream_t::from_reader_with_child(reader, child),
             ..Default::default()
         }
     }
@@ -373,9 +397,7 @@ fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
                 break;
             }
             // Trim trailing \r\n / \n / \r from this line.
-            while seq_buf.s.len() > start
-                && matches!(seq_buf.s.last(), Some(b'\n' | b'\r'))
-            {
+            while seq_buf.s.len() > start && matches!(seq_buf.s.last(), Some(b'\n' | b'\r')) {
                 seq_buf.s.pop();
             }
             // Header signals end of body — save line into pending_header (as String) and back out.
@@ -394,9 +416,7 @@ fn streaming_kseq_read(seq: &mut kseq_t) -> i64 {
                 kstream.is_eof = 1;
                 break;
             }
-            while seq_buf.s.len() > start
-                && matches!(seq_buf.s.last(), Some(b'\n' | b'\r'))
-            {
+            while seq_buf.s.len() > start && matches!(seq_buf.s.last(), Some(b'\n' | b'\r')) {
                 seq_buf.s.pop();
             }
             if matches!(seq_buf.s.get(start), Some(b'+')) {
@@ -460,7 +480,9 @@ pub fn kseq_read(seq: &mut kseq_t) -> i64 {
     i64::try_from(record.seq.len()).expect("sequence length")
 }
 
-pub fn kseq_destroy(_ks: kseq_t) {}
+pub fn kseq_destroy(ks: kseq_t) {
+    drop(ks);
+}
 
 #[doc = "Original function: ks_getuntil:152"]
 pub fn ks_getuntil(
@@ -469,6 +491,19 @@ pub fn ks_getuntil(
     str_: &mut kstring_t,
     dret: Option<&mut i32>,
 ) -> i32 {
+    if ks.input.is_empty() && ks.reader.is_some() {
+        let mut bytes = Vec::new();
+        if let Some(reader) = ks.reader.as_mut() {
+            if reader.read_to_end(&mut bytes).is_err() {
+                ks.is_eof = 1;
+                return -1;
+            }
+        }
+        ks.input = bytes;
+        ks.cursor = 0;
+        ks.begin = 0;
+        ks.end = ks.input.len();
+    }
     let bytes = &ks.input;
     if ks.cursor >= bytes.len() {
         ks.is_eof = 1;
@@ -518,8 +553,12 @@ pub fn ks_getuntil(
 #[cfg(test)]
 mod tests {
     use std::io::BufReader;
+    use std::process::{Command, Stdio};
 
-    use super::{ks_getuntil, kseq_read, kseq_t, kstream_t, kstring_t, KS_SEP_LINE, KS_SEP_SPACE};
+    use super::{
+        ks_getuntil, kseq_destroy, kseq_read, kseq_t, kstream_t, kstring_t, KS_SEP_LINE,
+        KS_SEP_SPACE,
+    };
 
     #[test]
     fn kseq_read_parses_fasta_and_fastq_records() {
@@ -560,6 +599,44 @@ mod tests {
         );
         assert_eq!(out.as_str(), "comment here");
         assert_eq!(delim, i32::from(b'\n'));
+    }
+
+    #[test]
+    fn ks_getuntil_reads_from_streaming_reader() {
+        let reader = Box::new(BufReader::new("name comment\n".as_bytes()));
+        let mut ks = kstream_t::from_reader(reader);
+        let mut out = kstring_t::default();
+        let mut delim = 0;
+        assert_eq!(
+            ks_getuntil(&mut ks, KS_SEP_SPACE, &mut out, Some(&mut delim)),
+            4
+        );
+        assert_eq!(out.as_str(), "name");
+        assert_eq!(delim, i32::from(b' '));
+    }
+
+    #[test]
+    fn kseq_destroy_waits_for_child_backed_stream() {
+        let mut marker = std::env::temp_dir();
+        marker.push(format!(
+            "bwa_mem2_rs_kseq_child_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let script = format!("touch {}; printf '@r\\nA\\n+\\nI\\n'", marker.display());
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn shell");
+        let stdout = child.stdout.take().expect("stdout");
+        let ks = kseq_t::from_reader_with_child(Box::new(BufReader::new(stdout)), child);
+        kseq_destroy(ks);
+        assert!(marker.exists());
+        let _ = std::fs::remove_file(marker);
     }
 
     #[test]
