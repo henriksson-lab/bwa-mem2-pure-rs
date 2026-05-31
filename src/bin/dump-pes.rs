@@ -2,7 +2,7 @@ use bwa_mem2_rs::bwa_mem2::bwa::bseq_read_orig;
 use bwa_mem2_rs::bwa_mem2::bwamem::mem_opt_init;
 use bwa_mem2_rs::bwa_mem2::bwamem::mem_process_seqs;
 use bwa_mem2_rs::bwa_mem2::bwamem::worker_t;
-use bwa_mem2_rs::bwa_mem2::fastmap::memoryAlloc;
+use bwa_mem2_rs::bwa_mem2::fastmap::memory_alloc;
 use bwa_mem2_rs::bwa_mem2::fastmap::ktp_aux_t;
 use bwa_mem2_rs::bwa_mem2::fmi_search::FMI_search;
 use bwa_mem2_rs::bwa_mem2::kseq::kseq_t;
@@ -37,7 +37,7 @@ fn main() {
         fmi: Some(fmi),
         ..Default::default()
     };
-    memoryAlloc(&aux, &mut worker, n, threads);
+    memory_alloc(&aux, &mut worker, n, threads);
     mem_process_seqs(&mut opt, 0, n, &mut seqs, None, &mut worker);
 
     for (i, pe) in worker.pes.iter().enumerate() {

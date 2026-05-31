@@ -41,13 +41,8 @@ pub struct pair64_v {
     pub a: Vec<pair64_t>,
 }
 
-#[doc = "Original function: __rdtsc:53"]
-pub(crate) fn rdtsc__L53(_arg0: crate::support::Opaque) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("__rdtsc")
-}
-
 #[doc = "Original function: __rdtsc:60"]
-pub(crate) fn rdtsc__L60(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn rdtsc(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__rdtsc")
 }
 

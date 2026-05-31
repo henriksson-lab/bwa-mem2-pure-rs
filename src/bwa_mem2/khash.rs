@@ -10,11 +10,11 @@
 // --- khash.h ---
 
 #[doc = "Original function: __ac_X31_hash_string:383"]
-pub(crate) fn ac_X31_hash_string(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn ac_x31_hash_string(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__ac_X31_hash_string")
 }
 
 #[doc = "Original function: __ac_Wang_hash:400"]
-pub(crate) fn ac_Wang_hash(_arg0: crate::support::Opaque) -> crate::support::Opaque {
+pub(crate) fn ac_wang_hash(_arg0: crate::support::Opaque) -> crate::support::Opaque {
     crate::support::stub::<crate::support::Opaque>("__ac_Wang_hash")
 }

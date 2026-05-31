@@ -121,7 +121,7 @@ const G_DEFR: kswr_t = kswr_t {
     qb: -1,
 };
 
-// Thread-local scratch buffers for kswvBatchWrapper8/16. These were allocated per call
+// Thread-local scratch buffers for kswv_batch_wrapper8/16. These were allocated per call
 // (padded_pairs, seq1_soa, seq2_soa); per-thread reuse amortizes the heap traffic since
 // kswv is invoked once per worker_sam call, ~50-200 times per program run.
 thread_local! {
@@ -180,18 +180,18 @@ fn kswv512_u8_saturated_score(score: u8, shift: u8) -> i32 {
 }
 
 #[doc = "Original function: parseCmdLine:1636"]
-pub(crate) fn parseCmdLine(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
-    crate::support::stub::<()>("parseCmdLine")
+pub(crate) fn parse_cmd_line(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+    crate::support::stub::<()>("parse_cmd_line")
 }
 
 #[doc = "Original function: loadPairs:1686"]
-pub(crate) fn loadPairs(
+pub(crate) fn load_pairs(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
     _arg3: crate::support::Opaque,
 ) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("loadPairs")
+    crate::support::stub::<crate::support::Opaque>("load_pairs")
 }
 
 #[doc = "Original function: find_stats:1738"]
@@ -295,9 +295,9 @@ impl kswv {
     }
 
     /// Vector u8 Smith-Waterman entry point (AVX-512 path); thin shim over
-    /// `kswvBatchWrapper8`.
+    /// `kswv_batch_wrapper8`.
     #[doc = "Original function: kswv::getScores8:164"]
-    pub fn getScores8(
+    pub fn get_scores8(
         &self,
         pairArray: &mut [SeqPair],
         seqBufRef: &[u8],
@@ -307,7 +307,7 @@ impl kswv {
         nthreads: u16,
         phase: i32,
     ) {
-        self.kswvBatchWrapper8(
+        self.kswv_batch_wrapper8(
             pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase,
         );
     }
@@ -318,7 +318,7 @@ impl kswv {
     /// Rounds the batch up to `SIMD_WIDTH8` with padded `id=ii, len1=len2=0` lanes
     /// so the kernel can run a full vector per chunk.
     #[doc = "Original function: kswv::kswvBatchWrapper8:177"]
-    pub fn kswvBatchWrapper8(
+    pub fn kswv_batch_wrapper8(
         &self,
         pairArray: &mut [SeqPair],
         seqBufRef: &[u8],
@@ -399,7 +399,7 @@ impl kswv {
         }
         let max_len1_usize = max_len1 as usize;
         let max_len2_usize = max_len2 as usize;
-        // Caller (kswvBatchWrapper8) sized seq1_soa to maxRefLen*SIMD_WIDTH8 and seq2_soa to
+        // Caller (kswv_batch_wrapper8) sized seq1_soa to maxRefLen*SIMD_WIDTH8 and seq2_soa to
         // maxQerLen*SIMD_WIDTH8. Per-row writes use indices k*SIMD_WIDTH8 + j with k <= max_len{1,2}
         // and j < SIMD_WIDTH8, so the maximum write offset is max_len*SIMD_WIDTH8 + (SIMD_WIDTH8-1)
         // = (max_len+1)*SIMD_WIDTH8 - 1. Validate the SoA buffers cover that range up front.
@@ -458,9 +458,9 @@ impl kswv {
     }
 
     /// Vectorized 16-bit (i16 lane) SW entry point; thin shim over
-    /// `kswvBatchWrapper16`.
+    /// `kswv_batch_wrapper16`.
     #[doc = "Original function: kswv::getScores16:713"]
-    pub fn getScores16(
+    pub fn get_scores16(
         &self,
         pairArray: &mut [SeqPair],
         seqBufRef: &[u8],
@@ -470,7 +470,7 @@ impl kswv {
         nthreads: u16,
         phase: i32,
     ) {
-        self.kswvBatchWrapper16(
+        self.kswv_batch_wrapper16(
             pairArray, seqBufRef, seqBufQer, aln, numPairs, nthreads, phase,
         );
     }
@@ -478,7 +478,7 @@ impl kswv {
     /// Pack `SIMD_WIDTH16` `SeqPair`s into SoA buffers and run the AVX-512 i16
     /// SW kernel; uses the same padding/rounding scheme as the u8 wrapper.
     #[doc = "Original function: kswv::kswvBatchWrapper16:725"]
-    pub fn kswvBatchWrapper16(
+    pub fn kswv_batch_wrapper16(
         &self,
         pairArray: &mut [SeqPair],
         seqBufRef: &[u8],
@@ -1628,7 +1628,7 @@ impl kswv {
     /// The original SSE2 SW kernel from bwa-mem, here adapted to call into
     /// `ksw_align2` for the scalar/scalar-replacement path.
     #[doc = "Original function: kswv::kswvScalar_u8:1306"]
-    pub fn kswvScalar_u8(
+    pub fn kswv_scalar_u8(
         &self,
         q: &kswq_t,
         tlen: i32,
@@ -1669,9 +1669,9 @@ impl kswv {
     }
 
     /// Scalar i16 SW (the first gap costs `-(_o+_e)`); same role as
-    /// `kswvScalar_u8` but with i16 lanes.
+    /// `kswv_scalar_u8` but with i16 lanes.
     #[doc = "Original function: kswv::kswvScalar_i16:1434"]
-    pub fn kswvScalar_i16(
+    pub fn kswv_scalar_i16(
         &self,
         q: &kswq_t,
         tlen: i32,
@@ -1714,10 +1714,10 @@ impl kswv {
     /// Scalar SW wrapper — the batch interface for the scalar kernels.
     ///
     /// Iterates over the `SeqPair` batch and dispatches each pair to
-    /// `kswvScalar_u8` / `kswvScalar_i16` (selected by `sw` and the `KSW_XBYTE`
+    /// `kswv_scalar_u8` / `kswv_scalar_i16` (selected by `sw` and the `KSW_XBYTE`
     /// flag in `p->h0`).
     #[doc = "Original function: kswv::kswvScalarWrapper:1550"]
-    pub fn kswvScalarWrapper(
+    pub fn kswv_scalar_wrapper(
         &self,
         seqPairArray: &mut [SeqPair],
         seqBufRef: &[u8],
@@ -1754,11 +1754,11 @@ impl kswv {
                 &mat,
             );
             let ks = if sw {
-                self.kswvScalar_i16(
+                self.kswv_scalar_i16(
                     &q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0,
                 )
             } else {
-                self.kswvScalar_u8(
+                self.kswv_scalar_u8(
                     &q, p.len1, target, self.o_del, self.e_del, self.o_ins, self.e_ins, p.h0,
                 )
             };
@@ -1912,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn getScores8_matches_scalar_wrapper_outputs() {
+    fn get_scores8_matches_scalar_wrapper_outputs() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, None, None);
         let mut pairs = vec![SeqPair {
             idr: 0,
@@ -1926,14 +1926,14 @@ mod tests {
         let seq_ref = vec![0_u8, 1, 2, 3];
         let seq_qer = vec![0_u8, 1, 2, 3];
         let mut aln = vec![kswr_t::default(); 1];
-        k.getScores8(&mut pairs, &seq_ref, &seq_qer, &mut aln, 1, 1, 0);
+        k.get_scores8(&mut pairs, &seq_ref, &seq_qer, &mut aln, 1, 1, 0);
         assert!(aln[0].score > 0);
         assert_eq!(aln[0].te, 3);
         assert_eq!(aln[0].qe, 3);
     }
 
     #[test]
-    fn getScores8_batch_wrapper_matches_scalar_lanes_on_full_and_tail_chunks() {
+    fn get_scores8_batch_wrapper_matches_scalar_lanes_on_full_and_tail_chunks() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, Some(64), Some(64));
         let mut pairs = Vec::new();
         let mut seq_ref = Vec::new();
@@ -1970,7 +1970,7 @@ mod tests {
 
         let mut batch_pairs = pairs.clone();
         let mut batch_aln = vec![kswr_t::default(); pairs.len()];
-        k.getScores8(
+        k.get_scores8(
             &mut batch_pairs,
             &seq_ref,
             &seq_qer,
@@ -1991,7 +1991,7 @@ mod tests {
     }
 
     #[test]
-    fn getScores16_matches_scalar_wrapper_outputs() {
+    fn get_scores16_matches_scalar_wrapper_outputs() {
         let k = kswv::ctor(6, 1, 6, 1, 1, -4, 1, None, None);
         let mut pairs = vec![SeqPair {
             idr: 0,
@@ -2005,7 +2005,7 @@ mod tests {
         let seq_ref = vec![0_u8, 1, 2, 3];
         let seq_qer = vec![0_u8, 1, 2, 3];
         let mut aln = vec![kswr_t::default(); 1];
-        k.getScores16(&mut pairs, &seq_ref, &seq_qer, &mut aln, 1, 1, 0);
+        k.get_scores16(&mut pairs, &seq_ref, &seq_qer, &mut aln, 1, 1, 0);
         assert!(aln[0].score > 0);
         assert_eq!(aln[0].te, 3);
         assert_eq!(aln[0].qe, 3);
@@ -2013,7 +2013,7 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn getScores16_avx512_matches_scalar_lanes_on_mixed_batch() {
+    fn get_scores16_avx512_matches_scalar_lanes_on_mixed_batch() {
         if !std::is_x86_feature_detected!("avx512bw") {
             return;
         }

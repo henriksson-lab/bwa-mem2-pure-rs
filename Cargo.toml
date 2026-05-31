@@ -19,6 +19,7 @@ include = [
     "/src/output.rs",
     "/src/support.rs",
     "/src/bin/bwa-mem2-rs.rs",
+    "/src/bin/dump-pe-batch-read.rs",
     "/src/bwa_mem2/**",
     "/scripts/benchmark-real-data.sh",
     "/scripts/conformance-bwa.sh",

@@ -51,14 +51,14 @@ pub(crate) fn mm_countbits_64(_arg0: crate::support::Opaque) -> crate::support::
 // --- fmi_search.cpp ---
 
 thread_local! {
-    // Reused across all calls to getSMEMsOnePosOneThread on a given Rayon worker.
+    // Reused across all calls to get_smems_one_pos_one_thread on a given Rayon worker.
     // C++ allocates SMEM prev[max_readlength] on the stack per call (kept tiny because the
     // compiler bounds maxLen). Rust has no equivalent stack-vec; per-call vec! adds significant
     // alloc overhead in the seed-finding inner loop. Reuse via thread-local Vec.
     static SMEM_PREV_SCRATCH: std::cell::RefCell<Vec<SMEM>> =
         const { std::cell::RefCell::new(Vec::new()) };
 
-    // Reused across getSMEMsAllPosOneThread calls. The original C++ allocates this temporary with
+    // Reused across get_smems_all_pos_one_thread calls. The original C++ allocates this temporary with
     // _mm_malloc/_mm_free per call; in Rust that showed up as allocator work in the SMEM hotspot.
     static SMEM_QUERY_POS_SCRATCH: std::cell::RefCell<Vec<i16>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -209,7 +209,7 @@ fn occ(cp_occ: &[CP_OCC], one_hot_mask_array: &[u64], sp: i64, b: u8) -> i64 {
 ///
 /// Orders primarily by ascending `rid`, then ascending `m` (left edge), then
 /// descending `n` (right edge). Returns `-1`, `0`, or `1` like the C++
-/// `compare_smem`. Used by `sortSMEMs` to stabilise per-thread SMEM slices.
+/// `compare_smem`. Used by `sort_smems` to stabilise per-thread SMEM slices.
 #[doc = "Original function: compare_smem:987"]
 #[inline]
 pub fn compare_smem(a: &SMEM, b: &SMEM) -> i32 {
@@ -672,7 +672,7 @@ impl FMI_search {
     /// `query_pos_array[i]`, runs the forward extension followed by the
     /// backward extension, appends qualifying SMEMs to `match_array`, and
     /// writes the new position to `query_pos_array[i]` so that
-    /// [`getSMEMsAllPosOneThread`] can iterate until all reads are exhausted.
+    /// [`get_smems_all_pos_one_thread`] can iterate until all reads are exhausted.
     ///
     /// # Arguments
     /// * `enc_qdb` - flat 0..3 encoded read buffer indexed via `query_cum_len_ar`.
@@ -687,7 +687,7 @@ impl FMI_search {
     /// * `match_array` - destination SMEMs; new entries are pushed.
     /// * `num_total_smem` - running total of emitted SMEMs; incremented in-place.
     #[doc = "Original function: FMI_search::getSMEMsOnePosOneThread:496"]
-    pub fn getSMEMsOnePosOneThread(
+    pub fn get_smems_one_pos_one_thread(
         &self,
         enc_qdb: &[u8],
         query_pos_array: &mut [i16],
@@ -709,7 +709,7 @@ impl FMI_search {
             if prev_array.len() < need {
                 prev_array.resize(need, SMEM::default());
             }
-            self.getSMEMsOnePosOneThread_inner(
+            self.get_smems_one_pos_one_thread_inner(
                 enc_qdb,
                 query_pos_array,
                 min_intv_array,
@@ -730,7 +730,7 @@ impl FMI_search {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn getSMEMsOnePosOneThread_inner(
+    fn get_smems_one_pos_one_thread_inner(
         &self,
         enc_qdb: &[u8],
         query_pos_array: &mut [i16],
@@ -788,7 +788,7 @@ impl FMI_search {
                         let mut smem_ = smem;
                         smem_.k = smem.l;
                         smem_.l = smem.k;
-                        let new_smem_ = self.backwardExt(smem_, 3 - a);
+                        let new_smem_ = self.backward_ext(smem_, 3 - a);
                         let mut new_smem = new_smem_;
                         new_smem.k = new_smem_.l;
                         new_smem.l = new_smem_.k;
@@ -808,7 +808,7 @@ impl FMI_search {
                         smem = new_smem;
                         // Mirror upstream's ENABLE_PREFETCH: warm cp_occ for next-iter k/l reads.
                         // Next iteration will read cp_occ[smem.l>>CP_SHIFT] and
-                        // cp_occ[(smem.l+smem.s)>>CP_SHIFT] (after the k/l swap inside backwardExt).
+                        // cp_occ[(smem.l+smem.s)>>CP_SHIFT] (after the k/l swap inside backward_ext).
                         // _mm_prefetch on invalid addresses is a silent no-op (no fault) so the
                         // bounds checks are unnecessary; smem.l is already within valid BWT range.
                         #[cfg(target_arch = "x86_64")]
@@ -842,7 +842,7 @@ impl FMI_search {
 
                     let mut p = 0_usize;
                     let j_u32 = j as u32; // j < x < readlength fits in u32.
-                                          // Each backwardExt call reads cp_occ[smem.k>>CP_SHIFT] and
+                                          // Each backward_ext call reads cp_occ[smem.k>>CP_SHIFT] and
                                           // cp_occ[(smem.k+smem.s)>>CP_SHIFT]. The next iter's smem is prev_array[p+1]
                                           // (or [0] when first while breaks into second), known up-front. Warming those
                                           // lines hides the DRAM latency that dominates the SMEM hot loop.
@@ -887,7 +887,7 @@ impl FMI_search {
                                 );
                             }
                         }
-                        let mut new_smem = self.backwardExt(smem, a);
+                        let mut new_smem = self.backward_ext(smem, a);
                         new_smem.m = j_u32;
 
                         if (new_smem.s < min_intv) && (smem.n - smem.m + 1 >= min_seed_len_u32) {
@@ -924,7 +924,7 @@ impl FMI_search {
                                 );
                             }
                         }
-                        let mut new_smem = self.backwardExt(smem, a);
+                        let mut new_smem = self.backward_ext(smem, a);
                         new_smem.m = j_u32;
                         if (new_smem.s >= min_intv) && (new_smem.s != curr_s) {
                             curr_s = new_smem.s;
@@ -953,7 +953,7 @@ impl FMI_search {
         }
     }
 
-    /// Drive [`getSMEMsOnePosOneThread`] until every read on this thread is
+    /// Drive [`get_smems_one_pos_one_thread`] until every read on this thread is
     /// fully consumed.
     ///
     /// Maintains a compacting active-list: after each one-position pass the
@@ -973,7 +973,7 @@ impl FMI_search {
     /// * `match_array` - SMEM output.
     /// * `num_total_smem` - total emitted SMEM count.
     #[doc = "Original function: FMI_search::getSMEMsAllPosOneThread:672"]
-    pub fn getSMEMsAllPosOneThread(
+    pub fn get_smems_all_pos_one_thread(
         &self,
         enc_qdb: &[u8],
         min_intv_array: &mut [i32],
@@ -1008,7 +1008,7 @@ impl FMI_search {
                     }
                 }
 
-                self.getSMEMsOnePosOneThread(
+                self.get_smems_one_pos_one_thread(
                     enc_qdb,
                     &mut query_pos_array[..tail],
                     &mut min_intv_array[..tail],
@@ -1049,7 +1049,7 @@ impl FMI_search {
     /// # Returns
     /// Number of seeds appended.
     #[doc = "Original function: FMI_search::bwtSeedStrategyAllPosOneThread:726"]
-    pub fn bwtSeedStrategyAllPosOneThread(
+    pub fn bwt_seed_strategy_all_pos_one_thread(
         &self,
         enc_qdb: &[u8],
         max_intv_array: &[i32],
@@ -1096,7 +1096,7 @@ impl FMI_search {
                             let mut smem_ = smem;
                             smem_.k = smem.l;
                             smem_.l = smem.k;
-                            let new_smem_ = self.backwardExt(smem_, 3 - a);
+                            let new_smem_ = self.backward_ext(smem_, 3 - a);
                             let mut new_smem = new_smem_;
                             new_smem.k = new_smem_.l;
                             new_smem.l = new_smem_.k;
@@ -1140,7 +1140,7 @@ impl FMI_search {
     /// * `match_array` - destination for emitted SMEMs.
     /// * `num_total_smem` - per-thread SMEM counts (resized to `nthreads`).
     #[doc = "Original function: FMI_search::getSMEMs:815"]
-    pub fn getSMEMs(
+    pub fn get_smems(
         &self,
         enc_qdb: &[u8],
         numReads: i32,
@@ -1204,7 +1204,7 @@ impl FMI_search {
                             let mut smem_ = smem;
                             smem_.k = smem.l;
                             smem_.l = smem.k;
-                            let new_smem_ = self.backwardExt(smem_, 3 - a);
+                            let new_smem_ = self.backward_ext(smem_, 3 - a);
                             let mut new_smem = new_smem_;
                             new_smem.k = new_smem_.l;
                             new_smem.l = new_smem_.k;
@@ -1250,7 +1250,7 @@ impl FMI_search {
                             } else {
                                 curr_array[curr_base + p]
                             };
-                            let mut new_smem = self.backwardExt(smem, a);
+                            let mut new_smem = self.backward_ext(smem, a);
                             new_smem.m = u32::try_from(j).expect("m");
 
                             if new_smem.s == 0 {
@@ -1326,13 +1326,13 @@ impl FMI_search {
     /// Sort each thread's SMEM slice in-place using [`compare_smem_ord`].
     ///
     /// # Arguments
-    /// * `match_array` - flat per-thread layout produced by [`getSMEMs`].
+    /// * `match_array` - flat per-thread layout produced by [`get_smems`].
     /// * `num_total_smem` - per-thread emitted counts (slice length).
-    /// * `num_reads` / `readlength` - same partitioning as in [`getSMEMs`],
+    /// * `num_reads` / `readlength` - same partitioning as in [`get_smems`],
     ///   used to recover each thread's base offset.
     /// * `nthreads` - number of thread slices.
     #[doc = "Original function: FMI_search::sortSMEMs:1008"]
-    pub fn sortSMEMs(
+    pub fn sort_smems(
         &self,
         match_array: &mut [SMEM],
         num_total_smem: &[i64],
@@ -1363,7 +1363,7 @@ impl FMI_search {
     /// * `a` - base to extend with (0..3); other values fall through to the `3` branch.
     #[doc = "Original function: FMI_search::backwardExt:1025"]
     #[inline(always)]
-    pub fn backwardExt(&self, mut smem: SMEM, a: u8) -> SMEM {
+    pub fn backward_ext(&self, mut smem: SMEM, a: u8) -> SMEM {
         // Hoist the per-position lookup that's invariant across the 4 base loop. `entry_sp` /
         // `entry_ep` and `mask_sp` / `mask_ep` only depend on `sp` / `ep`, not on `b`.
         let sp = smem.k;
@@ -1480,7 +1480,7 @@ impl FMI_search {
     /// * `coord_array` - output SA entries.
     /// * `count` - number of positions to process.
     #[doc = "Original function: FMI_search::get_sa_entries:1062"]
-    pub fn get_sa_entries__L1062(
+    pub fn get_sa_entries_l1062(
         &self,
         pos_array: &[i64],
         coord_array: &mut Vec<i64>,
@@ -1510,7 +1510,7 @@ impl FMI_search {
     /// * `count` - number of SMEMs to process.
     /// * `max_occ` - cap on coordinates emitted per SMEM.
     #[doc = "Original function: FMI_search::get_sa_entries:1077"]
-    pub fn get_sa_entries__L1077(
+    pub fn get_sa_entries_l1077(
         &self,
         smem_array: &[SMEM],
         coord_array: &mut Vec<i64>,
@@ -1613,7 +1613,7 @@ impl FMI_search {
     /// * `max_occ` - cap on coordinates emitted per SMEM.
     /// * `tid` - thread id passed through to the compressed walker.
     #[doc = "Original function: FMI_search::get_sa_entries:1177"]
-    pub fn get_sa_entries__L1177(
+    pub fn get_sa_entries_l1177(
         &self,
         smem_array: &[SMEM],
         coord_array: &mut Vec<i64>,
@@ -1708,7 +1708,7 @@ impl FMI_search {
         }
     }
 
-    /// Prefetch-aware variant of [`get_sa_entries__L1177`] that drives
+    /// Prefetch-aware variant of [`get_sa_entries_l1177`] that drives
     /// [`call_one_step`] manually so the next walk's `cp_occ` line can be
     /// warmed under the current step's latency.
     ///
@@ -2073,7 +2073,7 @@ mod tests {
             },
         ];
         let counts = vec![3_i64, 3_i64];
-        fmi.sortSMEMs(&mut entries, &counts, 4, 2, 2);
+        fmi.sort_smems(&mut entries, &counts, 4, 2, 2);
 
         assert_eq!(
             &entries[0..3]
@@ -2315,7 +2315,7 @@ mod tests {
 
         let mut direct = Vec::new();
         let mut direct_count = 0_i32;
-        fmi.get_sa_entries__L1177(
+        fmi.get_sa_entries_l1177(
             &smems,
             &mut direct,
             &mut direct_count,
@@ -2377,7 +2377,7 @@ mod tests {
 
         let positions = vec![0_i64, 1, 2];
         let mut coords = Vec::new();
-        fmi.get_sa_entries__L1062(&positions, &mut coords, positions.len() as u32, 1);
+        fmi.get_sa_entries_l1062(&positions, &mut coords, positions.len() as u32, 1);
         let expected: Vec<i64> = positions.iter().map(|&p| fmi.get_sa_entry(p)).collect();
         assert_eq!(coords, expected);
 
@@ -2417,7 +2417,7 @@ mod tests {
             };
 
             for ext_base in 0_u8..4 {
-                let actual = fmi.backwardExt(smem, ext_base);
+                let actual = fmi.backward_ext(smem, ext_base);
 
                 let sp = usize::try_from(smem.k).expect("sp");
                 let ep = usize::try_from(smem.k + smem.s).expect("ep");
@@ -2483,7 +2483,7 @@ mod tests {
         let query_offsets = vec![0_i32];
 
         let mut actual = Vec::new();
-        let num = fmi.bwtSeedStrategyAllPosOneThread(
+        let num = fmi.bwt_seed_strategy_all_pos_one_thread(
             &enc_qdb,
             &max_intv,
             1,
@@ -2534,7 +2534,7 @@ mod tests {
         let mut matches = Vec::new();
         let mut total = 0_i64;
 
-        fmi.getSMEMsOnePosOneThread(
+        fmi.get_smems_one_pos_one_thread(
             &enc_qdb,
             &mut query_pos,
             &mut min_intv,
@@ -2599,7 +2599,7 @@ mod tests {
         let mut all_rid = vec![0_i32, 1_i32];
         let mut all_matches = Vec::new();
         let mut all_total = 0_i64;
-        fmi.getSMEMsAllPosOneThread(
+        fmi.get_smems_all_pos_one_thread(
             &enc_qdb,
             &mut all_min_intv,
             &mut all_rid,
@@ -2630,7 +2630,7 @@ mod tests {
                     tail += 1;
                 }
             }
-            fmi.getSMEMsOnePosOneThread(
+            fmi.get_smems_one_pos_one_thread(
                 &enc_qdb,
                 &mut manual_query_pos[..tail],
                 &mut manual_min_intv[..tail],
@@ -2681,7 +2681,7 @@ mod tests {
         let enc_qdb = vec![0_u8, 1, 2, 3, 0, 1, 3, 3, 0, 0, 0, 0];
         let mut matches = Vec::new();
         let mut totals = Vec::new();
-        fmi.getSMEMs(&enc_qdb, 2, 2, readlength, 2, 2, &mut matches, &mut totals);
+        fmi.get_smems(&enc_qdb, 2, 2, readlength, 2, 2, &mut matches, &mut totals);
 
         assert_eq!(totals.len(), 2);
         let sum: i64 = totals.iter().sum();
@@ -2726,7 +2726,7 @@ mod tests {
 
         let mut matches1 = Vec::new();
         let mut totals1 = Vec::new();
-        fmi.getSMEMs(
+        fmi.get_smems(
             &enc_qdb,
             2,
             2,
@@ -2736,7 +2736,7 @@ mod tests {
             &mut matches1,
             &mut totals1,
         );
-        fmi.sortSMEMs(&mut matches1, &totals1, 2, readlength, 1);
+        fmi.sort_smems(&mut matches1, &totals1, 2, readlength, 1);
         let total1: usize = totals1
             .iter()
             .map(|&x| usize::try_from(x).expect("x"))
@@ -2745,7 +2745,7 @@ mod tests {
 
         let mut matches2 = Vec::new();
         let mut totals2 = Vec::new();
-        fmi.getSMEMs(
+        fmi.get_smems(
             &enc_qdb,
             2,
             2,
@@ -2755,7 +2755,7 @@ mod tests {
             &mut matches2,
             &mut totals2,
         );
-        fmi.sortSMEMs(&mut matches2, &totals2, 2, readlength, 2);
+        fmi.sort_smems(&mut matches2, &totals2, 2, readlength, 2);
         let mut out2 = Vec::new();
         for tid in 0..2_usize {
             let per_thread_quota = (2 + (2 - 1)) / 2;
@@ -2808,7 +2808,7 @@ mod tests {
         ];
         let mut coords = Vec::new();
         let mut coord_counts = Vec::new();
-        fmi.get_sa_entries__L1077(
+        fmi.get_sa_entries_l1077(
             &smems,
             &mut coords,
             &mut coord_counts,

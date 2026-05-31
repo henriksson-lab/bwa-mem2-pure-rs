@@ -5,7 +5,7 @@ use bwa_mem2_rs::bwa_mem2::bwamem::{
 };
 use bwa_mem2_rs::bwa_mem2::bwamem::mem_chain_v;
 use bwa_mem2_rs::bwa_mem2::bwamem::worker_t;
-use bwa_mem2_rs::bwa_mem2::fastmap::memoryAlloc;
+use bwa_mem2_rs::bwa_mem2::fastmap::memory_alloc;
 use bwa_mem2_rs::bwa_mem2::fastmap::ktp_aux_t;
 use bwa_mem2_rs::bwa_mem2::fmi_search::FMI_search;
 use bwa_mem2_rs::bwa_mem2::kseq::kseq_t;
@@ -46,7 +46,7 @@ fn main() {
         fmi: Some(fmi),
         ..Default::default()
     };
-    memoryAlloc(&aux, &mut worker, 1, 1);
+    memory_alloc(&aux, &mut worker, 1, 1);
     worker.opt = Some(Box::new(opt));
     worker.n_processed = 0;
     worker.nreads = 1;

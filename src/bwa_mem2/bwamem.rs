@@ -1867,7 +1867,7 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
 }
 
 #[doc = "Original function: kv_push:564"]
-pub(crate) fn kv_push__L564(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+pub(crate) fn kv_push_l564(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
     crate::support::stub::<()>("kv_push")
 }
 
@@ -1925,7 +1925,7 @@ pub fn mem_collect_smem(
     }
 
     match_array.clear();
-    fmi.getSMEMsAllPosOneThread(
+    fmi.get_smems_all_pos_one_thread(
         enc_qdb,
         &mut min_intv_ar[..nseq_usize],
         &mut rid[..nseq_usize],
@@ -1979,7 +1979,7 @@ pub fn mem_collect_smem(
 
     let original_len = match_array.len();
     let pos_i32 = pos as i32;
-    fmi.getSMEMsOnePosOneThread(
+    fmi.get_smems_one_pos_one_thread(
         enc_qdb,
         &mut query_pos_ar[..pos],
         &mut min_intv_ar[..pos],
@@ -2007,7 +2007,7 @@ pub fn mem_collect_smem(
         for value in min_intv_ar.iter_mut().take(nseq_usize) {
             *value = opt.max_mem_intv as i32;
         }
-        num_smem3 = fmi.bwtSeedStrategyAllPosOneThread(
+        num_smem3 = fmi.bwt_seed_strategy_all_pos_one_thread(
             enc_qdb,
             &min_intv_ar[..nseq_usize],
             nseq,
@@ -2019,7 +2019,7 @@ pub fn mem_collect_smem(
     }
 
     *tot_smem = num_smem1 + num_smem2 + num_smem3;
-    fmi.sortSMEMs(match_array, &[*tot_smem], nseq, seq_[0].l_seq, 1);
+    fmi.sort_smems(match_array, &[*tot_smem], nseq, seq_[0].l_seq, 1);
 
     let tot_smem_usize = *tot_smem as usize;
     let mut smem_ptr = 0_usize;
@@ -2038,7 +2038,7 @@ pub fn mem_collect_smem(
 /// NEW ONE — the reworked SA-to-reference chain assembler.
 ///
 /// For each read in `seq_`, iterates the already-grouped SMEMs in `matchArray`
-/// (`getSMEMs* + sortSMEMs` upstream), pulls suffix-array hits via `get_sa_entries_prefetch`,
+/// (`get_smems* + sort_smems` upstream), pulls suffix-array hits via `get_sa_entries_prefetch`,
 /// and feeds them through `test_and_merge` against a per-read kbtree of chains. Identical to
 /// upstream's `mem_chain` plus the SA-prefetch optimization.
 #[doc = "Original function: mem_chain_seeds:806"]
@@ -2586,7 +2586,7 @@ pub fn mem_kernel1_core(
 
 /// Per-thread kernel 2: banded Smith-Waterman extension across all reads/chains.
 ///
-/// Runs `mem_chain2aln_across_reads_V2` to produce per-read alignment regions, frees the
+/// Runs `mem_chain2aln_across_reads_v2` to produce per-read alignment regions, frees the
 /// per-read chain seeds, collapses purged regions (`qe == qb`), de-duplicates/merges via
 /// `mem_sort_dedup_patch`, and finally tags ALT-contig hits with `is_alt = 1`.
 #[doc = "Original function: mem_kernel2_core:1093"]
@@ -2610,7 +2610,7 @@ pub fn mem_kernel2_core(
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
     // Kernel 2: B-SWA (banded Smith-Waterman extension across all reads/chains)
-    mem_chain2aln_across_reads_V2(
+    mem_chain2aln_across_reads_v2(
         opt, bns, pac, seq_, nseq, chain_ar, regs, mmc, ref_string, tid,
     );
     for (l, reg) in regs.iter().take(nseq as usize).enumerate() {
@@ -3196,7 +3196,7 @@ pub fn mem_mark_primary_se_core(
 }
 
 #[doc = "Original function: kv_push:1399"]
-pub(crate) fn kv_push__L1399(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
+pub(crate) fn kv_push_l1399(_arg0: crate::support::Opaque, _arg1: crate::support::Opaque) {
     crate::support::stub::<()>("kv_push")
 }
 
@@ -4173,7 +4173,7 @@ pub fn bns_fetch_seq_v2<'a>(
 /// per-class counts to `numPairs128`/`numPairs16`/`numPairs1` and partitions `pairArray`
 /// in place via `tempArray`.
 #[doc = "Original function: sortPairsLenExt:1926"]
-pub fn sortPairsLenExt(
+pub fn sort_pairs_len_ext(
     pairArray: &mut [SeqPair],
     count: i32,
     tempArray: &mut [SeqPair],
@@ -4234,7 +4234,7 @@ pub fn sortPairsLenExt(
             *numPairs128 += 1;
             #[cfg(debug_assertions)]
             {
-                assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 128 slot");
+                assert_eq!(arr[pos], 0, "sort_pairs_len_ext repeated 128 slot");
                 arr[pos] = 1;
             }
         } else if sp.len1 < max_len16 && sp.len2 < max_len16 && minval < max_len16 {
@@ -4245,7 +4245,7 @@ pub fn sortPairsLenExt(
             *numPairs16 += 1;
             #[cfg(debug_assertions)]
             {
-                assert_eq!(arr[pos], 0, "sortPairsLenExt repeated 16 slot");
+                assert_eq!(arr[pos], 0, "sort_pairs_len_ext repeated 16 slot");
                 arr[pos] = (_i + 1) as i32;
             }
         } else {
@@ -4267,7 +4267,7 @@ pub fn sortPairsLenExt(
 /// through `tempArray`). Used to batch same-length pairs together for the SIMD SW kernels.
 #[doc = "Original function: sortPairsLen:2025"]
 #[inline]
-pub fn sortPairsLen(
+pub fn sort_pairs_len(
     pairArray: &mut [SeqPair],
     count: i32,
     tempArray: &mut [SeqPair],
@@ -4339,12 +4339,12 @@ thread_local! {
 /// one or more alignment regions in `av_v`.
 ///
 /// For each read, sorts chains/seeds by score, sets up left/right extension `SeqPair` batches
-/// (split into 128/16/scalar by `sortPairsLenExt`), invokes the SIMD u8/i16 SW kernels in
+/// (split into 128/16/scalar by `sort_pairs_len_ext`), invokes the SIMD u8/i16 SW kernels in
 /// `BandedPairWiseSW`, and folds the resulting scores back into the per-chain `mem_alnreg_t`s.
 /// Reuses thread-local scratch buffers (`Chain2alnScratch`) across calls to amortise the
 /// large per-call allocations (`left_pairs`/`right_pairs`/seq buffers).
 #[doc = "Original function: mem_chain2aln_across_reads_V2:2069"]
-pub fn mem_chain2aln_across_reads_V2(
+pub fn mem_chain2aln_across_reads_v2(
     opt: &mem_opt_t,
     bns: &bntseq_t,
     pac: &[u8],
@@ -4603,7 +4603,7 @@ pub fn mem_chain2aln_across_reads_V2(
         let mut num128 = 0;
         let mut num16 = 0;
         let mut num1 = 0;
-        sortPairsLenExt(
+        sort_pairs_len_ext(
             &mut left_pairs,
             left_len as i32,
             &mut temp_pairs[..left_len],
@@ -4622,7 +4622,7 @@ pub fn mem_chain2aln_across_reads_V2(
         let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            bswLeft.scalarBandedSWAWrapper(
+            bswLeft.scalar_banded_swa_wrapper(
                 &mut work_pairs[..nump],
                 &left_ref_buf,
                 &left_qer_buf,
@@ -4684,13 +4684,13 @@ pub fn mem_chain2aln_across_reads_V2(
         let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            sortPairsLen(
+            sort_pairs_len(
                 &mut work_pairs[..nump],
                 nump as i32,
                 &mut temp_pairs[..nump],
                 &mut hist,
             );
-            bswLeft.getScores16(
+            bswLeft.get_scores16(
                 &mut work_pairs[..nump],
                 &left_ref_buf,
                 &left_qer_buf,
@@ -4735,13 +4735,13 @@ pub fn mem_chain2aln_across_reads_V2(
         let mut nump = work_pairs.len();
         for i in 0..MAX_BAND_TRY {
             let w = opt.w << i;
-            sortPairsLen(
+            sort_pairs_len(
                 &mut work_pairs[..nump],
                 nump as i32,
                 &mut temp_pairs[..nump],
                 &mut hist,
             );
-            bswLeft.getScores8(
+            bswLeft.get_scores8(
                 &mut work_pairs[..nump],
                 &left_ref_buf,
                 &left_qer_buf,
@@ -4789,7 +4789,7 @@ pub fn mem_chain2aln_across_reads_V2(
         let mut num128 = 0;
         let mut num16 = 0;
         let mut num1 = 0;
-        sortPairsLenExt(
+        sort_pairs_len_ext(
             &mut right_pairs,
             right_len as i32,
             &mut temp_pairs[..right_len],
@@ -4801,14 +4801,14 @@ pub fn mem_chain2aln_across_reads_V2(
         );
 
         let mut process_right_bucket = |offset: usize, initial: usize, dispatch: u8| {
-            // dispatch: 0 = scalar (num1 bucket), 1 = i16 SIMD (getScores16), 2 = u8 SIMD (getScores8)
+            // dispatch: 0 = scalar (num1 bucket), 1 = i16 SIMD (get_scores16), 2 = u8 SIMD (get_scores8)
             work_pairs.clear();
             work_pairs.extend_from_slice(&right_pairs[offset..offset + initial]);
             let mut nump = work_pairs.len();
             for i in 0..MAX_BAND_TRY {
                 let w = opt.w << i;
                 if dispatch != 0 {
-                    sortPairsLen(
+                    sort_pairs_len(
                         &mut work_pairs[..nump],
                         nump as i32,
                         &mut temp_pairs[..nump],
@@ -4816,7 +4816,7 @@ pub fn mem_chain2aln_across_reads_V2(
                     );
                 }
                 match dispatch {
-                    0 => bswRight.scalarBandedSWAWrapper(
+                    0 => bswRight.scalar_banded_swa_wrapper(
                         &mut work_pairs[..nump],
                         &right_ref_buf,
                         &right_qer_buf,
@@ -4824,7 +4824,7 @@ pub fn mem_chain2aln_across_reads_V2(
                         1,
                         w,
                     ),
-                    1 => bswRight.getScores16(
+                    1 => bswRight.get_scores16(
                         &mut work_pairs[..nump],
                         &right_ref_buf,
                         &right_qer_buf,
@@ -4832,7 +4832,7 @@ pub fn mem_chain2aln_across_reads_V2(
                         1,
                         w,
                     ),
-                    2 => bswRight.getScores8(
+                    2 => bswRight.get_scores8(
                         &mut work_pairs[..nump],
                         &right_ref_buf,
                         &right_qer_buf,
@@ -5054,7 +5054,7 @@ mod tests {
     use crate::bwa_mem2::bwa::bseq1_t;
     use crate::bwa_mem2::bwa::bseq_read_orig;
     use crate::bwa_mem2::fastmap::ktp_aux_t;
-    use crate::bwa_mem2::fastmap::memoryAlloc;
+    use crate::bwa_mem2::fastmap::memory_alloc;
     use crate::bwa_mem2::fmi_search::FMI_search;
     use crate::bwa_mem2::kseq::kseq_t;
     use crate::bwa_mem2::r#macro::BATCH_SIZE;
@@ -5127,7 +5127,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, n, n_threads);
+        memory_alloc(&aux, &mut worker, n, n_threads);
         worker.opt = Some(Box::new(opt.clone()));
         worker.n_processed = 0;
         worker.nreads = n;
@@ -5228,7 +5228,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, 2, 2);
+        memory_alloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
         worker.seqs = seqs;
@@ -5273,7 +5273,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, 2, 2);
+        memory_alloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
         worker.seqs = seqs;
@@ -5312,7 +5312,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, 2, 2);
+        memory_alloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
         worker.seqs = seqs;
@@ -5374,7 +5374,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, 2, 2);
+        memory_alloc(&aux, &mut worker, 2, 2);
         worker.opt = Some(Box::new(opt.clone()));
         worker.nreads = 2;
         worker.seqs = seqs;
@@ -6690,7 +6690,7 @@ mod tests {
         let mut n1 = 0;
         let count = pairs.len() as i32;
 
-        sortPairsLenExt(
+        sort_pairs_len_ext(
             &mut pairs, count, &mut temp, &mut hist, &mut n128, &mut n16, &mut n1, 1,
         );
 
@@ -6729,7 +6729,7 @@ mod tests {
         let mut hist = vec![0_i32; MAX_SEQ_LEN16 + 1];
         let count = pairs.len() as i32;
 
-        sortPairsLen(&mut pairs, count, &mut temp, &mut hist);
+        sort_pairs_len(&mut pairs, count, &mut temp, &mut hist);
 
         assert_eq!(
             pairs.iter().map(|p| (p.len1, p.id)).collect::<Vec<_>>(),
@@ -6783,7 +6783,7 @@ mod tests {
         let mut mmc = mem_cache::default();
         let opt = mem_opt_init();
 
-        mem_chain2aln_across_reads_V2(
+        mem_chain2aln_across_reads_v2(
             &opt,
             &bns,
             &[],
@@ -6883,7 +6883,7 @@ mod tests {
         let mut mmc = mem_cache::default();
         let opt = mem_opt_init();
 
-        mem_chain2aln_across_reads_V2(
+        mem_chain2aln_across_reads_v2(
             &opt,
             &bns,
             &pac,
@@ -7936,7 +7936,7 @@ mod tests {
             fmi: Some(fmi),
             ..Default::default()
         };
-        memoryAlloc(&aux, &mut worker, 2, opt.n_threads);
+        memory_alloc(&aux, &mut worker, 2, opt.n_threads);
 
         mem_process_seqs(&mut opt, 0, 2, &mut seqs, Some(&pes0), &mut worker);
         assert_eq!(worker.pes[0].low, 10);

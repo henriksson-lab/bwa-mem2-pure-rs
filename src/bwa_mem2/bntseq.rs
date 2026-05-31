@@ -170,10 +170,6 @@ pub(crate) fn gzip_or_plain_reader_from_read(
     }
 }
 
-pub(crate) fn gzip_or_plain_reader(file: File) -> std::io::Result<Box<dyn Read>> {
-    gzip_or_plain_reader_from_read(Box::new(file))
-}
-
 fn parse_fasta<R: BufRead>(reader: R) -> Vec<SequenceRecord> {
     let mut records = Vec::new();
     let lines = reader

@@ -3,13 +3,13 @@ use bwa_mem2_pure_rs::bwa_mem2::bwa::{bseq_read_orig, bwa_fill_scmat};
 use bwa_mem2_pure_rs::bwa_mem2::bwamem::worker_t;
 use bwa_mem2_pure_rs::bwa_mem2::bwamem::{mem_alnreg_v, mem_chain_v, mem_seed_t};
 use bwa_mem2_pure_rs::bwa_mem2::bwamem::{
-    mem_chain2aln_across_reads_V2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt,
+    mem_chain2aln_across_reads_v2, mem_mark_primary_se, mem_opt_init, sort_classify, worker_bwt,
 };
 use bwa_mem2_pure_rs::bwa_mem2::bwamem_pair::{
     mem_pair, mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
 };
 use bwa_mem2_pure_rs::bwa_mem2::fastmap::ktp_aux_t;
-use bwa_mem2_pure_rs::bwa_mem2::fastmap::{memoryAlloc, update_a};
+use bwa_mem2_pure_rs::bwa_mem2::fastmap::{memory_alloc, update_a};
 use bwa_mem2_pure_rs::bwa_mem2::fmi_search::FMI_search;
 use bwa_mem2_pure_rs::bwa_mem2::kseq::kseq_t;
 use bwa_mem2_pure_rs::bwa_mem2::ksw::kswr_t;
@@ -112,7 +112,7 @@ fn main() {
         fmi: Some(fmi),
         ..Default::default()
     };
-    memoryAlloc(&aux, &mut worker, n, 1);
+    memory_alloc(&aux, &mut worker, n, 1);
     worker.opt = Some(Box::new(opt.clone()));
     worker.seqs = seqs;
     worker.nreads = n;
@@ -136,7 +136,7 @@ fn main() {
     let opt_ref = worker.opt.as_deref().expect("opt");
     let fmi_ref = worker.fmi.as_ref().expect("fmi");
     let bns_ref = fmi_ref.base.idx.bns.as_ref().expect("bns");
-    mem_chain2aln_across_reads_V2(
+    mem_chain2aln_across_reads_v2(
         opt_ref,
         bns_ref,
         &fmi_ref.base.idx.pac,

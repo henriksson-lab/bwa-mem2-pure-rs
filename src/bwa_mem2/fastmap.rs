@@ -607,7 +607,7 @@ fn write_batch(batch: &ktp_data_t, fp: &mut ErrFile) {
 /// Issue an x86 cpuid for leaf `i` (sub-leaf 0).
 ///
 /// Returns the `[EAX, EBX, ECX, EDX]` values; non-x86 builds return zeros.
-/// Used by `HTStatus` to query the platform vendor/topology.
+/// Used by `ht_status` to query the platform vendor/topology.
 #[doc = "Original function: __cpuid:51"]
 pub fn cpuid(i: u32) -> [u32; 4] {
     #[cfg(target_arch = "x86")]
@@ -633,7 +633,7 @@ pub fn cpuid(i: u32) -> [u32; 4] {
 /// Returns 1 when HT is enabled, 0 otherwise. Prints vendor and
 /// HT status to stderr for parity with the upstream banner.
 #[doc = "Original function: HTStatus:63"]
-pub fn HTStatus() -> i32 {
+pub fn ht_status() -> i32 {
     let cpuid0 = cpuid(0);
     let mut vendor = [0_u8; 12];
     // Vendor identifier is returned as the bytes of EBX, EDX, ECX (in that order).
@@ -677,7 +677,7 @@ pub fn HTStatus() -> i32 {
 /// * `nreads` - capacity for per-read state
 /// * `nthreads` - capacity for per-thread SWA scratch
 #[doc = "Original function: memoryAlloc:100"]
-pub fn memoryAlloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32) {
+pub fn memory_alloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i32) {
     let opt = aux.opt.as_ref().expect("memoryAlloc requires aux.opt");
     let read_len = READ_LEN;
     let mem_size = usize::try_from(nreads.max(0)).expect("nreads");
@@ -770,7 +770,7 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
     let nreads =
         i32::try_from(shared.actual_chunk_size / i64::try_from(READ_LEN).expect("READ_LEN") + 10)
             .expect("nreads");
-    memoryAlloc(shared, w, nreads, nthreads);
+    memory_alloc(shared, w, nreads, nthreads);
     w.ref_string = shared.ref_string.clone();
     w.nreads = 0;
 
@@ -1259,8 +1259,8 @@ fn usage_text(opt: &mem_opt_t) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cpuid, kt_pipeline, main_mem, memoryAlloc, parse_insert_stats, parse_pair_i32, process,
-        read_text_input, update_a, usage_text, HTStatus, MemCli,
+        cpuid, ht_status, kt_pipeline, main_mem, memory_alloc, parse_insert_stats, parse_pair_i32,
+        process, read_text_input, update_a, usage_text, MemCli,
     };
     use crate::bwa_mem2::bntseq::bns_fasta2bntseq;
     use crate::bwa_mem2::bwa::bseq1_t;
@@ -1516,8 +1516,8 @@ mod tests {
     }
 
     #[test]
-    fn htstatus_returns_booleanish_value() {
-        let ht = HTStatus();
+    fn ht_status_returns_booleanish_value() {
+        let ht = ht_status();
         assert!(ht == 0 || ht == 1);
     }
 
@@ -1634,13 +1634,13 @@ mod tests {
     }
 
     #[test]
-    fn memoryalloc_builds_expected_worker_buffers() {
+    fn memory_alloc_builds_expected_worker_buffers() {
         let aux = ktp_aux_t {
             opt: Some(mem_opt_init()),
             ..Default::default()
         };
         let mut w = worker_t::default();
-        memoryAlloc(&aux, &mut w, 3, 2);
+        memory_alloc(&aux, &mut w, 3, 2);
 
         assert_eq!(w.regs.len(), 3);
         assert_eq!(w.chain_ar.len(), 3);

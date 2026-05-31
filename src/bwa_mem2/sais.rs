@@ -10,27 +10,27 @@
 // --- sais.h ---
 
 #[doc = "Original function: getCounts:52"]
-pub(crate) fn getCounts(
+pub(crate) fn get_counts(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
     _arg3: crate::support::Opaque,
 ) {
-    crate::support::stub::<()>("getCounts")
+    crate::support::stub::<()>("get_counts")
 }
 
 #[doc = "Original function: getBuckets:59"]
-pub(crate) fn getBuckets(
+pub(crate) fn get_buckets(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
     _arg3: crate::support::Opaque,
 ) {
-    crate::support::stub::<()>("getBuckets")
+    crate::support::stub::<()>("get_buckets")
 }
 
 #[doc = "Original function: LMSsort1:68"]
-pub(crate) fn LMSsort1(
+pub(crate) fn lms_sort1(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -39,21 +39,21 @@ pub(crate) fn LMSsort1(
     _arg5: crate::support::Opaque,
     _arg6: crate::support::Opaque,
 ) {
-    crate::support::stub::<()>("LMSsort1")
+    crate::support::stub::<()>("lms_sort1")
 }
 
 #[doc = "Original function: LMSpostproc1:111"]
-pub(crate) fn LMSpostproc1(
+pub(crate) fn lms_postproc1(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
     _arg3: crate::support::Opaque,
 ) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("LMSpostproc1")
+    crate::support::stub::<crate::support::Opaque>("lms_postproc1")
 }
 
 #[doc = "Original function: LMSsort2:159"]
-pub(crate) fn LMSsort2(
+pub(crate) fn lms_sort2(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -62,20 +62,20 @@ pub(crate) fn LMSsort2(
     _arg5: crate::support::Opaque,
     _arg6: crate::support::Opaque,
 ) {
-    crate::support::stub::<()>("LMSsort2")
+    crate::support::stub::<()>("lms_sort2")
 }
 
 #[doc = "Original function: LMSpostproc2:219"]
-pub(crate) fn LMSpostproc2(
+pub(crate) fn lms_postproc2(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
 ) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("LMSpostproc2")
+    crate::support::stub::<crate::support::Opaque>("lms_postproc2")
 }
 
 #[doc = "Original function: induceSA:261"]
-pub(crate) fn induceSA(
+pub(crate) fn induce_sa(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -84,11 +84,11 @@ pub(crate) fn induceSA(
     _arg5: crate::support::Opaque,
     _arg6: crate::support::Opaque,
 ) {
-    crate::support::stub::<()>("induceSA")
+    crate::support::stub::<()>("induce_sa")
 }
 
 #[doc = "Original function: computeBWT:294"]
-pub(crate) fn computeBWT(
+pub(crate) fn compute_bwt(
     _arg0: crate::support::Opaque,
     _arg1: crate::support::Opaque,
     _arg2: crate::support::Opaque,
@@ -97,7 +97,7 @@ pub(crate) fn computeBWT(
     _arg5: crate::support::Opaque,
     _arg6: crate::support::Opaque,
 ) -> crate::support::Opaque {
-    crate::support::stub::<crate::support::Opaque>("computeBWT")
+    crate::support::stub::<crate::support::Opaque>("compute_bwt")
 }
 
 #[doc = "Original function: stage1sort:335"]
@@ -233,7 +233,7 @@ fn is_lms_pos(is_s: &[u8], pos: usize) -> bool {
     pos > 0 && is_s[pos] != 0 && is_s[pos - 1] == 0
 }
 
-fn induce_sa<T: SaisSymbol>(
+fn induce_sa_impl<T: SaisSymbol>(
     text: &[T],
     alphabet: usize,
     is_s: &[u8],
@@ -326,7 +326,7 @@ fn sais_with_sentinel<T: SaisSymbol>(text: &[T], alphabet: usize) -> Vec<i32> {
             lms_positions.push(u32::try_from(pos).expect("lms position"));
         }
     }
-    let sa = induce_sa(text, alphabet, &is_s, &lms_positions);
+    let sa = induce_sa_impl(text, alphabet, &is_s, &lms_positions);
     let mut sorted_lms = Vec::with_capacity(lms_positions.len());
     for &pos in &sa {
         if pos >= 0 {
@@ -390,7 +390,7 @@ fn sais_with_sentinel<T: SaisSymbol>(text: &[T], alphabet: usize) -> Vec<i32> {
         (ordered_lms, classify_s_types(text))
     };
 
-    induce_sa(text, alphabet, &is_s, &ordered_lms)
+    induce_sa_impl(text, alphabet, &is_s, &ordered_lms)
 }
 
 pub fn sais_suffixes_u32(binary_ref_seq: &[u8]) -> Vec<u32> {

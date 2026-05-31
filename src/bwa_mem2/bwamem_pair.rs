@@ -1131,7 +1131,7 @@ pub fn revseq(l: i32, s: &mut [u8]) {
 /// Run the batched mate-rescue Smith-Waterman.
 ///
 /// Equivalent to `ksw_align2` but vectorized over many pairs at once. Two-phase: phase-0
-/// forward extension via `getScores8/16` by size class, then reverse the hit windows in place
+/// forward extension via `get_scores8/16` by size class, then reverse the hit windows in place
 /// and run phase-1 to recover the start coordinates. Output goes into `aln` indexed by
 /// `SeqPair.regid`.
 #[doc = "Original function: mem_sam_pe_batch:612"]
@@ -1172,7 +1172,7 @@ pub fn mem_sam_pe_batch(
     // Phase 0: forward pass on each size class
     if pcnt8_usize > 0 {
         let pairs = &mut mmc.seqPairArrayLeft128[tid][..pcnt8_usize];
-        pwsw.getScores8(
+        pwsw.get_scores8(
             pairs,
             &mmc.seqBufLeftRef[tid],
             &mmc.seqBufLeftQer[tid],
@@ -1184,7 +1184,7 @@ pub fn mem_sam_pe_batch(
     }
     if pcnt16_usize > 0 {
         let pairs = &mut mmc.seqPairArrayLeft128[tid][pcnt8_usize..total];
-        pwsw.getScores16(
+        pwsw.get_scores16(
             pairs,
             &mmc.seqBufLeftRef[tid],
             &mmc.seqBufLeftQer[tid],
@@ -1238,7 +1238,7 @@ pub fn mem_sam_pe_batch(
         // Phase 1: i16 first then u8 (matches upstream order)
         if pos16 > 0 {
             let pairs = &mut phase1_pairs[pos8..pos8 + pos16];
-            pwsw.getScores16(
+            pwsw.get_scores16(
                 pairs,
                 &mmc.seqBufLeftRef[tid],
                 &mmc.seqBufLeftQer[tid],
@@ -1250,7 +1250,7 @@ pub fn mem_sam_pe_batch(
         }
         if pos8 > 0 {
             let pairs = &mut phase1_pairs[..pos8];
-            pwsw.getScores8(
+            pwsw.get_scores8(
                 pairs,
                 &mmc.seqBufLeftRef[tid],
                 &mmc.seqBufLeftQer[tid],
