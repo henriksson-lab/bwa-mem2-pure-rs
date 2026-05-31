@@ -11,15 +11,12 @@ keywords = ["bioinformatics", "alignment", "bwa", "sequencing"]
 categories = ["science"]
 include = [
     "/Cargo.toml",
-    "/Cargo.lock",
     "/README.md",
     "/LICENSE",
     "/src/lib.rs",
     "/src/mem_api.rs",
     "/src/output.rs",
     "/src/support.rs",
-    "/src/bin/bwa-mem2-rs.rs",
-    "/src/bin/dump-pe-batch-read.rs",
     "/src/bwa_mem2/**",
     "/scripts/benchmark-real-data.sh",
     "/scripts/conformance-bwa.sh",
@@ -30,15 +27,6 @@ include = [
 
 [lib]
 path = "src/lib.rs"
-
-[[bin]]
-name = "bwa-mem2-rs"
-path = "src/bin/bwa-mem2-rs.rs"
-required-features = ["mimalloc"]
-
-[[bin]]
-name = "dump-pe-batch-read"
-path = "src/bin/dump-pe-batch-read.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

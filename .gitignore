@@ -1,0 +1,32 @@
+/target/
+/.tmp/
+
+# Local upstream checkout and real-world fixtures used for parity/perf work.
+/bwa-mem2/
+/external/
+
+# Local agent/editor state.
+/.cargo/
+/.claude/
+/.codex
+
+# Generated translation/debug reports and scratch files.
+/*.report.json
+/*.cpp.report.json
+/*.json
+/sample.rs
+/ccc_mapping.toml
+/ccc_order.csv
+
+# Runtime outputs.
+*.sam
+*.bam
+*.bai
+*.fq
+*.fastq
+*.fa
+*.fasta
+*.gz
+*.data
+*.time
+*.log
