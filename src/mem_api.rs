@@ -277,7 +277,6 @@ fn make_bseq(id: i32, name: &str, seq: &[u8], qual: &[u8]) -> Result<bseq1_t> {
         seq: Some(seq.to_string()),
         qual: Some(qual.to_string()),
         sam: None,
-        seq_nt4: Vec::new(),
     })
 }
 

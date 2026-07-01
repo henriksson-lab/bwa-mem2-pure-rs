@@ -50,25 +50,6 @@ pub(crate) fn mm_countbits_64(_arg0: crate::support::Opaque) -> crate::support::
 
 // --- fmi_search.cpp ---
 
-thread_local! {
-    // Reused across all calls to get_smems_one_pos_one_thread on a given Rayon worker.
-    // C++ allocates SMEM prev[max_readlength] on the stack per call (kept tiny because the
-    // compiler bounds maxLen). Rust has no equivalent stack-vec; per-call vec! adds significant
-    // alloc overhead in the seed-finding inner loop. Reuse via thread-local Vec.
-    static SMEM_PREV_SCRATCH: std::cell::RefCell<Vec<SMEM>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-
-    // Reused across get_smems_all_pos_one_thread calls. The original C++ allocates this temporary with
-    // _mm_malloc/_mm_free per call; in Rust that showed up as allocator work in the SMEM hotspot.
-    static SMEM_QUERY_POS_SCRATCH: std::cell::RefCell<Vec<i16>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-
-    // Reused across get_sa_entries_prefetch calls (per-chain in mem_chain_seeds).
-    // Holds (pos_ar, map_ar) for the prefetch-bookkeeping pass.
-    static SA_PREFETCH_SCRATCH: std::cell::RefCell<(Vec<i64>, Vec<usize>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
-}
-
 const DUMMY_CHAR: u8 = 6;
 const CP_BLOCK_SIZE: usize = 64;
 const CP_FILENAME_SUFFIX: &str = ".bwt.2bit.64";
@@ -703,29 +684,24 @@ impl FMI_search {
         num_total_smem: &mut i64,
     ) {
         let mut total = *num_total_smem;
-        SMEM_PREV_SCRATCH.with(|cell| {
-            let mut prev_array = cell.borrow_mut();
-            let need = max_readlength.max(0) as usize;
-            if prev_array.len() < need {
-                prev_array.resize(need, SMEM::default());
-            }
-            self.get_smems_one_pos_one_thread_inner(
-                enc_qdb,
-                query_pos_array,
-                min_intv_array,
-                rid_array,
-                numReads,
-                _batch_size,
-                seq_,
-                query_cum_len_ar,
-                max_readlength,
-                minSeedLen,
-                match_array,
-                num_total_smem,
-                &mut total,
-                &mut prev_array,
-            );
-        });
+        let need = max_readlength.max(0) as usize;
+        let mut prev_array = vec![SMEM::default(); need];
+        self.get_smems_one_pos_one_thread_inner(
+            enc_qdb,
+            query_pos_array,
+            min_intv_array,
+            rid_array,
+            numReads,
+            _batch_size,
+            seq_,
+            query_cum_len_ar,
+            max_readlength,
+            minSeedLen,
+            match_array,
+            num_total_smem,
+            &mut total,
+            &mut prev_array,
+        );
         *num_total_smem = total;
     }
 
@@ -990,44 +966,39 @@ impl FMI_search {
         let num_reads = numReads as usize;
         let mut num_active = numReads;
         *num_total_smem = 0;
+        let mut query_pos_array = vec![0_i16; num_reads];
 
-        SMEM_QUERY_POS_SCRATCH.with(|cell| {
-            let mut query_pos_array = cell.borrow_mut();
-            query_pos_array.clear();
-            query_pos_array.resize(num_reads, 0);
-
-            loop {
-                let mut tail = 0_usize;
-                for head in 0..(num_active as usize) {
-                    let readlength = seq_[rid_array[head] as usize].l_seq;
-                    if i32::from(query_pos_array[head]) < readlength {
-                        rid_array[tail] = rid_array[head];
-                        query_pos_array[tail] = query_pos_array[head];
-                        min_intv_array[tail] = min_intv_array[head];
-                        tail += 1;
-                    }
-                }
-
-                self.get_smems_one_pos_one_thread(
-                    enc_qdb,
-                    &mut query_pos_array[..tail],
-                    &mut min_intv_array[..tail],
-                    &mut rid_array[..tail],
-                    tail as i32,
-                    batch_size,
-                    seq_,
-                    query_cum_len_ar,
-                    max_readlength,
-                    minSeedLen,
-                    match_array,
-                    num_total_smem,
-                );
-                num_active = tail as i32;
-                if num_active <= 0 {
-                    break;
+        loop {
+            let mut tail = 0_usize;
+            for head in 0..(num_active as usize) {
+                let readlength = seq_[rid_array[head] as usize].l_seq;
+                if i32::from(query_pos_array[head]) < readlength {
+                    rid_array[tail] = rid_array[head];
+                    query_pos_array[tail] = query_pos_array[head];
+                    min_intv_array[tail] = min_intv_array[head];
+                    tail += 1;
                 }
             }
-        });
+
+            self.get_smems_one_pos_one_thread(
+                enc_qdb,
+                &mut query_pos_array[..tail],
+                &mut min_intv_array[..tail],
+                &mut rid_array[..tail],
+                tail as i32,
+                batch_size,
+                seq_,
+                query_cum_len_ar,
+                max_readlength,
+                minSeedLen,
+                match_array,
+                num_total_smem,
+            );
+            num_active = tail as i32;
+            if num_active <= 0 {
+                break;
+            }
+        }
     }
 
     /// Forward-only seed enumeration used by the alternate seeding strategy.
@@ -1737,64 +1708,60 @@ impl FMI_search {
         _tid: i32,
         id_: &mut i64,
     ) {
-        SA_PREFETCH_SCRATCH.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let (pos_ar, map_ar) = &mut *buf;
-            pos_ar.clear();
-            map_ar.clear();
-            let mut total_coord_count = 0_usize;
-            let limit = usize::min(smem_array.len(), count as usize);
+        let mut pos_ar = Vec::new();
+        let mut map_ar = Vec::new();
+        let mut total_coord_count = 0_usize;
+        let limit = usize::min(smem_array.len(), count as usize);
 
-            for smem in &smem_array[..limit] {
-                let mut c = 0_i32;
-                let hi = smem.k + smem.s;
-                let step = if smem.s > i64::from(max_occ) {
-                    smem.s / i64::from(max_occ)
-                } else {
-                    1
-                };
-                let mut j = smem.k;
-                while j < hi && c < max_occ {
-                    pos_ar.push(j);
-                    map_ar.push(total_coord_count + c as usize);
-                    j += step;
-                    c += 1;
-                }
-                *coord_count_array += i64::from(c);
-                total_coord_count += c as usize;
+        for smem in &smem_array[..limit] {
+            let mut c = 0_i32;
+            let hi = smem.k + smem.s;
+            let step = if smem.s > i64::from(max_occ) {
+                smem.s / i64::from(max_occ)
+            } else {
+                1
+            };
+            let mut j = smem.k;
+            while j < hi && c < max_occ {
+                pos_ar.push(j);
+                map_ar.push(total_coord_count + c as usize);
+                j += step;
+                c += 1;
             }
+            *coord_count_array += i64::from(c);
+            total_coord_count += c as usize;
+        }
 
-            *id_ += pos_ar.len() as i64;
-            if coord_array.len() < total_coord_count {
-                coord_array.resize(total_coord_count, 0);
-            }
+        *id_ += pos_ar.len() as i64;
+        if coord_array.len() < total_coord_count {
+            coord_array.resize(total_coord_count, 0);
+        }
 
-            for (idx, &pos) in pos_ar.iter().enumerate() {
-                // Prefetch cp_occ for the NEXT pos_ar entry while we walk the current one.
-                // Each call_one_step does cp_occ[pos>>CP_SHIFT] if the position isn't at a
-                // compressed SA slot — i.e., 7 of 8 cases. The walks are independent, so
-                // pre-loading the next pos's cp_occ entry hides DRAM latency.
-                #[cfg(target_arch = "x86_64")]
-                if let Some(&next_pos) = pos_ar.get(idx + 1) {
-                    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
-                    let next_idx = (next_pos >> CP_SHIFT) as usize;
-                    unsafe {
-                        _mm_prefetch(self.cp_occ.as_ptr().add(next_idx) as *const i8, _MM_HINT_T0);
-                    }
-                }
-                let mut working = pos;
-                let mut sp = 0_i64;
-                let mut offset = 0_i64;
-                loop {
-                    let quit = self.call_one_step(working, &mut sp, &mut offset);
-                    if quit != 0 {
-                        coord_array[map_ar[idx]] = sp;
-                        break;
-                    }
-                    working = sp;
+        for (idx, &pos) in pos_ar.iter().enumerate() {
+            // Prefetch cp_occ for the NEXT pos_ar entry while we walk the current one.
+            // Each call_one_step does cp_occ[pos>>CP_SHIFT] if the position isn't at a
+            // compressed SA slot — i.e., 7 of 8 cases. The walks are independent, so
+            // pre-loading the next pos's cp_occ entry hides DRAM latency.
+            #[cfg(target_arch = "x86_64")]
+            if let Some(&next_pos) = pos_ar.get(idx + 1) {
+                use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+                let next_idx = (next_pos >> CP_SHIFT) as usize;
+                unsafe {
+                    _mm_prefetch(self.cp_occ.as_ptr().add(next_idx) as *const i8, _MM_HINT_T0);
                 }
             }
-        });
+            let mut working = pos;
+            let mut sp = 0_i64;
+            let mut offset = 0_i64;
+            loop {
+                let quit = self.call_one_step(working, &mut sp, &mut offset);
+                if quit != 0 {
+                    coord_array[map_ar[idx]] = sp;
+                    break;
+                }
+                working = sp;
+            }
+        }
     }
 }
 

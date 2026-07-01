@@ -353,30 +353,14 @@ fn clear_vec_with_cap<T>(v: &mut Vec<T>, keep_cap: usize) {
 const KEEP_REG_CAP: usize = 16;
 const KEEP_CHAIN_CAP: usize = 16;
 
-// Per-chain seeds-buffer pool. Each new mem_chain_t starts with a Vec::with_capacity(1) for its
-// seeds; without pooling that's ~25K alloc/free cycles per chunk × 35 chunks per 700K-read run.
-// The pool drains seeds Vecs out of mem_chain_t before drop, preserving their capacity for reuse.
-thread_local! {
-    static CHAIN_SEEDS_POOL: std::cell::RefCell<Vec<Vec<mem_seed_t>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 #[inline]
 fn take_seeds_buf() -> Vec<mem_seed_t> {
-    // Start fresh buffers at capacity 8: typical chains hold ~5-10 seeds. With cap=1 the
-    // doubling growth (1→2→4→8→16) costs 4 extra reallocs per cold chain. Pool reuse means
-    // most calls hit the pop() path; this only affects the warm-up batch.
-    CHAIN_SEEDS_POOL.with(|c| {
-        c.borrow_mut()
-            .pop()
-            .unwrap_or_else(|| Vec::with_capacity(8))
-    })
+    Vec::with_capacity(SEEDS_PER_CHAIN)
 }
 
 #[inline]
-fn return_seeds_buf(mut buf: Vec<mem_seed_t>) {
-    buf.clear();
-    CHAIN_SEEDS_POOL.with(|c| c.borrow_mut().push(buf));
+fn return_seeds_buf(_buf: Vec<mem_seed_t>) {
+    // C++ frees only overflow chain seed buffers; regular seedBuf-backed chains are batch-local.
 }
 
 #[inline]
@@ -386,23 +370,6 @@ fn clear_chain_a_pooled(v: &mut Vec<mem_chain_t>, keep_cap: usize) {
     }
     if v.capacity() > keep_cap {
         v.shrink_to(keep_cap);
-    }
-}
-
-fn debug_rss(label: &str) {
-    if std::env::var_os("BWA_DEBUG_RSS").is_none() {
-        return;
-    }
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        let rss = status
-            .lines()
-            .find(|line| line.starts_with("VmRSS:"))
-            .unwrap_or("VmRSS:\t?");
-        let hwm = status
-            .lines()
-            .find(|line| line.starts_with("VmHWM:"))
-            .unwrap_or("VmHWM:\t?");
-        eprintln!("[rss::{label}] {rss}; {hwm}");
     }
 }
 
@@ -416,22 +383,23 @@ fn trim_allocator_rss() {
 
 #[inline]
 pub fn nt4_cow(seq: &crate::bwa_mem2::bwa::bseq1_t) -> std::borrow::Cow<'_, [u8]> {
-    if !seq.seq_nt4.is_empty() || seq.l_seq == 0 {
-        std::borrow::Cow::Borrowed(&seq.seq_nt4)
+    if let Some(text) = seq.seq.as_deref() {
+        let l_seq = seq.l_seq.max(0) as usize;
+        let bytes = text.as_bytes();
+        if bytes.len() >= l_seq && bytes[..l_seq].iter().all(|&b| b < 5) {
+            std::borrow::Cow::Borrowed(&bytes[..l_seq])
+        } else {
+            std::borrow::Cow::Owned(seq_to_nt4(text))
+        }
     } else {
-        std::borrow::Cow::Owned(seq_to_nt4(seq.seq.as_deref().unwrap_or("")))
+        std::borrow::Cow::Borrowed(&[])
     }
 }
 
 pub(crate) fn query_string_for_aln(
     seq: &crate::bwa_mem2::bwa::bseq1_t,
 ) -> std::borrow::Cow<'_, str> {
-    let l_seq = seq.l_seq.max(0) as usize;
-    if seq.seq_nt4.len() >= l_seq {
-        std::borrow::Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(&seq.seq_nt4[..l_seq]) })
-    } else {
-        std::borrow::Cow::Borrowed(seq.seq.as_deref().unwrap_or(""))
-    }
+    std::borrow::Cow::Borrowed(seq.seq.as_deref().unwrap_or(""))
 }
 
 fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
@@ -1437,14 +1405,6 @@ thread_local! {
         const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 
-// Thread-local scratch for the per-chunk `aln` Vec in worker_sam (PE path). Sized to pcnt+256
-// (kswr_t = 28 bytes). Avoids zeroing 30-60KB on every chunk; the Vec grows and is reused across
-// chunks.
-thread_local! {
-    static WORKER_SAM_ALN_SCRATCH: std::cell::RefCell<Vec<crate::bwa_mem2::ksw::kswr_t>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 // Thread-local scratch for mem_mark_primary_se. `z` is the working set of primary candidates; `rank`
 // is the post-sort permutation. Both are sized by per-read n_alnreg (~3-10 typically).
 thread_local! {
@@ -1897,9 +1857,7 @@ pub fn mem_collect_smem(
     let mut num_smem2 = 0_i64;
     let mut num_smem3 = 0_i64;
     let mut max_readlength = -1_i32;
-    let mut query_cum_len_ar =
-        MEM_COLLECT_QUERY_CUM_LEN.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    query_cum_len_ar.clear();
+    let mut query_cum_len_ar = Vec::new();
     query_cum_len_ar.resize(nseq_usize, 0);
 
     min_intv_ar.resize(nseq_usize.max(min_intv_ar.len()), 0);
@@ -2032,7 +1990,6 @@ pub fn mem_collect_smem(
         match_array[smem_ptr..=pos].sort_by_key(|s| (s.m, s.n));
         smem_ptr = pos + 1;
     }
-    MEM_COLLECT_QUERY_CUM_LEN.with(|c| *c.borrow_mut() = query_cum_len_ar);
 }
 
 /// NEW ONE — the reworked SA-to-reference chain assembler.
@@ -2308,7 +2265,7 @@ pub fn mem_chain_seeds(
     let mut smem_ptr = 0_usize;
     let l_pac = bns.l_pac;
     let mut smem_buf_size = 6000_i64;
-    let mut sa_coord = MEM_CHAIN_SEEDS_SA_COORD.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let mut sa_coord = Vec::new();
     let initial_sa_cap = (opt.max_occ as usize) * (smem_buf_size as usize);
     if sa_coord.capacity() < initial_sa_cap {
         sa_coord.reserve(initial_sa_cap - sa_coord.capacity());
@@ -2447,7 +2404,6 @@ pub fn mem_chain_seeds(
         chain.m = chains.len();
         chain.a = chains;
     }
-    MEM_CHAIN_SEEDS_SA_COORD.with(|c| *c.borrow_mut() = sa_coord);
 }
 
 /// Per-thread kernel 1: SMEM collection and chain construction.
@@ -2543,8 +2499,6 @@ pub fn mem_kernel1_core(
         &mut num_smem,
         tid,
     );
-    debug_rss("kernel1_after_collect_smem");
-
     // Kernel 1.1: SA2REF
     mem_chain_seeds(
         fmi,
@@ -2559,28 +2513,30 @@ pub fn mem_kernel1_core(
         &matchArray,
         num_smem,
     );
-    debug_rss("kernel1_after_chain_seeds");
-
     // Post-processing of collected smems/chains
     for chn in chain_ar.iter_mut().take(nseq as usize) {
         // chn.n is usize, fits in i32 for chain counts.
         chn.n = mem_chain_flt(opt, chn.n as i32, &mut chn.a, tid) as usize;
         chn.m = chn.a.len();
     }
-    debug_rss("kernel1_after_chain_flt");
-
     let bns = fmi.base.idx.bns.as_ref().expect("loaded bns");
     let pac = &fmi.base.idx.pac;
     for chn in chain_ar.iter_mut().take(nseq as usize) {
         mem_flt_chained_seeds(opt, bns, pac, seq_, chn.n as i32, &mut chn.a);
     }
-    debug_rss("kernel1_after_flt_chained");
-
-    mmc.matchArray[tid_usize] = matchArray;
-    mmc.min_intv_ar[tid_usize] = min_intv_ar;
-    mmc.query_pos_ar[tid_usize] = query_pos_ar;
-    mmc.enc_qdb[tid_usize] = enc_qdb;
-    mmc.rid[tid_usize] = rid;
+    drop(matchArray);
+    drop(min_intv_ar);
+    drop(query_pos_ar);
+    drop(enc_qdb);
+    drop(rid);
+    mmc.matchArray[tid_usize] = Vec::new();
+    mmc.min_intv_ar[tid_usize] = Vec::new();
+    mmc.query_pos_ar[tid_usize] = Vec::new();
+    mmc.enc_qdb[tid_usize] = Vec::new();
+    mmc.rid[tid_usize] = Vec::new();
+    mmc.wsize_mem[tid_usize] = 0;
+    mmc.wsize_mem_s[tid_usize] = 0;
+    mmc.wsize_mem_r[tid_usize] = 0;
     1
 }
 
@@ -2661,7 +2617,7 @@ pub fn mem_kernel2_core(
 
     // Hoisted to amortize the per-read encoded_query allocation across nseq iterations.
     // mem_sort_dedup_patch needs &mut [u8] (bwa_gen_cigar2 reverses in place + restores),
-    // so we copy seq_nt4 into this buffer per read but keep the capacity.
+    // so we copy the in-place nt4 query into this buffer per read but keep the capacity.
     let mut encoded_query: Vec<u8> = Vec::new();
     for (l, reg) in regs.iter_mut().take(nseq as usize).enumerate() {
         let nt4 = nt4_cow(&seq_[l]);
@@ -2733,19 +2689,23 @@ pub fn worker_aln(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
 
 /// Worker entry point for the BWT/SMEM kernel, called by threads.
 ///
-/// Lazily 2-bit-encodes each read's sequence into `seq_nt4` if not already populated, then
-/// dispatches a chunk to `mem_kernel1_core`.
+/// Converts each read's sequence in place to nt4, then dispatches a chunk to `mem_kernel1_core`.
 #[doc = "Original function: worker_bwt:1193"]
 pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
     let opt = data.opt.as_deref().expect("worker opt");
     let fmi = data.fmi.as_ref().expect("worker fmi");
     let seq_start = seq_id as usize;
     let batch = batch_size as usize;
-    // convert to 2-bit encoding if we have not done so
+    // Original C++ mutates bseq1_t::seq in place from ASCII bases to nt4 before SMEM collection.
     for seq in data.seqs[seq_start..seq_start + batch].iter_mut() {
-        if seq.seq_nt4.is_empty() {
-            if let Some(text) = seq.seq.as_deref() {
-                seq.seq_nt4 = seq_to_nt4(text);
+        if let Some(text) = seq.seq.as_mut() {
+            let bytes = unsafe {
+                // nt4 bytes 0..=4 are valid one-byte UTF-8 control/scalar values, preserving
+                // String's UTF-8 invariant while matching the upstream in-place conversion.
+                text.as_bytes_mut()
+            };
+            for base in bytes.iter_mut().take(seq.l_seq.max(0) as usize) {
+                *base = query_byte_to_nt4(*base);
             }
         }
     }
@@ -2828,37 +2788,13 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
         let mut pos = start >> 1;
         let timing = debug_timings();
         let t0 = std::time::Instant::now();
-        // Pre-reserve seqPairArrayAux for the upper bound: 4 entries per pair × pairs in batch.
-        // The mid-batch grow loops in mem_sam_pe_batch_pre/mem_matesw_batch_pre push one entry at
-        // a time; reserving up front avoids the doubling-realloc churn during warmup.
-        // Also pre-reserve seqPairArrayLeft128 for at most 4 entries per pair (one per direction
-        // when matesw rescue is admitted). Same reasoning — the per-pair resize() in
-        // mem_matesw_batch_pre at line 1787 grows by 1 each call.
-        {
-            let target_aux = ((end - start) >> 1) * 4;
-            let aux = &mut data.mmc.seqPairArrayAux[tid_usize];
-            if aux.capacity() < target_aux {
-                aux.reserve(target_aux - aux.capacity());
-            }
-            let left = &mut data.mmc.seqPairArrayLeft128[tid_usize];
-            if left.capacity() < target_aux {
-                left.reserve(target_aux - left.capacity());
-            }
-            // Estimate seqBufLeftRef/Qer capacity: target_aux entries × MAX_SEQ_LEN_REF (~256)
-            // bytes per ref entry, MAX_SEQ_LEN_QER (~128) per query entry. Pre-reserving here
-            // prevents the per-pair resize() in mem_matesw_batch_pre (lines 1777/1780) from
-            // doubling-realloc during warmup batches.
-            let target_ref = target_aux * 256;
-            let target_qer = target_aux * 128;
-            let ref_buf = &mut data.mmc.seqBufLeftRef[tid_usize];
-            if ref_buf.capacity() < target_ref {
-                ref_buf.reserve(target_ref - ref_buf.capacity());
-            }
-            let qer_buf = &mut data.mmc.seqBufLeftQer[tid_usize];
-            if qer_buf.capacity() < target_qer {
-                qer_buf.reserve(target_qer - qer_buf.capacity());
-            }
-        }
+        data.mmc.seqPairArrayAux[tid_usize].clear();
+        data.mmc.seqPairArrayLeft128[tid_usize].clear();
+        data.mmc.seqPairArrayRight128[tid_usize].clear();
+        data.mmc.seqBufLeftRef[tid_usize].clear();
+        data.mmc.seqBufLeftQer[tid_usize].clear();
+        data.mmc.seqBufRightRef[tid_usize].clear();
+        data.mmc.seqBufRightQer[tid_usize].clear();
         for i in (start..end).step_by(2) {
             let pair_id = ((data.n_processed >> 1) + pos as i64) as u64;
             pos += 1;
@@ -2888,66 +2824,71 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
 
         let pcnt8 = sort_classify(&mut data.mmc, i64::from(pcnt), tid) as i32;
         let aln_len = (pcnt + 256) as usize;
-        WORKER_SAM_ALN_SCRATCH.with(|cell| {
-            let mut aln = cell.borrow_mut();
-            aln.clear();
-            aln.resize(aln_len, kswr_t::default());
-            mem_sam_pe_batch(
-                opt,
-                &mut data.mmc,
-                pcnt,
-                pcnt8,
-                &mut aln,
-                maxRefLen,
-                maxQerLen,
-                tid_usize,
-            );
-        });
+        let mut aln = vec![kswr_t::default(); aln_len];
+        mem_sam_pe_batch(
+            opt,
+            &mut data.mmc,
+            pcnt,
+            pcnt8,
+            &mut aln,
+            maxRefLen,
+            maxQerLen,
+            tid_usize,
+        );
         let t2 = std::time::Instant::now();
 
         gcnt = 0;
         pos = start >> 1;
-        WORKER_SAM_ALN_SCRATCH.with(|cell| {
-            let aln = cell.borrow();
-            for i in (start..end).step_by(2) {
-                let pair_id = ((data.n_processed >> 1) + pos as i64) as u64;
-                pos += 1;
-                let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
-                    .try_into()
-                    .expect("paired seq slice");
-                let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
-                    .try_into()
-                    .expect("paired reg slice");
-                mem_sam_pe_batch_post(
-                    opt,
-                    bns,
-                    pac,
-                    &data.pes,
-                    pair_id,
-                    seq_pair,
-                    reg_pair,
-                    &aln,
-                    &mut data.mmc,
-                    &mut gcnt,
-                    tid_usize,
-                );
-                for regs in reg_pair.iter_mut() {
-                    clear_vec_with_cap(&mut regs.a, KEEP_REG_CAP);
-                    regs.n = 0;
-                    regs.m = 0;
-                }
-                seq_pair[0].name = None;
-                seq_pair[0].comment = None;
-                seq_pair[0].seq = None;
-                seq_pair[0].qual = None;
-                seq_pair[1].name = None;
-                seq_pair[1].comment = None;
-                seq_pair[1].seq = None;
-                seq_pair[1].qual = None;
-                seq_pair[0].seq_nt4 = Vec::new();
-                seq_pair[1].seq_nt4 = Vec::new();
+        for i in (start..end).step_by(2) {
+            let pair_id = ((data.n_processed >> 1) + pos as i64) as u64;
+            pos += 1;
+            let seq_pair: &mut [bseq1_t; 2] = (&mut data.seqs[i..i + 2])
+                .try_into()
+                .expect("paired seq slice");
+            let reg_pair: &mut [mem_alnreg_v; 2] = (&mut data.regs[i..i + 2])
+                .try_into()
+                .expect("paired reg slice");
+            mem_sam_pe_batch_post(
+                opt,
+                bns,
+                pac,
+                &data.pes,
+                pair_id,
+                seq_pair,
+                reg_pair,
+                &aln,
+                &mut data.mmc,
+                &mut gcnt,
+                tid_usize,
+            );
+            for regs in reg_pair.iter_mut() {
+                clear_vec_with_cap(&mut regs.a, KEEP_REG_CAP);
+                regs.n = 0;
+                regs.m = 0;
             }
-        });
+            seq_pair[0].name = None;
+            seq_pair[0].comment = None;
+            seq_pair[0].seq = None;
+            seq_pair[0].qual = None;
+            seq_pair[1].name = None;
+            seq_pair[1].comment = None;
+            seq_pair[1].seq = None;
+            seq_pair[1].qual = None;
+        }
+        data.mmc.seqPairArrayAux[tid_usize].clear();
+        data.mmc.seqPairArrayAux[tid_usize].shrink_to(0);
+        data.mmc.seqPairArrayLeft128[tid_usize].clear();
+        data.mmc.seqPairArrayLeft128[tid_usize].shrink_to(0);
+        data.mmc.seqPairArrayRight128[tid_usize].clear();
+        data.mmc.seqPairArrayRight128[tid_usize].shrink_to(0);
+        data.mmc.seqBufLeftRef[tid_usize].clear();
+        data.mmc.seqBufLeftRef[tid_usize].shrink_to(0);
+        data.mmc.seqBufLeftQer[tid_usize].clear();
+        data.mmc.seqBufLeftQer[tid_usize].shrink_to(0);
+        data.mmc.seqBufRightRef[tid_usize].clear();
+        data.mmc.seqBufRightRef[tid_usize].shrink_to(0);
+        data.mmc.seqBufRightQer[tid_usize].clear();
+        data.mmc.seqBufRightQer[tid_usize].shrink_to(0);
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -2994,7 +2935,6 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
             data.seqs[i].comment = None;
             data.seqs[i].seq = None;
             data.seqs[i].qual = None;
-            data.seqs[i].seq_nt4 = Vec::new();
         }
     }
 }
@@ -3046,12 +2986,10 @@ pub fn mem_process_seqs(
         let t1 = if w.nthreads <= 1 {
             run_worker_bwt_aln_chunks_serial(w, n_);
             trim_allocator_rss();
-            debug_rss("after_worker_bwt_aln_serial");
             std::time::Instant::now()
         } else {
             run_worker_bwt_aln_chunks_parallel(w, n_);
             trim_allocator_rss();
-            debug_rss("after_worker_bwt_aln");
             std::time::Instant::now()
         };
         let t2 = std::time::Instant::now();
@@ -3100,7 +3038,6 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         // kt_for(worker_sam, ...) // SAM
         run_worker_chunks_parallel(w, n_, worker_sam);
         trim_allocator_rss();
-        debug_rss("after_worker_sam");
         if timing {
             let t4 = std::time::Instant::now();
             eprintln!(
@@ -3120,19 +3057,16 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         let (t1, t2) = if w.nthreads <= 1 {
             run_worker_bwt_aln_chunks_serial(w, n_);
             trim_allocator_rss();
-            debug_rss("after_worker_bwt_aln_serial");
             let t = std::time::Instant::now();
             (t, t)
         } else {
             run_worker_bwt_aln_chunks_parallel(w, n_);
             trim_allocator_rss();
-            debug_rss("after_worker_bwt_aln");
             let t = std::time::Instant::now();
             (t, t)
         };
         run_worker_chunks_parallel(w, n_, worker_sam);
         trim_allocator_rss();
-        debug_rss("after_worker_sam");
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -3597,7 +3531,6 @@ pub fn mem_aln2sam(
     // print up to CIGAR
     let qname = s.name.as_deref().expect("read name missing");
     let l_seq = s.l_seq as usize;
-    let seq_text = s.seq.as_deref().unwrap_or("");
     let qual_text = s.qual.as_deref();
 
     ks_resize(
@@ -3695,16 +3628,8 @@ pub fn mem_aln2sam(
                 qe -= (p_ref.cigar.last().expect("cigar") >> 4) as usize;
             }
         }
-        // Reuse s.seq_nt4 if populated (worker_bwt fills it); otherwise encode on the fly.
-        let seq_nt4_owned: Option<Vec<u8>>;
-        let seq_nt4: &[u8] = if !s.seq_nt4.is_empty() {
-            seq_nt4_owned = None;
-            &s.seq_nt4
-        } else {
-            seq_nt4_owned = Some(seq_to_nt4(seq_text));
-            seq_nt4_owned.as_deref().expect("seq_nt4 encoded")
-        };
-        let _ = &seq_nt4_owned; // suppress unused warning when populated path is taken
+        let seq_nt4_cow = nt4_cow(s);
+        let seq_nt4: &[u8] = &seq_nt4_cow;
         ks_resize(str_, str_.l + (qe - qb) + 1);
         // Fixed-size LUTs so the compiler elides bounds checks on the inner per-byte index.
         // nt4-encoded input is 0..=4 by construction (worker_bwt's seq_to_nt4); SAFETY contract
@@ -4326,12 +4251,6 @@ struct Chain2alnScratch {
 }
 
 thread_local! {
-    static CHAIN2ALN_SCRATCH: std::cell::RefCell<Chain2alnScratch> =
-        std::cell::RefCell::new(Chain2alnScratch::default());
-    static MEM_COLLECT_QUERY_CUM_LEN: std::cell::RefCell<Vec<i32>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    static MEM_CHAIN_SEEDS_SA_COORD: std::cell::RefCell<Vec<i64>> =
-        const { std::cell::RefCell::new(Vec::new()) };
     static USE_CURRENT_RAYON_POOL: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -4341,8 +4260,7 @@ thread_local! {
 /// For each read, sorts chains/seeds by score, sets up left/right extension `SeqPair` batches
 /// (split into 128/16/scalar by `sort_pairs_len_ext`), invokes the SIMD u8/i16 SW kernels in
 /// `BandedPairWiseSW`, and folds the resulting scores back into the per-chain `mem_alnreg_t`s.
-/// Reuses thread-local scratch buffers (`Chain2alnScratch`) across calls to amortise the
-/// large per-call allocations (`left_pairs`/`right_pairs`/seq buffers).
+/// Uses per-call scratch buffers for the chain-to-alignment work arrays.
 #[doc = "Original function: mem_chain2aln_across_reads_V2:2069"]
 pub fn mem_chain2aln_across_reads_v2(
     opt: &mem_opt_t,
@@ -4357,9 +4275,7 @@ pub fn mem_chain2aln_across_reads_v2(
     _tid: i32,
 ) {
     let l_pac = bns.l_pac;
-    // Take chain2aln scratch out of thread-local; restored at function end. Reuses capacity
-    // across the ~11 chain2aln calls per program — these buffers grow to ~600KB each per call.
-    let scratch = CHAIN2ALN_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let scratch = Chain2alnScratch::default();
     let Chain2alnScratch {
         mut left_pairs,
         mut right_pairs,
@@ -4388,7 +4304,7 @@ pub fn mem_chain2aln_across_reads_v2(
     sorted_seed_indices.clear();
 
     for l in 0..nseq_usize {
-        // Cow::Borrowed in production (seq_nt4 pre-populated by worker_bwt).
+        // Cow::Borrowed in production (seq has been converted in place by worker_bwt).
         let query_cow = nt4_cow(&seq_[l]);
         let query: &[u8] = &query_cow;
         let l_query = seq_[l].l_seq;
@@ -4564,7 +4480,6 @@ pub fn mem_chain2aln_across_reads_v2(
             }
         }
     }
-
     hist.clear();
     hist.resize(MAX_SEQ_LEN8 + MAX_SEQ_LEN16 + 1, 0);
     let max_pairs = left_pairs.len().max(right_pairs.len()).max(1);
@@ -4779,7 +4694,6 @@ pub fn mem_chain2aln_across_reads_v2(
             }
         }
     }
-
     for sp in &mut right_pairs {
         let a = &av_v[sp.seqid as usize].a[sp.regid as usize];
         sp.h0 = a.score;
@@ -4895,7 +4809,6 @@ pub fn mem_chain2aln_across_reads_v2(
         process_right_bucket(num128 as usize, num16 as usize, 1);
         process_right_bucket(0, num128 as usize, 2);
     }
-
     // Discard seeds and hence their alignments
     lim.clear();
     lim.resize(nseq_usize, 0);
@@ -5026,24 +4939,6 @@ pub fn mem_chain2aln_across_reads_v2(
             }
         }
     }
-
-    // Restore the scratch for the next chain2aln call's reuse.
-    CHAIN2ALN_SCRATCH.with(|c| {
-        *c.borrow_mut() = Chain2alnScratch {
-            left_pairs,
-            right_pairs,
-            left_ref_buf,
-            right_ref_buf,
-            left_qer_buf,
-            right_qer_buf,
-            hist,
-            temp_pairs,
-            lim,
-            sorted_seed_ranges,
-            sorted_seed_indices,
-            work_pairs,
-        };
-    });
 }
 
 #[cfg(test)]
@@ -7458,9 +7353,8 @@ mod tests {
         let mut s = bseq1_t {
             l_seq: 4,
             name: Some("read-nt4".into()),
-            seq: None,
+            seq: Some(String::from_utf8(vec![0, 1, 2, 3]).expect("nt4 utf8")),
             qual: None,
-            seq_nt4: vec![0, 1, 2, 3],
             ..Default::default()
         };
         let mut regs = mem_alnreg_v {

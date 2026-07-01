@@ -49,18 +49,6 @@ pub struct eh_t {
     pub e: i32,
 }
 
-// Thread-local scratch for ksw_global2 (z, qp, eh). The z traceback matrix is the
-// largest reuser — typically n_col * tlen ≈ 22KB per call, allocated 100K-150K times
-// over a 50K-read run (per-alignment cigar gen via bwa_gen_cigar2).
-thread_local! {
-    static KSW_GLOBAL_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<i8>, Vec<eh_t>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
-    // Reused across ksw_extend2 calls. eh/qp grow to ~qlen*m bytes per call. With chain
-    // extension scalar fallback hitting this path, pooling avoids per-pair Vec allocations.
-    static KSW_EXTEND_SCRATCH: std::cell::RefCell<(Vec<eh_t>, Vec<i8>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
-}
-
 const MINUS_INF: i32 = -0x4000_0000;
 const G_DEFR: kswr_t = kswr_t {
     score: 0,
@@ -133,61 +121,70 @@ pub fn ksw_u8(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = tlen as usize;
-    let endsc_in = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
-        xtra & 0xffff
-    } else {
-        i32::MAX
-    };
-    let sat_score = i32::from(255_u8.saturating_sub(q.shift));
-    let dp_stop = endsc_in.min(sat_score);
-    let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
-        &q.query,
-        &target[..tlen_usize],
-        q.m,
-        &q.mat,
-        o_del,
-        e_del,
-        o_ins,
-        e_ins,
-        dp_stop,
-    );
-    let saturated = r.score >= sat_score;
-    if saturated {
-        r.score = 255;
-        r.qe = -1;
+    #[cfg(target_arch = "x86_64")]
+    {
+        return ksw_u8_slices(
+            &q.query, q.m, &q.mat, q.max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+        );
     }
-    let minsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSUBO) != 0 {
-        xtra & 0xffff
-    } else {
-        0x10000
-    };
-    let endsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
-        xtra & 0xffff
-    } else {
-        0x10000
-    };
-    // C++ ksw.cpp:213 wraps the score2/te2 search in `if (r.score != 255)` — when SW saturates
-    // at 255, both stay at -1 (G_DEFR defaults).
-    if !saturated && r.score >= minsc {
-        let radius = (r.score + i32::from(q.max).saturating_sub(1)) / i32::from(q.max.max(1));
-        let low = r.te - radius;
-        let high = r.te + radius;
-        let b = build_score_peaks(&row_maxes, minsc);
-        let mut alt = G_DEFR;
-        for &(imax, te) in &b {
-            if (te < low || te > high) && imax > alt.score2 {
-                alt.score2 = imax.min(255);
-                alt.te2 = te;
-            }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let tlen_usize = tlen as usize;
+        let endsc_in = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
+            xtra & 0xffff
+        } else {
+            i32::MAX
+        };
+        let sat_score = i32::from(255_u8.saturating_sub(q.shift));
+        let dp_stop = endsc_in.min(sat_score);
+        let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
+            &q.query,
+            &target[..tlen_usize],
+            q.m,
+            &q.mat,
+            o_del,
+            e_del,
+            o_ins,
+            e_ins,
+            dp_stop,
+        );
+        let saturated = r.score >= sat_score;
+        if saturated {
+            r.score = 255;
+            r.qe = -1;
         }
-        r.score2 = alt.score2;
-        r.te2 = alt.te2;
+        let minsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSUBO) != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        let endsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        // C++ ksw.cpp:213 wraps the score2/te2 search in `if (r.score != 255)` — when SW saturates
+        // at 255, both stay at -1 (G_DEFR defaults).
+        if !saturated && r.score >= minsc {
+            let radius = (r.score + i32::from(q.max).saturating_sub(1)) / i32::from(q.max.max(1));
+            let low = r.te - radius;
+            let high = r.te + radius;
+            let b = build_score_peaks(&row_maxes, minsc);
+            let mut alt = G_DEFR;
+            for &(imax, te) in &b {
+                if (te < low || te > high) && imax > alt.score2 {
+                    alt.score2 = imax.min(255);
+                    alt.te2 = te;
+                }
+            }
+            r.score2 = alt.score2;
+            r.te2 = alt.te2;
+        }
+        if r.score >= endsc && endsc != 0x10000 {
+            return r;
+        }
+        r
     }
-    if r.score >= endsc && endsc != 0x10000 {
-        return r;
-    }
-    r
 }
 
 /// SSE2 striped Farrar Smith-Waterman kernel with signed-i16 score lanes.
@@ -205,53 +202,62 @@ pub fn ksw_i16(
     e_ins: i32,
     xtra: i32,
 ) -> kswr_t {
-    let tlen_usize = tlen as usize;
-    let endsc_in = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
-        xtra & 0xffff
-    } else {
-        i32::MAX
-    };
-    let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
-        &q.query,
-        &target[..tlen_usize],
-        q.m,
-        &q.mat,
-        o_del,
-        e_del,
-        o_ins,
-        e_ins,
-        endsc_in,
-    );
-    let minsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSUBO) != 0 {
-        xtra & 0xffff
-    } else {
-        0x10000
-    };
-    let endsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
-        xtra & 0xffff
-    } else {
-        0x10000
-    };
-    if r.score >= minsc {
-        let radius = (r.score + i32::from(q.max).saturating_sub(1)) / i32::from(q.max.max(1));
-        let low = r.te - radius;
-        let high = r.te + radius;
-        let b = build_score_peaks(&row_maxes, minsc);
-        let mut best2 = -1;
-        let mut te2 = -1;
-        for &(imax, te) in &b {
-            if (te < low || te > high) && imax > best2 {
-                best2 = imax;
-                te2 = te;
+    #[cfg(target_arch = "x86_64")]
+    {
+        return ksw_i16_slices(
+            &q.query, q.m, &q.mat, q.max, tlen, target, o_del, e_del, o_ins, e_ins, xtra,
+        );
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let tlen_usize = tlen as usize;
+        let endsc_in = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
+            xtra & 0xffff
+        } else {
+            i32::MAX
+        };
+        let (mut r, row_maxes) = local_align_affine_with_rows_endsc(
+            &q.query,
+            &target[..tlen_usize],
+            q.m,
+            &q.mat,
+            o_del,
+            e_del,
+            o_ins,
+            e_ins,
+            endsc_in,
+        );
+        let minsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSUBO) != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        let endsc = if (xtra & crate::bwa_mem2::ksw::KSW_XSTOP) != 0 {
+            xtra & 0xffff
+        } else {
+            0x10000
+        };
+        if r.score >= minsc {
+            let radius = (r.score + i32::from(q.max).saturating_sub(1)) / i32::from(q.max.max(1));
+            let low = r.te - radius;
+            let high = r.te + radius;
+            let b = build_score_peaks(&row_maxes, minsc);
+            let mut best2 = -1;
+            let mut te2 = -1;
+            for &(imax, te) in &b {
+                if (te < low || te > high) && imax > best2 {
+                    best2 = imax;
+                    te2 = te;
+                }
             }
+            r.score2 = best2;
+            r.te2 = te2;
         }
-        r.score2 = best2;
-        r.te2 = te2;
+        if r.score >= endsc && endsc != 0x10000 {
+            return r;
+        }
+        r
     }
-    if r.score >= endsc && endsc != 0x10000 {
-        return r;
-    }
-    r
 }
 
 // ============================================================================================
@@ -534,7 +540,6 @@ mod ksw_u8_sse2 {
     use crate::bwa_mem2::ksw::{KSW_XSTOP, KSW_XSUBO};
     use core::arch::x86_64::*;
     use std::cell::RefCell;
-
     #[derive(Default)]
     struct Scratch {
         qp: Vec<u8>,
@@ -1379,10 +1384,9 @@ pub fn ksw_extend2(
     let oe_del = o_del + e_del;
     let oe_ins = o_ins + e_ins;
     // allocate memory (eh = score array, qp = query profile)
-    let (mut eh, mut qp) = KSW_EXTEND_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    eh.clear();
+    let mut eh = Vec::new();
     eh.resize(qlen_usize + 1, eh_t::default());
-    qp.clear();
+    let mut qp = Vec::new();
     qp.resize(qlen_usize * m_usize, 0);
 
     // generate the query profile
@@ -1555,7 +1559,6 @@ pub fn ksw_extend2(
     if let Some(max_off) = max_off {
         *max_off = best_off;
     }
-    KSW_EXTEND_SCRATCH.with(|c| *c.borrow_mut() = (eh, qp));
     best
 }
 
@@ -1651,21 +1654,17 @@ pub fn ksw_global2(
     // allocate memory; n_col is the maximum #columns of the backtrack matrix
     let n_col = qlen.min(2 * w + 1);
     let n_col_usize = n_col as usize;
-    KSW_GLOBAL_SCRATCH.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        let (z, qp, eh) = &mut *buf;
+    {
+        let mut z = Vec::new();
+        let mut qp = Vec::new();
+        let mut eh = Vec::new();
         let need_z = n_cigar_opt.is_some() && cigar_.is_some();
         if need_z {
             let z_len = n_col_usize * tlen_usize;
-            z.clear();
             z.resize(z_len, 0);
-        } else {
-            z.clear();
         }
         // Skip the resize-with-zero step: every qp byte is overwritten by extend below.
-        qp.clear();
         qp.reserve(qlen_usize * m_usize);
-        eh.clear();
         eh.resize(qlen_usize + 1, eh_t::default());
 
         // generate the query profile
@@ -1814,7 +1813,7 @@ pub fn ksw_global2(
             }
         }
         score
-    })
+    }
 }
 
 /// Convenience wrapper around `ksw_global2` using symmetric deletion/insertion

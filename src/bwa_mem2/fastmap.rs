@@ -13,12 +13,10 @@ use crate::bwa_mem2::bwa::{
     bseq1_t, bseq_classify, bseq_read_orig, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr,
     bwa_set_rg, BWA_VERBOSE,
 };
-use crate::bwa_mem2::bwamem::{
-    mem_alnreg_v, mem_chain_v, mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t,
-};
+use crate::bwa_mem2::bwamem::{mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t};
 use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::bwa_mem2::kseq::kseq_t;
-use crate::bwa_mem2::utils::{err_fclose, err_xopen_core_lit, ErrFile};
+use crate::bwa_mem2::utils::{err_fclose, err_fwrite, err_xopen_core_lit, ErrFile};
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rayon::scope;
@@ -540,68 +538,113 @@ fn process_batch(
     w: &mut worker_t,
 ) {
     if opt.flag & MEM_F_SMARTPE != 0 {
-        let mut sep = [Vec::new(), Vec::new()];
-        let mut n_sep = [0_i32; 2];
-        let mut tmp_opt = opt.clone();
-        bseq_classify(batch.n_seqs, &batch.seqs, &mut n_sep, &mut sep);
-
-        if n_sep[0] > 0 {
-            tmp_opt.flag &= !MEM_F_PE;
-            mem_process_seqs(&mut tmp_opt, n_processed, n_sep[0], &mut sep[0], None, w);
-            // Move seq.sam (Option<String>) instead of cloning — saves alloc+memcpy per SAM record.
-            for seq in &mut sep[0] {
-                batch.seqs[seq.id as usize].sam = seq.sam.take();
-            }
-        }
-        if n_sep[1] > 0 {
+        let n_batch = batch.n_seqs.max(0) as usize;
+        let all_adjacent_pairs = n_batch % 2 == 0
+            && batch.seqs.len() >= n_batch
+            && batch.seqs[..n_batch]
+                .chunks_exact(2)
+                .all(|pair| pair[0].name == pair[1].name);
+        if all_adjacent_pairs {
+            let mut tmp_opt = opt.clone();
             tmp_opt.flag |= MEM_F_PE;
             mem_process_seqs(
                 &mut tmp_opt,
-                n_processed + i64::from(n_sep[0]),
-                n_sep[1],
-                &mut sep[1],
+                n_processed,
+                batch.n_seqs,
+                &mut batch.seqs,
                 pes0,
                 w,
             );
+            batch.sam_lines.clear();
+            for seq in &mut batch.seqs {
+                if let Some(sam) = seq.sam.take() {
+                    batch.sam_lines.push(sam);
+                }
+            }
+            batch.seqs = Vec::new();
+            return;
+        }
+
+        let mut sep = [Vec::new(), Vec::new()];
+        let mut n_sep = [0_i32; 2];
+        let mut tmp_opt = opt.clone();
+        bseq_classify(batch.n_seqs, &mut batch.seqs, &mut n_sep, &mut sep);
+        batch.seqs = Vec::new();
+
+        if n_sep[0] == 0 && n_sep[1].max(0) as usize == n_batch {
+            tmp_opt.flag |= MEM_F_PE;
+            mem_process_seqs(&mut tmp_opt, n_processed, n_sep[1], &mut sep[1], pes0, w);
+            batch.sam_lines.clear();
+            batch.sam_lines.reserve(sep[1].len());
             for seq in &mut sep[1] {
-                batch.seqs[seq.id as usize].sam = seq.sam.take();
+                if let Some(sam) = seq.sam.take() {
+                    batch.sam_lines.push(sam);
+                }
+            }
+        } else {
+            let mut sam_by_id = vec![None; n_batch];
+
+            if n_sep[0] > 0 {
+                tmp_opt.flag &= !MEM_F_PE;
+                mem_process_seqs(&mut tmp_opt, n_processed, n_sep[0], &mut sep[0], None, w);
+                for seq in &mut sep[0] {
+                    if let Some(slot) = sam_by_id.get_mut(seq.id as usize) {
+                        *slot = seq.sam.take();
+                    }
+                }
+            }
+            if n_sep[1] > 0 {
+                tmp_opt.flag |= MEM_F_PE;
+                mem_process_seqs(
+                    &mut tmp_opt,
+                    n_processed + i64::from(n_sep[0]),
+                    n_sep[1],
+                    &mut sep[1],
+                    pes0,
+                    w,
+                );
+                for seq in &mut sep[1] {
+                    if let Some(slot) = sam_by_id.get_mut(seq.id as usize) {
+                        *slot = seq.sam.take();
+                    }
+                }
+            }
+            batch.sam_lines.clear();
+            batch.sam_lines.reserve(sam_by_id.len());
+            for sam in sam_by_id {
+                if let Some(sam) = sam {
+                    batch.sam_lines.push(sam);
+                }
             }
         }
     } else {
         mem_process_seqs(opt, n_processed, batch.n_seqs, &mut batch.seqs, pes0, w);
-    }
 
-    batch.sam_lines.clear();
-    batch.sam_lines.reserve(batch.seqs.len());
-    for seq in &mut batch.seqs {
-        if let Some(sam) = seq.sam.take() {
-            batch.sam_lines.push(sam);
+        batch.sam_lines.clear();
+        batch.sam_lines.reserve(batch.seqs.len());
+        for seq in &mut batch.seqs {
+            if let Some(sam) = seq.sam.take() {
+                batch.sam_lines.push(sam);
+            }
         }
     }
-    // batch.seqs is dropped when the ktp_data_t is consumed (end of single-thread loop or after
-    // write_batch in the pipeline path). Drop frees the per-seq Option<String> name/seq/qual.
-    // The previous explicit field clears + shrink_to(0) just hastened the same drops at no win.
-    batch.seqs.clear();
+    // The write stage only needs sam_lines. Releasing the read-record Vec here avoids carrying
+    // its large default-K allocation through output while the reader/compute stages advance.
+    batch.seqs = Vec::new();
 }
 
-thread_local! {
-    static WRITE_BATCH_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn write_batch(batch: &ktp_data_t, fp: &mut ErrFile) {
-    // Concatenate all SAM lines into a single err_fwrite to amortize syscall overhead.
-    // For 700K reads each producing one SAM line, this reduces ~700K writes to ~1400 (one per
-    // batch).
-    WRITE_BATCH_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.clear();
-        let total: usize = batch.sam_lines.iter().map(|s| s.len()).sum();
-        buf.reserve(total);
-        for sam in &batch.sam_lines {
-            buf.extend_from_slice(sam.as_bytes());
+fn write_batch(batch: &mut ktp_data_t, fp: &mut ErrFile) {
+    let mut buf = Vec::with_capacity(1 << 20);
+    for sam in batch.sam_lines.drain(..) {
+        if buf.len() + sam.len() > (1 << 20) && !buf.is_empty() {
+            err_fwrite(&buf, 1, buf.len(), fp);
+            buf.clear();
         }
-        crate::bwa_mem2::utils::err_fwrite(&buf, 1, buf.len(), fp);
-    });
+        buf.extend_from_slice(sam.as_bytes());
+    }
+    if !buf.is_empty() {
+        err_fwrite(&buf, 1, buf.len(), fp);
+    }
 }
 
 /// Issue an x86 cpuid for leaf `i` (sub-leaf 0).
@@ -682,9 +725,10 @@ pub fn memory_alloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i3
     let read_len = READ_LEN;
     let mem_size = usize::try_from(nreads.max(0)).expect("nreads");
 
-    // Mem allocation section for core kernels.
-    w.regs = vec![mem_alnreg_v::default(); mem_size];
-    w.chain_ar = vec![mem_chain_v::default(); mem_size];
+    // Mem allocation section for core kernels. C++ allocates capacity for the estimated
+    // chunk, but the worker only initializes/touches the actual batch prefix.
+    w.regs = Vec::with_capacity(mem_size);
+    w.chain_ar = Vec::with_capacity(mem_size);
     // The faithful Rust chaining path stores seeds in each mem_chain_t. The old C++ seedBuf
     // backing allocation is no longer read by mem_chain_seeds, so allocating it only inflates RSS.
     w.seedBufSize = 0;
@@ -771,7 +815,7 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
         i32::try_from(shared.actual_chunk_size / i64::try_from(READ_LEN).expect("READ_LEN") + 10)
             .expect("nreads");
     memory_alloc(shared, w, nreads, nthreads);
-    w.ref_string = shared.ref_string.clone();
+    w.ref_string = std::mem::take(&mut shared.ref_string);
     w.nreads = 0;
 
     let mut opt = (*shared.opt.as_ref().expect("opt")).clone();
@@ -786,7 +830,7 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
             );
             shared.n_processed += i64::from(batch.n_seqs);
             if let Some(fp) = shared.fp.as_mut() {
-                write_batch(&batch, fp);
+                write_batch(&mut batch, fp);
             }
         }
         return 0;
@@ -839,11 +883,11 @@ pub fn process(shared: &mut ktp_aux_t, w: &mut worker_t, _pipe_threads: i32) -> 
         let fp_write = Arc::clone(&fp);
         s.spawn(move |_| {
             while let Ok(msg) = rx_write.recv() {
-                let Some(batch) = msg else {
+                let Some(mut batch) = msg else {
                     break;
                 };
                 if let Some(fp_ref) = fp_write.lock().expect("fp lock").as_mut() {
-                    write_batch(&batch, fp_ref);
+                    write_batch(&mut batch, fp_ref);
                 }
             }
         });
@@ -1642,8 +1686,10 @@ mod tests {
         let mut w = worker_t::default();
         memory_alloc(&aux, &mut w, 3, 2);
 
-        assert_eq!(w.regs.len(), 3);
-        assert_eq!(w.chain_ar.len(), 3);
+        assert_eq!(w.regs.len(), 0);
+        assert_eq!(w.regs.capacity(), 3);
+        assert_eq!(w.chain_ar.len(), 0);
+        assert_eq!(w.chain_ar.capacity(), 3);
         assert_eq!(w.seedBuf.len(), 0);
         assert_eq!(w.seedBufSize, 0);
 

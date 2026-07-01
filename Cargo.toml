@@ -28,6 +28,10 @@ include = [
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "bwa-mem2-rs"
+path = "src/bin/bwa-mem2-rs.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 cpu-time = "1.0"

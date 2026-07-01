@@ -265,10 +265,9 @@ pub fn mem_matesw(
 
     let mut n = 0_i32;
     let l_ms_usize = l_ms as usize;
-    // Reuse thread-local buffers across mem_matesw calls — was per-call alloc × ~25K-100K
-    // per PE batch.
-    let (mut rev_buf, mut query_buf, mut ref_buf) =
-        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let mut rev_buf = Vec::new();
+    let mut query_buf = Vec::new();
+    let mut ref_buf = Vec::new();
     for r in 0..4 {
         if skip[r] != 0 {
             continue;
@@ -424,42 +423,10 @@ pub fn mem_matesw(
             ma.m = ma.a.len();
         }
     }
-    MEM_MATESW_SCRATCH.with(|c| *c.borrow_mut() = (rev_buf, query_buf, ref_buf));
     n
 }
 
-thread_local! {
-    // Reused across mem_pair calls (~25K per 50K PE batch). v holds per-alignment pairs sorted
-    // by ref position; u holds candidate pair scores. Per-call allocations would otherwise show
-    // up in PE-rescue churn.
-    static MEM_PAIR_SCRATCH: std::cell::RefCell<(Vec<pair64_t>, Vec<pair64_t>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
-
-    // Reused across mem_sam_pe_batch calls (per batch). Holds the rev-pass pair list built
-    // from phase-0 results.
-    static MEM_PE_BATCH_PHASE1_PAIRS: std::cell::RefCell<Vec<SeqPair>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-
-    // Reused across mem_matesw* calls (per pair × 4 directions). Hold the rev-complement
-    // query, copied query for ksw_align2, and reference sequence buffer.
-    static MEM_MATESW_SCRATCH: std::cell::RefCell<(Vec<u8>, Vec<u8>, Vec<u8>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
-
-    // Reused across mem_sam_pe / mem_sam_pe_batch_post calls (per pair). Each call previously
-    // allocated `b: [Vec<mem_alnreg_t>; 2]` via collect; ~700K Vec allocations per 700K-read run.
-    static MEM_SAM_PE_B_SCRATCH: std::cell::RefCell<(Vec<mem_alnreg_t>, Vec<mem_alnreg_t>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
-
-    // Reused across mem_sam_pe / mem_sam_pe_batch_post calls (per pair). Holds aa (the per-end
-    // mem_aln_t lists). Each call previously allocated 2 fresh Vec<mem_aln_t>; ~700K * 2 Vec
-    // allocations per 700K-read run.
-    static MEM_SAM_PE_AA_SCRATCH: std::cell::RefCell<(Vec<mem_aln_t>, Vec<mem_aln_t>)> =
-        const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
-}
-
-// Drain h/g/aa mem_aln_t cigar/md buffers into the global pools so they're reused on next call
-// instead of being freed when these stack-locals go out of scope. Also returns the aa Vec
-// capacity to the per-pair pool.
+// Drop h/g and cloned aa CIGAR/MD buffers after SAM emission, matching the C++ free sites.
 #[inline]
 fn drain_pe_aln_pools(
     h: &mut [mem_aln_t; 2],
@@ -471,23 +438,8 @@ fn drain_pe_aln_pools(
         crate::bwa_mem2::bwa::return_md_buf(std::mem::take(&mut h[i].md));
         crate::bwa_mem2::bwa::return_cigar_buf(std::mem::take(&mut g[i].cigar));
         crate::bwa_mem2::bwa::return_md_buf(std::mem::take(&mut g[i].md));
-        for aln in aa[i].drain(..) {
-            crate::bwa_mem2::bwa::return_cigar_buf(aln.cigar);
-            crate::bwa_mem2::bwa::return_md_buf(aln.md);
-        }
+        aa[i].clear();
     }
-    // Return aa Vec capacity to the thread-local pool. drain(..) above already cleared them.
-    let aa0 = std::mem::take(&mut aa[0]);
-    let aa1 = std::mem::take(&mut aa[1]);
-    MEM_SAM_PE_AA_SCRATCH.with(|c| *c.borrow_mut() = (aa0, aa1));
-}
-
-#[inline]
-fn take_pe_aa_pools() -> [Vec<mem_aln_t>; 2] {
-    let (mut a0, mut a1) = MEM_SAM_PE_AA_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    a0.clear();
-    a1.clear();
-    [a0, a1]
 }
 
 /// Pair two reads' single-end candidate alignment sets into the best proper pair.
@@ -515,13 +467,9 @@ pub fn mem_pair(
     z: &mut [i32; 2],
     n_pri: &[i32; 2],
 ) -> i32 {
-    MEM_PAIR_SCRATCH.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        let (v, u) = &mut *buf;
-        v.clear();
-        u.clear();
-        mem_pair_inner(opt, bns, pes, a, id, sub, n_sub, z, n_pri, v, u)
-    })
+    let mut v = Vec::new();
+    let mut u = Vec::new();
+    mem_pair_inner(opt, bns, pes, a, id, sub, n_sub, z, n_pri, &mut v, &mut u)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -672,13 +620,13 @@ pub fn mem_sam_pe(
     crate::bwa_mem2::kstring::ks_resize(&mut str_, 1024);
     let mut h: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
     let mut g: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
-    let mut aa: [Vec<mem_aln_t>; 2] = take_pe_aa_pools();
+    let mut aa: [Vec<mem_aln_t>; 2] = [Vec::new(), Vec::new()];
 
     // flag 0x20 == MEM_F_NO_RESCUE; without it, perform SW for the best alignment(s) on each end
     if (opt.flag & 0x20) == 0 {
-        let (mut b0, mut b1) = MEM_SAM_PE_B_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        let mut b0 = Vec::new();
+        let mut b1 = Vec::new();
         // b[i] = candidates within pen_unpaired of the best — these are the seeds for mate-SW
-        b0.clear();
         b0.extend(
             a[0].a
                 .iter()
@@ -686,7 +634,6 @@ pub fn mem_sam_pe(
                 .filter(|reg| reg.score >= a[0].a[0].score - opt.pen_unpaired)
                 .copied(),
         );
-        b1.clear();
         b1.extend(
             a[1].a
                 .iter()
@@ -713,7 +660,6 @@ pub fn mem_sam_pe(
                 n += val;
             }
         }
-        MEM_SAM_PE_B_SCRATCH.with(|c| *c.borrow_mut() = (b0, b1));
     }
 
     n_pri[0] = mem_mark_primary_se(opt, a[0].n as i32, &mut a[0].a, (id << 1) as i64);
@@ -1196,11 +1142,8 @@ pub fn mem_sam_pe_batch(
     }
 
     // Phase 1 prep: reverse buffers in place, build the rev-pass pair list (u8 first, then i16)
-    MEM_PE_BATCH_PHASE1_PAIRS.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        let phase1_pairs: &mut Vec<SeqPair> = &mut buf;
-        phase1_pairs.clear();
-        phase1_pairs.reserve(total);
+    {
+        let mut phase1_pairs: Vec<SeqPair> = Vec::with_capacity(total);
         let mut pos8 = 0_usize;
         let mut pos16 = 0_usize;
         for class in 0..2_usize {
@@ -1260,7 +1203,7 @@ pub fn mem_sam_pe_batch(
                 1,
             );
         }
-    });
+    }
 
     let _ = ksw_align2;
     1
@@ -1297,12 +1240,12 @@ pub fn mem_sam_pe_batch_post(
     crate::bwa_mem2::kstring::ks_resize(&mut str_, 1024);
     let mut h: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
     let mut g: [mem_aln_t; 2] = std::array::from_fn(|_| mem_aln_t::default());
-    let mut aa: [Vec<mem_aln_t>; 2] = take_pe_aa_pools();
+    let mut aa: [Vec<mem_aln_t>; 2] = [Vec::new(), Vec::new()];
     // flag 0x20 == MEM_F_NO_RESCUE; without it, replay the batched SW results into mem_alnreg_v.
     if (opt.flag & 0x20) == 0 {
-        let (mut b0, mut b1) = MEM_SAM_PE_B_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        let mut b0 = Vec::new();
+        let mut b1 = Vec::new();
         // b[i] = candidates within pen_unpaired of the best — seeds for mate-SW
-        b0.clear();
         b0.extend(
             a[0].a
                 .iter()
@@ -1310,7 +1253,6 @@ pub fn mem_sam_pe_batch_post(
                 .filter(|reg| reg.score >= a[0].a[0].score - opt.pen_unpaired)
                 .copied(),
         );
-        b1.clear();
         b1.extend(
             a[1].a
                 .iter()
@@ -1347,7 +1289,6 @@ pub fn mem_sam_pe_batch_post(
                 *gcnt += 4;
             }
         }
-        MEM_SAM_PE_B_SCRATCH.with(|c| *c.borrow_mut() = (b0, b1));
     }
 
     n_pri[0] = mem_mark_primary_se(opt, a[0].n as i32, &mut a[0].a, (id << 1) as i64);
@@ -1739,11 +1680,8 @@ pub fn mem_matesw_batch_pre(
     }
 
     let l_ms_usize = l_ms as usize;
-    // Reuse thread-local scratch across the 4-direction r loop AND across mem_matesw_batch_pre
-    // calls (one per pair × per-batch). query_buf is unused here but we still take/restore the
-    // tuple to keep the API consistent across mem_matesw* sites.
-    let (mut rev_buf, _query_buf_unused, mut ref_seq_buf) =
-        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let mut rev_buf = Vec::new();
+    let mut ref_seq_buf = Vec::new();
     for r in 0..4_usize {
         if skip[r] != 0 {
             while mmc.seqPairArrayAux[tid].len() < (gcnt as usize + r + 1) {
@@ -1900,7 +1838,6 @@ pub fn mem_matesw_batch_pre(
             mmc.seqPairArrayAux[tid][gcnt_us + r].id = -1;
         }
     }
-    MEM_MATESW_SCRATCH.with(|c| *c.borrow_mut() = (rev_buf, _query_buf_unused, ref_seq_buf));
     pcnt
 }
 
@@ -1949,10 +1886,9 @@ pub fn mem_matesw_batch_post(
     if ma.a.capacity() < ma.a.len() + 4 {
         ma.a.reserve(ma.a.len() + 4 - ma.a.capacity());
     }
-    // Reuse thread-local scratch across the 4-direction r loop AND across mem_matesw_batch_post
-    // calls (one per pair × per-batch).
-    let (mut rev_buf, mut query_buf, mut ref_seq_buf) =
-        MEM_MATESW_SCRATCH.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    let mut rev_buf = Vec::new();
+    let mut query_buf = Vec::new();
+    let mut ref_seq_buf = Vec::new();
     for r in 0..4_usize {
         if skip[r] != 0 {
             continue;
@@ -2132,7 +2068,6 @@ pub fn mem_matesw_batch_post(
             ma.m = ma.a.len();
         }
     }
-    MEM_MATESW_SCRATCH.with(|c| *c.borrow_mut() = (rev_buf, query_buf, ref_seq_buf));
     n
 }
 

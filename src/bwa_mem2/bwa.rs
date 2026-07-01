@@ -27,7 +27,6 @@ pub struct bseq1_t {
     pub seq: Option<String>,
     pub qual: Option<String>,
     pub sam: Option<String>,
-    pub seq_nt4: Vec<u8>,
 }
 
 #[doc = "Original struct: bwaidx_t (bwa-mem2/src/bwa.h)"]
@@ -38,40 +37,24 @@ pub struct bwaidx_t {
 
 // --- bwa.cpp ---
 
-// Thread-local rseq scratch for bwa_gen_cigar2 (allocated once per ~100K alignments otherwise).
-thread_local! {
-    static BWA_GEN_CIGAR_RSEQ: std::cell::RefCell<Vec<u8>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    // Pool of reusable cigar/md buffers. bwa_gen_cigar2 takes from these pools and returns the
-    // filled buffers as bwa_cigar_t fields (no per-call clone). After SAM emission, mem_reg2sam
-    // returns each mem_aln_t's cigar/md back to the pool. Per 700K-read run with ~1M alignments
-    // that's ~2M alloc/free cycles eliminated.
-    pub(crate) static CIGAR_OPS_POOL: std::cell::RefCell<Vec<Vec<u32>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-    pub(crate) static CIGAR_MD_POOL: std::cell::RefCell<Vec<Vec<u8>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
 #[inline]
 pub(crate) fn take_cigar_buf() -> Vec<u32> {
-    CIGAR_OPS_POOL.with(|p| p.borrow_mut().pop().unwrap_or_default())
+    Vec::new()
 }
 
 #[inline]
-pub(crate) fn return_cigar_buf(mut buf: Vec<u32>) {
-    buf.clear();
-    CIGAR_OPS_POOL.with(|p| p.borrow_mut().push(buf));
+pub(crate) fn return_cigar_buf(_buf: Vec<u32>) {
+    // C++ frees this allocation after SAM emission.
 }
 
 #[inline]
 pub(crate) fn take_md_buf() -> Vec<u8> {
-    CIGAR_MD_POOL.with(|p| p.borrow_mut().pop().unwrap_or_default())
+    Vec::new()
 }
 
 #[inline]
-pub(crate) fn return_md_buf(mut buf: Vec<u8>) {
-    buf.clear();
-    CIGAR_MD_POOL.with(|p| p.borrow_mut().push(buf));
+pub(crate) fn return_md_buf(_buf: Vec<u8>) {
+    // C++ stores MD in the alignment allocation and frees it with the CIGAR.
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -235,13 +218,13 @@ pub fn bseq_read_one_fasta_file(
 /// Walks `seqs` and groups consecutive reads with identical names into `sep[1]` (paired);
 /// everything else goes into `sep[0]` (singletons). Counts are written to `m[0]`/`m[1]`.
 #[doc = "Original function: bseq_classify:226"]
-pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<bseq1_t>; 2]) {
+pub fn bseq_classify(n: i32, seqs: &mut [bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<bseq1_t>; 2]) {
     let limit = n.max(0) as usize;
-    let seqs = &seqs[..limit.min(seqs.len())];
+    let limit = limit.min(seqs.len());
     let mut single = Vec::new();
     let mut paired = Vec::new();
 
-    if seqs.is_empty() {
+    if limit == 0 {
         m[0] = 0;
         m[1] = 0;
         sep[0].clear();
@@ -250,21 +233,21 @@ pub fn bseq_classify(n: i32, seqs: &[bseq1_t], m: &mut [i32; 2], sep: &mut [Vec<
     }
 
     let mut has_last = true;
-    for i in 1..seqs.len() {
+    for i in 1..limit {
         if has_last {
             if seqs[i].name == seqs[i - 1].name {
-                paired.push(seqs[i - 1].clone());
-                paired.push(seqs[i].clone());
+                paired.push(std::mem::take(&mut seqs[i - 1]));
+                paired.push(std::mem::take(&mut seqs[i]));
                 has_last = false;
             } else {
-                single.push(seqs[i - 1].clone());
+                single.push(std::mem::take(&mut seqs[i - 1]));
             }
         } else {
             has_last = true;
         }
     }
     if has_last {
-        single.push(seqs[seqs.len() - 1].clone());
+        single.push(std::mem::take(&mut seqs[limit - 1]));
     }
 
     m[0] = single.len() as i32;
@@ -351,11 +334,8 @@ pub fn bwa_gen_cigar2(
     }
 
     let mut rlen = 0_i64;
-    // Take the thread-local rseq buffer (capacity reused across ~100K calls).
-    let mut rseq = BWA_GEN_CIGAR_RSEQ.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut rseq = Vec::new();
     if !bns_get_seq_into(l_pac, pac, rb, re, &mut rlen, &mut rseq) || re - rb != rlen {
-        // possible if out of range
-        BWA_GEN_CIGAR_RSEQ.with(|cell| *cell.borrow_mut() = rseq);
         return None;
     }
 
@@ -410,9 +390,6 @@ pub fn bwa_gen_cigar2(
         // NW alignment
 
         let mut n_cigar_tmp = 0_i32;
-        // Take a cigar buffer from the pool. The buffer (with prior capacity) becomes the
-        // returned bwa_cigar_t.cigar — no clone. mem_reg2sam returns it to the pool after SAM
-        // emission.
         let mut cigar_tmp = take_cigar_buf();
         *score = ksw_global2(
             l_query,
@@ -534,9 +511,6 @@ pub fn bwa_gen_cigar2(
         // reverse back query (rseq is local scratch, no need to restore order)
         query[..l_query_usize].reverse();
     }
-
-    // Restore the rseq buffer to the thread-local for the next call's reuse.
-    BWA_GEN_CIGAR_RSEQ.with(|cell| *cell.borrow_mut() = rseq);
 
     out_cigar.map(|cigar| bwa_cigar_t { cigar, md })
 }
@@ -797,7 +771,7 @@ mod tests {
 
     #[test]
     fn bseq_classify_splits_singletons_and_pairs_by_adjacent_name() {
-        let seqs = vec![
+        let mut seqs = vec![
             bseq1_t {
                 name: Some("solo0".into()),
                 id: 0,
@@ -838,7 +812,7 @@ mod tests {
         let mut sep = [Vec::new(), Vec::new()];
         bseq_classify(
             i32::try_from(seqs.len()).expect("len"),
-            &seqs,
+            &mut seqs,
             &mut counts,
             &mut sep,
         );
