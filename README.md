@@ -2,7 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
-* 2026-06-01: Large improvements in RSS and speed for the paired-end case. Especially fixed large memory use for large inputs
+* 2026-07-01: Large improvements in paired-end RSS. The shipped CLI now constrains glibc allocator arenas before startup, and the translated seed storage follows upstream's arena-backed layout more closely
 * 2026-05-31: new audit; many edge cases now handled better
 * 2026-05-15: the `bwa-mem2-rs` binary can be built with mimalloc for about 10% better wall time
 * 2026-04-30: Index generation now as fast as original
@@ -136,20 +136,24 @@ The focused SIMD16 regression guard for the non-default scoring case is:
 READ_LIMIT=2000 scripts/regression-simd16-a5.sh
 ```
 
-## Full-Dataset Speed Comparison
+## Paired-End Speed and RSS Comparison
 
-Full local real paired-end fixture, 175,000 paired reads, `-K 20000000`.
+Local paired-end fixture, 200,000 read pairs, default `-K`, 10 threads.
 
-| Command | `bwa-mem2-rs` | upstream `bwa-mem2.avx512bw` | Rust vs upstream |
-|---|---:|---:|---:|
-| `mem -t 1` | 15.49s | 18.50s | 1.19x faster, about 16% less wall time |
-| `mem -t 2` | 10.51s | 10.35s | 1.02x slower, about 2% more wall time |
+- Reference: `/husky/henriksson/atrandi/bwamem_ref/tanerella/all.fa`
+- Reads: `.tmp/perf-small/R1.200k.fq.gz` and `.tmp/perf-small/R2.200k.fq.gz`, sampled from `/husky/henriksson/atrandi/forbwamem_temp`
+
+| Command | Wall time | User time | System time | Max RSS |
+|---|---:|---:|---:|---:|
+| `bwa-mem2-rs mem -t 10` | 3.07s | 12.43s | 2.97s | 319,264 KB |
+| upstream `bwa-mem2.avx512bw mem -t 10` | 4.17s | 16.57s | 0.53s | 387,504 KB |
 
 Interpretation:
 
 - These timings exclude index construction.
-- Rust and upstream SAM bodies are byte-identical for both `-t 1` and `-t 2`, ignoring header command-line differences.
-- Older benchmark notes used a smaller/different setup and should not be compared directly to this full-fixture result.
+- Rust and upstream SAM bodies were byte-identical, ignoring header command-line differences.
+- The Rust CLI sets `MALLOC_ARENA_MAX=1` by re-execing itself on Linux when the user has not set that environment variable. This was needed to make glibc arena behavior match the observed retained RSS of the translated paired-end SAM path.
+- Older benchmark notes used different fixtures and should not be compared directly to this result.
 - Re-run locally with `scripts/benchmark-real-data.sh`; it emits `.tmp/real_bench/report.tsv` when the upstream C++ binary is available.
 
 ## Index Generation Speed Comparison
