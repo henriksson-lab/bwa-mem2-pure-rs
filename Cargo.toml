@@ -14,6 +14,7 @@ include = [
     "/README.md",
     "/LICENSE",
     "/src/lib.rs",
+    "/src/bin/bwa-mem2-rs.rs",
     "/src/mem_api.rs",
     "/src/output.rs",
     "/src/support.rs",
