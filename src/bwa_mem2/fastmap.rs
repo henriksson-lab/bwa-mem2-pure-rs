@@ -13,7 +13,7 @@ use crate::bwa_mem2::bwa::{
     bseq1_t, bseq_classify, bseq_read_orig, bwa_fill_scmat, bwa_insert_header, bwa_print_sam_hdr,
     bwa_set_rg, BWA_VERBOSE,
 };
-use crate::bwa_mem2::bwamem::{mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t};
+use crate::bwa_mem2::bwamem::{debug_rss, mem_opt_t, mem_pestat_t, mem_process_seqs, worker_t};
 use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::bwa_mem2::kseq::kseq_t;
 use crate::bwa_mem2::utils::{err_fclose, err_fwrite, err_xopen_core_lit, ErrFile};
@@ -527,6 +527,7 @@ fn read_batch(aux: &mut ktp_aux_t) -> Option<ktp_data_t> {
             seq.comment = None;
         }
     }
+    debug_rss("after_read_batch");
     Some(ret)
 }
 
@@ -537,6 +538,7 @@ fn process_batch(
     pes0: Option<&[mem_pestat_t; 4]>,
     w: &mut worker_t,
 ) {
+    debug_rss("process_batch_start");
     if opt.flag & MEM_F_SMARTPE != 0 {
         let n_batch = batch.n_seqs.max(0) as usize;
         let all_adjacent_pairs = n_batch % 2 == 0
@@ -555,6 +557,7 @@ fn process_batch(
                 pes0,
                 w,
             );
+            debug_rss("process_batch_after_mem_process");
             batch.sam_lines.clear();
             for seq in &mut batch.seqs {
                 if let Some(sam) = seq.sam.take() {
@@ -562,6 +565,7 @@ fn process_batch(
                 }
             }
             batch.seqs = Vec::new();
+            debug_rss("process_batch_after_sam_extract");
             return;
         }
 
@@ -619,6 +623,7 @@ fn process_batch(
         }
     } else {
         mem_process_seqs(opt, n_processed, batch.n_seqs, &mut batch.seqs, pes0, w);
+        debug_rss("process_batch_after_mem_process");
 
         batch.sam_lines.clear();
         batch.sam_lines.reserve(batch.seqs.len());
@@ -631,9 +636,11 @@ fn process_batch(
     // The write stage only needs sam_lines. Releasing the read-record Vec here avoids carrying
     // its large default-K allocation through output while the reader/compute stages advance.
     batch.seqs = Vec::new();
+    debug_rss("process_batch_end");
 }
 
 fn write_batch(batch: &mut ktp_data_t, fp: &mut ErrFile) {
+    debug_rss("write_batch_start");
     let mut buf = Vec::with_capacity(1 << 20);
     for sam in batch.sam_lines.drain(..) {
         if buf.len() + sam.len() > (1 << 20) && !buf.is_empty() {
@@ -645,6 +652,7 @@ fn write_batch(batch: &mut ktp_data_t, fp: &mut ErrFile) {
     if !buf.is_empty() {
         err_fwrite(&buf, 1, buf.len(), fp);
     }
+    debug_rss("write_batch_end");
 }
 
 /// Issue an x86 cpuid for leaf `i` (sub-leaf 0).
@@ -729,10 +737,11 @@ pub fn memory_alloc(aux: &ktp_aux_t, w: &mut worker_t, nreads: i32, nthreads: i3
     // chunk, but the worker only initializes/touches the actual batch prefix.
     w.regs = Vec::with_capacity(mem_size);
     w.chain_ar = Vec::with_capacity(mem_size);
-    // The faithful Rust chaining path stores seeds in each mem_chain_t. The old C++ seedBuf
-    // backing allocation is no longer read by mem_chain_seeds, so allocating it only inflates RSS.
-    w.seedBufSize = 0;
-    w.seedBuf.clear();
+    let seed_cap = mem_size.saturating_mul(AVG_SEEDS_PER_READ);
+    w.seedBuf = Vec::with_capacity(seed_cap);
+    w.seedBufSize =
+        i64::try_from(crate::bwa_mem2::r#macro::BATCH_SIZE.saturating_mul(AVG_SEEDS_PER_READ))
+            .expect("seedBufSize");
 
     let nthreads_usize = usize::try_from(nthreads.max(1)).expect("nthreads");
     let wsize = crate::bwa_mem2::r#macro::BATCH_SIZE * SEEDS_PER_READ;
@@ -1691,7 +1700,11 @@ mod tests {
         assert_eq!(w.chain_ar.len(), 0);
         assert_eq!(w.chain_ar.capacity(), 3);
         assert_eq!(w.seedBuf.len(), 0);
-        assert_eq!(w.seedBufSize, 0);
+        assert_eq!(w.seedBuf.capacity(), 3 * super::AVG_SEEDS_PER_READ);
+        assert_eq!(
+            w.seedBufSize,
+            i64::try_from(BATCH_SIZE * super::AVG_SEEDS_PER_READ).expect("seedBufSize")
+        );
 
         assert_eq!(w.mmc.seqBufLeftRef.len(), 2);
         assert_eq!(w.mmc.seqBufLeftRef[0].len(), 0);

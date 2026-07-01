@@ -2,6 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
+* 2026-06-01: Large improvements in RSS and speed for the paired-end case. Especially fixed large memory use for large inputs
 * 2026-05-31: new audit; many edge cases now handled better
 * 2026-05-15: the `bwa-mem2-rs` binary can be built with mimalloc for about 10% better wall time
 * 2026-04-30: Index generation now as fast as original

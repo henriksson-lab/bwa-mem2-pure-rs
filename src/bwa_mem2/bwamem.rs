@@ -107,6 +107,7 @@ pub struct mem_cache {
     pub seqBufRightRef: Vec<Vec<u8>>,
     pub seqBufLeftQer: Vec<Vec<u8>>,
     pub seqBufRightQer: Vec<Vec<u8>>,
+    pub aln: Vec<Vec<kswr_t>>,
     pub matchArray: Vec<Vec<SMEM>>,
     pub min_intv_ar: Vec<Vec<i32>>,
     pub rid: Vec<Vec<i32>>,
@@ -132,7 +133,131 @@ pub struct mem_chain_t {
     pub is_alt: u32,
     pub frac_rep: f32,
     pub pos: i64,
-    pub seeds: Vec<mem_seed_t>,
+    pub seeds: ChainSeeds,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ChainSeeds {
+    ptr: *mut mem_seed_t,
+    overflow: Vec<mem_seed_t>,
+}
+
+unsafe impl Send for ChainSeeds {}
+unsafe impl Sync for ChainSeeds {}
+
+impl PartialEq for ChainSeeds {
+    fn eq(&self, other: &Self) -> bool {
+        if self.ptr == other.ptr && self.overflow.is_empty() && other.overflow.is_empty() {
+            true
+        } else {
+            self.overflow == other.overflow
+        }
+    }
+}
+
+impl ChainSeeds {
+    #[inline]
+    fn arena(ptr: *mut mem_seed_t) -> Self {
+        Self {
+            ptr,
+            overflow: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn from_owned(seeds: Vec<mem_seed_t>) -> Self {
+        Self {
+            ptr: std::ptr::null_mut(),
+            overflow: seeds,
+        }
+    }
+
+    #[inline]
+    fn is_overflow(&self) -> bool {
+        !self.overflow.is_empty()
+    }
+
+    #[inline]
+    fn as_slice(&self, n: usize) -> &[mem_seed_t] {
+        if self.is_overflow() || self.ptr.is_null() {
+            &self.overflow[..n.min(self.overflow.len())]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.ptr, n) }
+        }
+    }
+
+    #[inline]
+    fn as_mut_slice(&mut self, n: usize) -> &mut [mem_seed_t] {
+        if self.is_overflow() || self.ptr.is_null() {
+            let len = n.min(self.overflow.len());
+            &mut self.overflow[..len]
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(self.ptr, n) }
+        }
+    }
+
+    #[inline]
+    fn first(&self) -> &mem_seed_t {
+        &self.as_slice(1)[0]
+    }
+
+    #[inline]
+    fn get(&self, idx: usize, n: usize) -> &mem_seed_t {
+        &self.as_slice(n)[idx]
+    }
+
+    #[inline]
+    fn get_mut(&mut self, idx: usize, n: usize) -> &mut mem_seed_t {
+        &mut self.as_mut_slice(n)[idx]
+    }
+
+    #[inline]
+    fn grow_from_arena(&mut self, n: usize, new_cap: usize) {
+        if self.is_overflow() {
+            if self.overflow.capacity() < new_cap {
+                self.overflow.reserve(new_cap - self.overflow.capacity());
+            }
+            return;
+        }
+        let mut owned = Vec::with_capacity(new_cap);
+        owned.extend_from_slice(self.as_slice(n));
+        self.overflow = owned;
+        self.ptr = std::ptr::null_mut();
+    }
+
+    #[inline]
+    fn push_or_set(&mut self, used: usize, n: usize, seed: mem_seed_t) {
+        if self.is_overflow() || self.ptr.is_null() {
+            if used == self.overflow.len() {
+                self.overflow.push(seed);
+            } else {
+                self.overflow[used] = seed;
+            }
+        } else {
+            unsafe {
+                *self.ptr.add(used) = seed;
+            }
+            let _ = n;
+        }
+    }
+
+    #[inline]
+    fn iter(&self, n: usize) -> std::slice::Iter<'_, mem_seed_t> {
+        self.as_slice(n).iter()
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.overflow.len()
+    }
+}
+
+impl std::ops::Index<usize> for ChainSeeds {
+    type Output = mem_seed_t;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.overflow[index]
+    }
 }
 
 #[doc = "Original struct: mem_chain_v (bwa-mem2/src/bwamem.h)"]
@@ -292,7 +417,7 @@ const MAX_SEQ_LEN8: usize = 128;
 const MAX_SEQ_LEN16: usize = 32768;
 const MAX_BAND_TRY: i32 = 2;
 const H0_: i32 = -99;
-const AVG_SEEDS_PER_READ: usize = 64;
+pub const AVG_SEEDS_PER_READ: usize = 64;
 const MEM_MAPQ_COEF: f64 = 30.0;
 const MEM_MAPQ_MAX: i32 = 60;
 pub const MEM_F_PE: i32 = 0x2;
@@ -354,20 +479,15 @@ const KEEP_REG_CAP: usize = 16;
 const KEEP_CHAIN_CAP: usize = 16;
 
 #[inline]
-fn take_seeds_buf() -> Vec<mem_seed_t> {
-    Vec::with_capacity(SEEDS_PER_CHAIN)
-}
-
-#[inline]
-fn return_seeds_buf(_buf: Vec<mem_seed_t>) {
-    // C++ frees only overflow chain seed buffers; regular seedBuf-backed chains are batch-local.
+fn take_seeds_buf(seed_buf: *mut mem_seed_t, seed_buf_count: &mut usize) -> ChainSeeds {
+    let ptr = unsafe { seed_buf.add(*seed_buf_count) };
+    *seed_buf_count += SEEDS_PER_CHAIN;
+    ChainSeeds::arena(ptr)
 }
 
 #[inline]
 fn clear_chain_a_pooled(v: &mut Vec<mem_chain_t>, keep_cap: usize) {
-    for c in v.drain(..) {
-        return_seeds_buf(c.seeds);
-    }
+    v.clear();
     if v.capacity() > keep_cap {
         v.shrink_to(keep_cap);
     }
@@ -378,6 +498,24 @@ fn trim_allocator_rss() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
         libc::malloc_trim(0);
+    }
+}
+
+pub(crate) fn debug_rss(label: &str) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("BWA_DEBUG_RSS").is_some()) {
+        return;
+    }
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        let rss = status
+            .lines()
+            .find(|line| line.starts_with("VmRSS:"))
+            .unwrap_or("VmRSS:\t?");
+        let hwm = status
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .unwrap_or("VmHWM:\t?");
+        eprintln!("[rss::{label}] {rss}; {hwm}");
     }
 }
 
@@ -534,6 +672,7 @@ fn ensure_mem_cache_thread_slots(mmc: &mut mem_cache, nthreads: usize) {
     mmc.seqPairArrayAux.resize_with(nthreads, Vec::new);
     mmc.seqPairArrayLeft128.resize_with(nthreads, Vec::new);
     mmc.seqPairArrayRight128.resize_with(nthreads, Vec::new);
+    mmc.aln.resize_with(nthreads, Vec::new);
     mmc.wsize.resize(nthreads, 0);
 
     mmc.wsize_mem.resize(nthreads, 0);
@@ -628,12 +767,12 @@ fn run_worker_bwt_aln_chunks_parallel(worker: &mut worker_t, n: i32) {
 
 #[inline(always)]
 fn chn_beg(ch: &mem_chain_t) -> i32 {
-    ch.seeds[0].qbeg
+    ch.seeds.first().qbeg
 }
 
 #[inline(always)]
 fn chn_end(ch: &mem_chain_t) -> i32 {
-    let last = &ch.seeds[(ch.n - 1) as usize];
+    let last = ch.seeds.get((ch.n - 1) as usize, ch.n as usize);
     last.qbeg + last.len
 }
 
@@ -643,7 +782,7 @@ fn recompute_seedcov_for_aln(chain: &mem_chain_t, a: &mut mem_alnreg_t) {
         return;
     }
     a.seedcov = 0;
-    for t in chain.seeds.iter().take(chain.n as usize) {
+    for t in chain.seeds.iter(chain.n as usize) {
         if t.qbeg >= a.qb
             && t.qbeg + t.len <= a.qe
             && t.rbeg >= a.rb
@@ -1278,22 +1417,23 @@ pub fn test_and_merge(
     seed_rid: i32,
     _tid: i32,
 ) -> i32 {
-    let last = &c.seeds[(c.n - 1) as usize];
+    let last = *c.seeds.get((c.n - 1) as usize, c.n as usize);
     let qend = last.qbeg + last.len;
     let rend = last.rbeg + i64::from(last.len);
 
     if seed_rid != c.rid {
         return 0; // different chr; request a new chain
     }
-    if p.qbeg >= c.seeds[0].qbeg
+    let first = *c.seeds.first();
+    if p.qbeg >= first.qbeg
         && p.qbeg + p.len <= qend
-        && p.rbeg >= c.seeds[0].rbeg
+        && p.rbeg >= first.rbeg
         && p.rbeg + i64::from(p.len) <= rend
     {
         return 1; // contained seed; do nothing
     }
 
-    if (last.rbeg < l_pac || c.seeds[0].rbeg < l_pac) && p.rbeg >= l_pac {
+    if (last.rbeg < l_pac || first.rbeg < l_pac) && p.rbeg >= l_pac {
         return 0; // don't chain if on different strand
     }
 
@@ -1309,16 +1449,10 @@ pub fn test_and_merge(
         if c.n == c.m {
             c.m <<= 1;
             let want = c.m as usize;
-            if c.seeds.capacity() < want {
-                c.seeds.reserve(want - c.seeds.capacity());
-            }
+            c.seeds.grow_from_arena(c.n as usize, want);
         }
         let used = c.n as usize;
-        if used == c.seeds.len() {
-            c.seeds.push(*p);
-        } else {
-            c.seeds[used] = *p;
-        }
+        c.seeds.push_or_set(used, c.n as usize, *p);
         c.n += 1;
         return 1;
     }
@@ -1428,7 +1562,7 @@ pub fn mem_chain_weight(c: &mem_chain_t) -> i32 {
     let n_usize = c.n as usize; // c.n is i32 ≥ 0, fits in usize.
     let mut end = 0_i64;
     let mut w = 0_i64;
-    for s in c.seeds.iter().take(n_usize) {
+    for s in c.seeds.iter(n_usize) {
         if i64::from(s.qbeg) >= end {
             w += i64::from(s.len);
         } else if i64::from(s.qbeg + s.len) > end {
@@ -1439,7 +1573,7 @@ pub fn mem_chain_weight(c: &mem_chain_t) -> i32 {
     let tmp = w;
     end = 0;
     w = 0;
-    for s in c.seeds.iter().take(n_usize) {
+    for s in c.seeds.iter(n_usize) {
         if s.rbeg >= end {
             w += i64::from(s.len);
         } else if s.rbeg + i64::from(s.len) > end {
@@ -1599,7 +1733,7 @@ pub fn mem_print_chain(bns: &bntseq_t, chn: &[mem_chain_t]) -> String {
             p.n,
             mem_chain_weight(p)
         ));
-        for seed in p.seeds.iter().take(usize::try_from(p.n).expect("p.n")) {
+        for seed in p.seeds.iter(usize::try_from(p.n).expect("p.n")) {
             let mut is_rev = 0;
             let mut pos = bns_depos(bns, seed.rbeg, &mut is_rev);
             if is_rev != 0 {
@@ -1672,7 +1806,7 @@ pub fn mem_flt_chained_seeds(
             let mut kept = cell.borrow_mut();
             kept.clear();
             kept.reserve(c_n_usize);
-            for mut s in c.seeds.iter().take(c_n_usize).copied() {
+            for mut s in c.seeds.iter(c_n_usize).copied() {
                 s.score = mem_seed_sw(opt, bns, pac, l_query, query, &s);
                 if s.score < 0 || s.score >= min_hsp_score {
                     s.score = if s.score < 0 { s.len * opt.a } else { s.score };
@@ -1680,7 +1814,12 @@ pub fn mem_flt_chained_seeds(
                 }
             }
             c.n = kept.len() as i32;
-            for (dst, src) in c.seeds.iter_mut().zip(kept.iter().copied()) {
+            for (dst, src) in c
+                .seeds
+                .as_mut_slice(c_n_usize)
+                .iter_mut()
+                .zip(kept.iter().copied())
+            {
                 *dst = src;
             }
         });
@@ -1712,9 +1851,6 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
             c.w = mem_chain_weight(&c) as u32;
             if (c.w as i32) >= opt.min_chain_weight {
                 filtered.push(c);
-            } else {
-                // Chain is being dropped — pool its seeds Vec for reuse.
-                return_seeds_buf(c.seeds);
             }
         }
         a_.clear();
@@ -1815,8 +1951,6 @@ pub fn mem_chain_flt(opt: &mem_opt_t, n_chn_: i32, a_: &mut Vec<mem_chain_t>, _t
             for c in group.drain(..) {
                 if c.kept != 0 {
                     result.push(c);
-                } else {
-                    return_seeds_buf(c.seeds);
                 }
             }
         }
@@ -2007,8 +2141,8 @@ pub fn mem_chain_seeds(
     nseq: i32,
     tid: i32,
     chain_ar: &mut [mem_chain_v],
-    _seedBuf: &mut [mem_seed_t],
-    _seedBufSize: i64,
+    seedBuf: *mut mem_seed_t,
+    seedBufSize: i64,
     matchArray: &[SMEM],
     num_smem: i64,
 ) {
@@ -2263,6 +2397,8 @@ pub fn mem_chain_seeds(
 
     let mut pos = 0_i64;
     let mut smem_ptr = 0_usize;
+    let mut seed_buf_count = 0_usize;
+    let seed_buf_size = seedBufSize.max(0) as usize;
     let l_pac = bns.l_pac;
     let mut smem_buf_size = 6000_i64;
     let mut sa_coord = Vec::new();
@@ -2382,8 +2518,13 @@ pub fn mem_chain_seeds(
                         // add the seed as a new chain
                         tmp.n = 1;
                         tmp.m = SEEDS_PER_CHAIN as i32;
-                        tmp.seeds = take_seeds_buf();
-                        tmp.seeds.push(s);
+                        if seed_buf_count + SEEDS_PER_CHAIN <= seed_buf_size {
+                            tmp.seeds = take_seeds_buf(seedBuf, &mut seed_buf_count);
+                            tmp.seeds.push_or_set(0, 0, s);
+                        } else {
+                            tmp.m += 1;
+                            tmp.seeds = ChainSeeds::from_owned(vec![s]);
+                        }
                         tmp.rid = rid;
                         tmp.seqid = l as i32;
                         tmp.is_alt = u32::from(bns.anns[rid as usize].is_alt != 0);
@@ -2420,7 +2561,7 @@ pub fn mem_kernel1_core(
     seq_: &[bseq1_t],
     nseq: i32,
     chain_ar: &mut [mem_chain_v],
-    seedBuf: &mut [mem_seed_t],
+    seedBuf: *mut mem_seed_t,
     seedBufSize: i64,
     mmc: &mut mem_cache,
     tid: i32,
@@ -2709,14 +2850,28 @@ pub fn worker_bwt(data: &mut worker_t, seq_id: i32, batch_size: i32, tid: i32) {
             }
         }
     }
+    let seed_buf_size = if batch_size < BATCH_SIZE as i32 {
+        (data.nreads - seq_id).max(0) as i64 * AVG_SEEDS_PER_READ as i64
+    } else {
+        data.seedBufSize
+    };
+    let seed_buf = if data.seedBuf.capacity() == 0 {
+        std::ptr::null_mut()
+    } else {
+        unsafe {
+            data.seedBuf
+                .as_mut_ptr()
+                .add(seq_start.saturating_mul(AVG_SEEDS_PER_READ))
+        }
+    };
     mem_kernel1_core(
         fmi,
         opt,
         &data.seqs[seq_start..seq_start + batch],
         batch_size,
         &mut data.chain_ar[seq_start..seq_start + batch],
-        &mut [],
-        data.seedBufSize,
+        seed_buf,
+        seed_buf_size,
         &mut data.mmc,
         tid,
     );
@@ -2824,7 +2979,9 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
 
         let pcnt8 = sort_classify(&mut data.mmc, i64::from(pcnt), tid) as i32;
         let aln_len = (pcnt + 256) as usize;
-        let mut aln = vec![kswr_t::default(); aln_len];
+        let mut aln = std::mem::take(&mut data.mmc.aln[tid_usize]);
+        aln.clear();
+        aln.resize(aln_len, kswr_t::default());
         mem_sam_pe_batch(
             opt,
             &mut data.mmc,
@@ -2875,20 +3032,15 @@ pub fn worker_sam(data: &mut worker_t, seqid: i32, batch_size: i32, tid: i32) {
             seq_pair[1].seq = None;
             seq_pair[1].qual = None;
         }
+        aln.clear();
+        data.mmc.aln[tid_usize] = aln;
         data.mmc.seqPairArrayAux[tid_usize].clear();
-        data.mmc.seqPairArrayAux[tid_usize].shrink_to(0);
         data.mmc.seqPairArrayLeft128[tid_usize].clear();
-        data.mmc.seqPairArrayLeft128[tid_usize].shrink_to(0);
         data.mmc.seqPairArrayRight128[tid_usize].clear();
-        data.mmc.seqPairArrayRight128[tid_usize].shrink_to(0);
         data.mmc.seqBufLeftRef[tid_usize].clear();
-        data.mmc.seqBufLeftRef[tid_usize].shrink_to(0);
         data.mmc.seqBufLeftQer[tid_usize].clear();
-        data.mmc.seqBufLeftQer[tid_usize].shrink_to(0);
         data.mmc.seqBufRightRef[tid_usize].clear();
-        data.mmc.seqBufRightRef[tid_usize].shrink_to(0);
         data.mmc.seqBufRightQer[tid_usize].clear();
-        data.mmc.seqBufRightQer[tid_usize].shrink_to(0);
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -2959,6 +3111,7 @@ pub fn mem_process_seqs(
     w.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
     ensure_mem_cache_thread_slots(&mut w.mmc, w.nthreads.max(1) as usize);
     w.seqs = std::mem::take(seqs);
+    debug_rss("mem_process_after_take_seqs");
     let n_usize = n.max(0) as usize;
     if w.regs.len() < n_usize {
         w.regs.resize(n_usize, mem_alnreg_v::default());
@@ -2966,8 +3119,16 @@ pub fn mem_process_seqs(
     if w.chain_ar.len() < n_usize {
         w.chain_ar.resize(n_usize, mem_chain_v::default());
     }
-    w.seedBuf.clear();
-    w.seedBufSize = 0;
+    let min_seed_cap = n_usize.saturating_mul(AVG_SEEDS_PER_READ);
+    if w.seedBuf.capacity() < min_seed_cap {
+        w.seedBuf
+            .reserve(min_seed_cap.saturating_sub(w.seedBuf.capacity()));
+    }
+    if w.seedBufSize <= 0 {
+        w.seedBufSize =
+            i64::try_from(BATCH_SIZE.saturating_mul(AVG_SEEDS_PER_READ)).expect("seedBufSize");
+    }
+    debug_rss("mem_process_after_worker_buffers");
     w.nreads = n;
     if w.ref_string.is_empty() {
         let fmi = w.fmi.as_ref().expect("worker fmi missing");
@@ -2993,6 +3154,7 @@ pub fn mem_process_seqs(
             std::time::Instant::now()
         };
         let t2 = std::time::Instant::now();
+        debug_rss("mem_process_after_bwt_aln");
         // PAIRED_END: infer insert sizes if not provided
         if let Some(pes0) = pes0 {
             // if pes0 != NULL, set the insert-size distribution as pes0
@@ -3035,9 +3197,11 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
             }
         }
         let t3 = std::time::Instant::now();
+        debug_rss("mem_process_after_pestat");
         // kt_for(worker_sam, ...) // SAM
         run_worker_chunks_parallel(w, n_, worker_sam);
         trim_allocator_rss();
+        debug_rss("mem_process_after_sam");
         if timing {
             let t4 = std::time::Instant::now();
             eprintln!(
@@ -3067,6 +3231,7 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         };
         run_worker_chunks_parallel(w, n_, worker_sam);
         trim_allocator_rss();
+        debug_rss("mem_process_after_sam");
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
@@ -3080,6 +3245,7 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
         }
     }
     *seqs = std::mem::take(&mut w.seqs);
+    debug_rss("mem_process_after_return_seqs");
 }
 
 /// Core loop of single-end primary marking (similar to the inner loop in `mem_chain_flt`).
@@ -4329,15 +4495,16 @@ pub fn mem_chain2aln_across_reads_v2(
             let mut rmax1 = 0_i64;
             let seed_order_start = sorted_seed_indices.len();
             let seed_count = c.n as usize; // c.n is i32 ≥ 0.
+            let seeds = c.seeds.as_slice(seed_count);
             sorted_seed_indices.extend((0..seed_count).map(|idx| {
-                let score = c.seeds[idx].score as u32;
+                let score = seeds[idx].score as u32;
                 (u64::from(score) << 32) | (idx as u64)
             }));
             sorted_seed_indices[seed_order_start..seed_order_start + seed_count].sort_unstable();
             sorted_seed_ranges[l].push((seed_order_start, seed_count));
             let seed_order = &sorted_seed_indices[seed_order_start..seed_order_start + seed_count];
 
-            for t in c.seeds.iter().take(seed_count) {
+            for t in seeds {
                 let b = t.rbeg - i64::from(t.qbeg + cal_max_gap(opt, t.qbeg));
                 let e = t.rbeg
                     + i64::from(t.len)
@@ -4350,7 +4517,7 @@ pub fn mem_chain2aln_across_reads_v2(
             rmax0 = rmax0.max(0);
             rmax1 = rmax1.min(l_pac << 1);
             if rmax0 < l_pac && l_pac < rmax1 {
-                if c.seeds[0].rbeg < l_pac {
+                if seeds[0].rbeg < l_pac {
                     rmax1 = l_pac;
                 } else {
                     rmax0 = l_pac;
@@ -4365,7 +4532,7 @@ pub fn mem_chain2aln_across_reads_v2(
                 bns,
                 pac,
                 &mut fetch_beg,
-                c.seeds[0].rbeg,
+                seeds[0].rbeg,
                 &mut fetch_end,
                 &mut rid,
                 ref_string,
@@ -4375,7 +4542,7 @@ pub fn mem_chain2aln_across_reads_v2(
 
             for &seed_key in seed_order.iter().rev() {
                 let seed_idx = seed_key as u32;
-                let s = &mut c.seeds[seed_idx as usize];
+                let s = c.seeds.get_mut(seed_idx as usize, seed_count);
                 let aln_idx = av.n;
                 av.n += 1;
                 let a = &mut av.a[aln_idx];
@@ -4825,7 +4992,7 @@ pub fn mem_chain2aln_across_reads_v2(
                     continue;
                 }
                 let seed_idx = seed_key as u32;
-                let s = &c.seeds[seed_idx as usize];
+                let s = c.seeds.get(seed_idx as usize, c.n as usize);
                 let mut v = 0_i32;
                 // test whether extension has been made before
                 for p in av.a.iter().take(av.n) {
@@ -4876,7 +5043,7 @@ pub fn mem_chain2aln_across_reads_v2(
                             continue;
                         }
                         let next_seed_idx = next_seed_key as u32;
-                        let t = &c.seeds[next_seed_idx as usize];
+                        let t = c.seeds.get(next_seed_idx as usize, c.n as usize);
                         // only check overlapping if t is long enough;
                         // TODO: more efficient by early stopping
                         if f64::from(t.len) < f64::from(s.len) * 0.95 {
@@ -4982,7 +5149,7 @@ mod tests {
             n: 1,
             m: 1,
             rid,
-            seeds: vec![seed],
+            seeds: ChainSeeds::from_owned(vec![seed]),
             ..Default::default()
         }
     }
@@ -5287,8 +5454,7 @@ mod tests {
                         c.kept,
                         c.n,
                         c.seeds
-                            .iter()
-                            .take(usize::try_from(c.n).expect("c.n"))
+                            .iter(usize::try_from(c.n).expect("c.n"))
                             .map(|s| (s.qbeg, s.len, s.rbeg, s.score))
                             .collect::<Vec<_>>(),
                     )
@@ -5335,7 +5501,7 @@ mod tests {
             2,
             0,
             &mut chain_ar,
-            &mut seed_buf,
+            seed_buf.as_mut_ptr(),
             seed_buf_len,
             &match_array,
             num_smem,
@@ -5386,8 +5552,7 @@ mod tests {
                         c.w,
                         c.n,
                         c.seeds
-                            .iter()
-                            .take(usize::try_from(c.n).expect("c.n"))
+                            .iter(usize::try_from(c.n).expect("c.n"))
                             .map(|s| (s.qbeg, s.len, s.rbeg, s.score))
                             .collect::<Vec<_>>(),
                     )
@@ -5999,7 +6164,7 @@ mod tests {
     fn mem_chain_weight_uses_minimum_non_overlapping_span_on_query_and_ref() {
         let chain = mem_chain_t {
             n: 3,
-            seeds: vec![
+            seeds: ChainSeeds::from_owned(vec![
                 mem_seed_t {
                     qbeg: 0,
                     rbeg: 10,
@@ -6018,7 +6183,7 @@ mod tests {
                     len: 4,
                     ..Default::default()
                 },
-            ],
+            ]),
             ..Default::default()
         };
         assert_eq!(mem_chain_weight(&chain), 12);
@@ -6039,13 +6204,13 @@ mod tests {
         let chain = mem_chain_t {
             rid: 0,
             n: 1,
-            seeds: vec![mem_seed_t {
+            seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                 score: 7,
                 len: 5,
                 qbeg: 3,
                 rbeg: 20,
                 ..Default::default()
-            }],
+            }]),
             ..Default::default()
         };
         assert_eq!(
@@ -6079,7 +6244,7 @@ mod tests {
         let mut chains = vec![mem_chain_t {
             seqid: 0,
             n: 2,
-            seeds: vec![
+            seeds: ChainSeeds::from_owned(vec![
                 mem_seed_t {
                     rbeg: 2,
                     qbeg: 2,
@@ -6093,7 +6258,7 @@ mod tests {
                     score: 0,
                     ..Default::default()
                 },
-            ],
+            ]),
             ..Default::default()
         }];
         mem_flt_chained_seeds(&opt, &bns, &pac, &seqs, 1, &mut chains);
@@ -6110,23 +6275,23 @@ mod tests {
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t {
+                seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                     qbeg: 0,
                     rbeg: 0,
                     len: 5,
                     ..Default::default()
-                }],
+                }]),
                 ..Default::default()
             },
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t {
+                seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                     qbeg: 10,
                     rbeg: 10,
                     len: 12,
                     ..Default::default()
-                }],
+                }]),
                 ..Default::default()
             },
         ];
@@ -6148,7 +6313,7 @@ mod tests {
             mem_chain_t {
                 seqid: 0,
                 n: 2,
-                seeds: vec![
+                seeds: ChainSeeds::from_owned(vec![
                     mem_seed_t {
                         qbeg: 0,
                         rbeg: 0,
@@ -6161,18 +6326,18 @@ mod tests {
                         len: 10,
                         ..Default::default()
                     },
-                ],
+                ]),
                 ..Default::default()
             },
             mem_chain_t {
                 seqid: 0,
                 n: 1,
-                seeds: vec![mem_seed_t {
+                seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                     qbeg: 5,
                     rbeg: 5,
                     len: 10,
                     ..Default::default()
-                }],
+                }]),
                 ..Default::default()
             },
         ];
@@ -6367,7 +6532,7 @@ mod tests {
             i32::try_from(seqs.len()).expect("nseq"),
             0,
             &mut chain_ar,
-            &mut seed_buf,
+            seed_buf.as_mut_ptr(),
             128,
             &match_array,
             tot_smem,
@@ -6379,10 +6544,7 @@ mod tests {
                 assert!(c.n > 0);
                 assert_eq!(
                     usize::try_from(c.n).expect("c.n"),
-                    c.seeds
-                        .iter()
-                        .take(usize::try_from(c.n).expect("n"))
-                        .count()
+                    c.seeds.iter(usize::try_from(c.n).expect("n")).count()
                 );
                 assert!(c.rid >= 0);
             }
@@ -6443,7 +6605,7 @@ mod tests {
             &seqs,
             i32::try_from(seqs.len()).expect("nseq"),
             &mut chain_ar,
-            &mut seed_buf,
+            seed_buf.as_mut_ptr(),
             seed_buf_len,
             &mut mmc,
             0,
@@ -6659,13 +6821,13 @@ mod tests {
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t {
+            seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                 qbeg: 1,
                 rbeg: 2,
                 len: 3,
                 score: 3,
                 ..Default::default()
-            }],
+            }]),
             ..Default::default()
         };
         let mut chain_ar = vec![mem_chain_v {
@@ -6736,13 +6898,13 @@ mod tests {
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t {
+            seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                 qbeg: 33,
                 rbeg: 100,
                 len: 117,
                 score: 117,
                 ..Default::default()
-            }],
+            }]),
             ..Default::default()
         };
         let chain1 = mem_chain_t {
@@ -6750,7 +6912,7 @@ mod tests {
             rid: 0,
             n: 2,
             m: 2,
-            seeds: vec![
+            seeds: ChainSeeds::from_owned(vec![
                 mem_seed_t {
                     qbeg: 0,
                     rbeg: 200,
@@ -6765,7 +6927,7 @@ mod tests {
                     score: 41,
                     ..Default::default()
                 },
-            ],
+            ]),
             ..Default::default()
         };
         let mut chain_ar = vec![mem_chain_v {
@@ -6836,13 +6998,13 @@ mod tests {
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t {
+            seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                 qbeg: 1,
                 rbeg: 2,
                 len: 3,
                 score: 3,
                 ..Default::default()
-            }],
+            }]),
             ..Default::default()
         };
         let mut chain_ar = vec![mem_chain_v {
@@ -6996,13 +7158,13 @@ mod tests {
             rid: 0,
             n: 1,
             m: 1,
-            seeds: vec![mem_seed_t {
+            seeds: ChainSeeds::from_owned(vec![mem_seed_t {
                 qbeg: 1,
                 rbeg: 2,
                 len: 3,
                 score: 3,
                 ..Default::default()
-            }],
+            }]),
             ..Default::default()
         };
         let opt = mem_opt_init();

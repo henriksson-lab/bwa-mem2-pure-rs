@@ -882,7 +882,7 @@ pub fn mem_sam_pe(
                     // Take XA from xa rather than clone — xa goes out of scope at the end of
                     // this block so the take is safe.
                     h[i].XA = std::mem::take(&mut xa[i][zi]);
-                    aa[i].push(h[i].clone());
+                    aa[i].push(std::mem::take(&mut h[i]));
                     // the read has ALT hits
                     if (n_pri[i] as usize) < a[i].n {
                         let p = &a[i].a[n_pri[i] as usize];
@@ -897,7 +897,7 @@ pub fn mem_sam_pe(
                             );
                             g[i].flag |= 0x800 | (0x40 << i) | extra_flag;
                             g[i].XA = std::mem::take(&mut xa[i][n_pri[i] as usize]);
-                            aa[i].push(g[i].clone());
+                            aa[i].push(std::mem::take(&mut g[i]));
                         }
                     }
                 }
@@ -913,7 +913,7 @@ pub fn mem_sam_pe(
                         aa[0].len() as i32,
                         &aa[0],
                         i as i32,
-                        Some(&h[1]),
+                        aa[1].first(),
                     );
                 }
                 s[0].sam = Some(take_kstring_boxed(&mut str_));
@@ -926,7 +926,7 @@ pub fn mem_sam_pe(
                         aa[1].len() as i32,
                         &aa[1],
                         i as i32,
-                        Some(&h[0]),
+                        aa[0].first(),
                     );
                 }
                 s[1].sam = Some(take_kstring_boxed(&mut str_));
@@ -1511,7 +1511,7 @@ pub fn mem_sam_pe_batch_post(
                     // Take XA from xa rather than clone — xa goes out of scope at the end of
                     // this block so the take is safe.
                     h[i].XA = std::mem::take(&mut xa[i][zi]);
-                    aa[i].push(h[i].clone());
+                    aa[i].push(std::mem::take(&mut h[i]));
                     // the read has ALT hits
                     if (n_pri[i] as usize) < a[i].n {
                         let p = &a[i].a[n_pri[i] as usize];
@@ -1526,7 +1526,7 @@ pub fn mem_sam_pe_batch_post(
                             );
                             g[i].flag |= 0x800 | (0x40 << i) | extra_flag;
                             g[i].XA = std::mem::take(&mut xa[i][n_pri[i] as usize]);
-                            aa[i].push(g[i].clone());
+                            aa[i].push(std::mem::take(&mut g[i]));
                         }
                     }
                 }
@@ -1542,7 +1542,7 @@ pub fn mem_sam_pe_batch_post(
                         aa[0].len() as i32,
                         &aa[0],
                         i as i32,
-                        Some(&h[1]),
+                        aa[1].first(),
                     );
                 }
                 s[0].sam = Some(take_kstring_boxed(&mut str_));
@@ -1555,7 +1555,7 @@ pub fn mem_sam_pe_batch_post(
                         aa[1].len() as i32,
                         &aa[1],
                         i as i32,
-                        Some(&h[0]),
+                        aa[0].first(),
                     );
                 }
                 s[1].sam = Some(take_kstring_boxed(&mut str_));

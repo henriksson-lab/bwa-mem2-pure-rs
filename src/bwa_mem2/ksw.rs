@@ -305,7 +305,7 @@ mod ksw_i16_sse2 {
         let total = m_usize * (slen as usize) * 8;
         qp.clear();
         if qp.capacity() < total {
-            qp.reserve(total - qp.capacity());
+            qp.reserve(total);
         }
         // Every profile slot is assigned below, including padding cells, so avoid
         // zero-initializing the buffer before immediately overwriting it.
@@ -405,7 +405,7 @@ mod ksw_i16_sse2 {
         scratch.h0.resize(slen_us, zero);
         scratch.h1.clear();
         if scratch.h1.capacity() < slen_us {
-            scratch.h1.reserve(slen_us - scratch.h1.capacity());
+            scratch.h1.reserve(slen_us);
         }
         // h1 is assigned for every stripe before it is read by the lazy-F pass.
         unsafe {
