@@ -2,7 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
-* 2026-07-02: Safer API for programs integrating bwa-mem2 algorithm
+* 2026-07-02: Safer API for programs integrating bwa-mem2 algorithm, and bug fix to unsafe memory handling. Benchmark updated
 * 2026-07-01: Large improvements in paired-end RSS. The shipped CLI now constrains glibc allocator arenas before startup, and the translated seed storage follows upstream's arena-backed layout more closely
 * 2026-05-31: new audit; many edge cases now handled better
 * 2026-05-15: the `bwa-mem2-rs` binary can be built with mimalloc for about 10% better wall time
@@ -139,6 +139,15 @@ READ_LIMIT=2000 scripts/regression-simd16-a5.sh
 
 ## Paired-End Speed and RSS Comparison
 
+Current `.tmp/real_bench/report.tsv` result, compared with the previous README full-dataset benchmark from commit `59eb464`. Lower ratios are faster.
+
+| Command | Previous Rust | Current Rust | Current/previous | Current upstream C++ | Current Rust/C++ |
+|---|---:|---:|---:|---:|---:|
+| `mem -t 1 -K 20000000` | 15.49s | 12.28s | 0.79x | 14.55s | 0.84x |
+| `mem -t 2 -K 20000000` | 10.51s | 7.49s | 0.71x | 8.55s | 0.88x |
+
+Interpretation: for paired-end `mem`, the Rust CLI is faster now than in the previous comparable README benchmark. Wall time improved by about 21% at `-t 1` and 29% at `-t 2`. It is also faster than the current upstream C++ run on this fixture.
+
 Local paired-end fixture, 200,000 read pairs, default `-K`, 10 threads.
 
 - Reference: `/husky/henriksson/atrandi/bwamem_ref/tanerella/all.fa`
@@ -148,10 +157,12 @@ Local paired-end fixture, 200,000 read pairs, default `-K`, 10 threads.
 |---|---:|---:|---:|---:|
 | `bwa-mem2-rs mem -t 10` | 3.07s | 12.43s | 2.97s | 319,264 KB |
 | upstream `bwa-mem2.avx512bw mem -t 10` | 4.17s | 16.57s | 0.53s | 387,504 KB |
+| Rust/C++ ratio | 0.74x | 0.75x | 5.60x | 0.82x |
 
 Interpretation:
 
 - These timings exclude index construction.
+- Rust wall time was 26% lower than upstream C++ on this fixture, while max RSS was 18% lower. Rust spent substantially more system time.
 - Rust and upstream SAM bodies were byte-identical, ignoring header command-line differences.
 - The Rust CLI sets `MALLOC_ARENA_MAX=1` by re-execing itself on Linux when the user has not set that environment variable. This was needed to make glibc arena behavior match the observed retained RSS of the translated paired-end SAM path.
 - Older benchmark notes used different fixtures and should not be compared directly to this result.
@@ -165,8 +176,11 @@ Index construction benchmark on the first approximately 50 MB of HOVD FASTA reco
 |---|---:|---:|
 | `bwa-mem2-rs index` | 33.90s | 1,215,016 KB |
 | upstream `bwa-mem2.avx512bw index` | 33.09s | 1,278,304 KB |
+| Rust/C++ ratio | 1.02x | 0.95x |
 
 The generated `.amb`, `.ann`, `.pac`, `.0123`, and `.bwt.2bit.64` files were md5-identical between Rust and upstream C++ for this fixture.
+
+Interpretation: for index generation on this fixture, Rust is currently slightly slower in wall time, but uses less memory.
 
 ## License
 
