@@ -1,6 +1,6 @@
 [package]
 name = "bwa-mem2-pure-rs"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 autobins = false
 description = "Faithful Rust translation of bwa-mem2 for Burrows-Wheeler based sequence alignment"
