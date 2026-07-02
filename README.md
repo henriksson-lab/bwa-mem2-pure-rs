@@ -2,6 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
+* 2026-07-02: Safer API for programs integrating bwa-mem2 algorithm
 * 2026-07-01: Large improvements in paired-end RSS. The shipped CLI now constrains glibc allocator arenas before startup, and the translated seed storage follows upstream's arena-backed layout more closely
 * 2026-05-31: new audit; many edge cases now handled better
 * 2026-05-15: the `bwa-mem2-rs` binary can be built with mimalloc for about 10% better wall time

@@ -235,7 +235,7 @@ impl ChainSeeds {
             }
         } else {
             unsafe {
-                *self.ptr.add(used) = seed;
+                self.ptr.add(used).write(seed);
             }
             let _ = n;
         }
@@ -684,85 +684,6 @@ fn ensure_mem_cache_thread_slots(mmc: &mut mem_cache, nthreads: usize) {
     mmc.enc_qdb.resize_with(nthreads, Vec::new);
     mmc.rid.resize_with(nthreads, Vec::new);
     mmc.lim.resize_with(nthreads, || vec![0; BATCH_SIZE + 32]);
-}
-
-fn run_worker_bwt_aln_chunks_serial(worker: &mut worker_t, n: i32) {
-    let n_usize = n.max(0) as usize;
-    if n_usize == 0 {
-        return;
-    }
-    let chunk_size = BATCH_SIZE;
-    let nchunks = n_usize.div_ceil(chunk_size);
-    for chunk_idx in 0..nchunks {
-        let start = chunk_idx * chunk_size;
-        let end = (start + chunk_size).min(n_usize);
-        let start_i32 = start as i32;
-        let len_i32 = (end - start) as i32;
-        worker_bwt(worker, start_i32, len_i32, 0);
-        worker_aln(worker, start_i32, len_i32, 0);
-        trim_allocator_rss();
-    }
-}
-
-// Fused parallel runner: each thread does bwt+aln on its chunks back-to-back, eliminating
-// the rayon scope-join barrier between phases. Equivalent to two run_worker_chunks_parallel
-// calls but avoids the inter-phase barrier overhead.
-fn run_worker_bwt_aln_chunks_parallel(worker: &mut worker_t, n: i32) {
-    let n_usize = n.max(0) as usize;
-    if n_usize == 0 {
-        return;
-    }
-    let nthreads = worker.nthreads.max(1) as usize;
-    let chunk_size = BATCH_SIZE;
-    let nchunks = n_usize.div_ceil(chunk_size);
-    if nthreads <= 1 || nchunks <= 1 {
-        for chunk_idx in 0..nchunks {
-            let start = chunk_idx * chunk_size;
-            let end = (start + chunk_size).min(n_usize);
-            let start_i32 = start as i32;
-            let len_i32 = (end - start) as i32;
-            worker_bwt(worker, start_i32, len_i32, 0);
-            worker_aln(worker, start_i32, len_i32, 0);
-        }
-        return;
-    }
-
-    let worker_ptr = WorkerPtr(worker as *mut worker_t);
-    let run_chunks = || {
-        scope(|s| {
-            for tid in 0..nthreads {
-                s.spawn(move |_| {
-                    let mut chunk_idx = tid;
-                    while chunk_idx < nchunks {
-                        let start = chunk_idx * chunk_size;
-                        let end = (start + chunk_size).min(n_usize);
-                        unsafe {
-                            // Same chunk on same thread for bwt + aln — preserves scratch reuse.
-                            worker_ptr.run(
-                                worker_bwt,
-                                start as i32,
-                                (end - start) as i32,
-                                tid as i32,
-                            );
-                            worker_ptr.run(
-                                worker_aln,
-                                start as i32,
-                                (end - start) as i32,
-                                tid as i32,
-                            );
-                        }
-                        chunk_idx += nthreads;
-                    }
-                });
-            }
-        });
-    };
-    if USE_CURRENT_RAYON_POOL.with(Cell::get) {
-        run_chunks();
-    } else {
-        let pool = compute_pool(nthreads);
-        pool.install(run_chunks);
-    }
 }
 
 #[inline(always)]
@@ -2141,8 +2062,8 @@ pub fn mem_chain_seeds(
     nseq: i32,
     tid: i32,
     chain_ar: &mut [mem_chain_v],
-    seedBuf: *mut mem_seed_t,
-    seedBufSize: i64,
+    _seedBuf: *mut mem_seed_t,
+    _seedBufSize: i64,
     matchArray: &[SMEM],
     num_smem: i64,
 ) {
@@ -2397,8 +2318,6 @@ pub fn mem_chain_seeds(
 
     let mut pos = 0_i64;
     let mut smem_ptr = 0_usize;
-    let mut seed_buf_count = 0_usize;
-    let seed_buf_size = seedBufSize.max(0) as usize;
     let l_pac = bns.l_pac;
     let mut smem_buf_size = 6000_i64;
     let mut sa_coord = Vec::new();
@@ -2517,14 +2436,11 @@ pub fn mem_chain_seeds(
                     if to_add {
                         // add the seed as a new chain
                         tmp.n = 1;
-                        tmp.m = SEEDS_PER_CHAIN as i32;
-                        if seed_buf_count + SEEDS_PER_CHAIN <= seed_buf_size {
-                            tmp.seeds = take_seeds_buf(seedBuf, &mut seed_buf_count);
-                            tmp.seeds.push_or_set(0, 0, s);
-                        } else {
-                            tmp.m += 1;
-                            tmp.seeds = ChainSeeds::from_owned(vec![s]);
-                        }
+                        // Store chain seeds in owned memory. The translated arena-backed
+                        // seed storage wrote through raw pointers into Vec spare capacity and
+                        // produced stale/corrupt chains on large batches.
+                        tmp.m = SEEDS_PER_CHAIN as i32 + 1;
+                        tmp.seeds = ChainSeeds::from_owned(vec![s]);
                         tmp.rid = rid;
                         tmp.seqid = l as i32;
                         tmp.is_alt = u32::from(bns.anns[rid as usize].is_alt != 0);
@@ -3139,20 +3055,14 @@ pub fn mem_process_seqs(
     let n_ = n;
     // kt_for(worker_bwt, ...) // SMEMs (+SAL)
     // kt_for(worker_aln, ...) // BSW
-    // Rust fuses the bwt+aln passes per chunk so each thread does both stages back-to-back,
-    // dropping the inter-phase rayon scope barrier.
     if opt.flag & MEM_F_PE != 0 {
         let timing = debug_timings();
         let t0 = std::time::Instant::now();
-        let t1 = if w.nthreads <= 1 {
-            run_worker_bwt_aln_chunks_serial(w, n_);
-            trim_allocator_rss();
-            std::time::Instant::now()
-        } else {
-            run_worker_bwt_aln_chunks_parallel(w, n_);
-            trim_allocator_rss();
-            std::time::Instant::now()
-        };
+        run_worker_chunks_parallel(w, n_, worker_bwt);
+        trim_allocator_rss();
+        let t1 = std::time::Instant::now();
+        run_worker_chunks_parallel(w, n_, worker_aln);
+        trim_allocator_rss();
         let t2 = std::time::Instant::now();
         debug_rss("mem_process_after_bwt_aln");
         // PAIRED_END: infer insert sizes if not provided
@@ -3218,27 +3128,23 @@ RR(low={},high={},failed={},avg={:.2},std={:.2})",
     } else {
         let timing = debug_timings();
         let t0 = std::time::Instant::now();
-        let (t1, t2) = if w.nthreads <= 1 {
-            run_worker_bwt_aln_chunks_serial(w, n_);
-            trim_allocator_rss();
-            let t = std::time::Instant::now();
-            (t, t)
-        } else {
-            run_worker_bwt_aln_chunks_parallel(w, n_);
-            trim_allocator_rss();
-            let t = std::time::Instant::now();
-            (t, t)
-        };
+        run_worker_chunks_parallel(w, n_, worker_bwt);
+        trim_allocator_rss();
+        let t1 = std::time::Instant::now();
+        run_worker_chunks_parallel(w, n_, worker_aln);
+        trim_allocator_rss();
+        let t2 = std::time::Instant::now();
         run_worker_chunks_parallel(w, n_, worker_sam);
         trim_allocator_rss();
         debug_rss("mem_process_after_sam");
         if timing {
             let t3 = std::time::Instant::now();
             eprintln!(
-                "[timing::mem_process_seqs] n={} t={} bwt+aln={:.3}s sam={:.3}s total={:.3}s",
+                "[timing::mem_process_seqs] n={} t={} bwt={:.3}s aln={:.3}s sam={:.3}s total={:.3}s",
                 n_,
                 opt.n_threads,
                 (t1 - t0).as_secs_f64(),
+                (t2 - t1).as_secs_f64(),
                 (t3 - t2).as_secs_f64(),
                 (t3 - t0).as_secs_f64(),
             );

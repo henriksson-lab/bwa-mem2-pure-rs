@@ -531,7 +531,7 @@ fn read_batch(aux: &mut ktp_aux_t) -> Option<ktp_data_t> {
     Some(ret)
 }
 
-fn process_batch(
+pub(crate) fn process_batch(
     batch: &mut ktp_data_t,
     opt: &mut mem_opt_t,
     n_processed: i64,

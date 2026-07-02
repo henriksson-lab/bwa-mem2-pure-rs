@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use crate::bwa_mem2::bntseq::bntseq_t;
 use crate::bwa_mem2::bwa::bseq1_t;
-use crate::bwa_mem2::bwamem::{mem_opt_init, mem_process_seqs, with_current_rayon_pool, MEM_F_PE};
+use crate::bwa_mem2::bwamem::{mem_opt_init, with_current_rayon_pool, MEM_F_PE};
 use crate::bwa_mem2::bwamem::{mem_opt_t, worker_t};
+use crate::bwa_mem2::fastmap::{ktp_aux_t, ktp_data_t, memory_alloc, process_batch};
 use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::output::RunOutput;
 
 pub type Result<T> = std::result::Result<T, String>;
 
 pub struct MemReadPair<'a> {
-    pub name: String,
+    pub name: &'a str,
     pub r1: &'a [u8],
     pub q1: &'a [u8],
     pub r2: &'a [u8],
@@ -98,12 +99,25 @@ impl MemAligner {
             .map_err(|_| format!("thread count is too large: {}", threads))?;
         opt.flag |= MEM_F_PE;
 
+        let mut worker = worker_t {
+            fmi: Some(fmi),
+            ..Default::default()
+        };
+        worker.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");
+        let actual_chunk_size = opt.chunk_size * i64::from(opt.n_threads.max(1));
+        let nreads = i32::try_from(actual_chunk_size / 151 + 10)
+            .map_err(|_| format!("estimated read capacity is too large: {actual_chunk_size}"))?;
+        let aux = ktp_aux_t {
+            opt: Some(Box::new(opt.clone())),
+            task_size: actual_chunk_size,
+            actual_chunk_size,
+            ..Default::default()
+        };
+        memory_alloc(&aux, &mut worker, nreads, opt.n_threads);
+
         Ok(Self {
             opt,
-            worker: worker_t {
-                fmi: Some(fmi),
-                ..Default::default()
-            },
+            worker,
             n_processed: 0,
             rayon_pool,
         })
@@ -170,51 +184,49 @@ impl MemAligner {
         for pair in pairs {
             seqs.push(make_bseq(
                 i32::try_from(seqs.len()).map_err(|_| "too many reads in batch".to_string())?,
-                &pair.name,
+                pair.name,
                 pair.r1,
                 pair.q1,
             )?);
             seqs.push(make_bseq(
                 i32::try_from(seqs.len()).map_err(|_| "too many reads in batch".to_string())?,
-                &pair.name,
+                pair.name,
                 pair.r2,
                 pair.q2,
             )?);
         }
 
         let n = i32::try_from(seqs.len()).map_err(|_| "too many reads in batch".to_string())?;
+        let mut batch = ktp_data_t {
+            n_seqs: n,
+            seqs,
+            sam_lines: Vec::new(),
+        };
         if let Some(pool) = self.rayon_pool.clone() {
             pool.install(|| {
                 with_current_rayon_pool(|| {
-                    mem_process_seqs(
+                    process_batch(
+                        &mut batch,
                         &mut self.opt,
                         self.n_processed,
-                        n,
-                        &mut seqs,
                         None,
                         &mut self.worker,
                     );
                 });
             });
         } else {
-            mem_process_seqs(
+            process_batch(
+                &mut batch,
                 &mut self.opt,
                 self.n_processed,
-                n,
-                &mut seqs,
                 None,
                 &mut self.worker,
             );
         }
         self.n_processed += i64::from(n);
 
-        for seq in &mut seqs {
-            if let Some(line) = seq.sam.take() {
-                let pair_index = usize::try_from(seq.id)
-                    .map_err(|_| format!("invalid negative read id in BWA output: {}", seq.id))?
-                    / 2;
-                sink(pair_index, &line)?;
-            }
+        for (read_index, line) in batch.sam_lines.drain(..).enumerate() {
+            sink(read_index / 2, &line)?;
         }
         Ok(())
     }
@@ -286,11 +298,12 @@ mod tests {
     use super::MemAlignerBuilder;
     use super::MemReadPair;
     use crate::bwa_mem2::bntseq::bns_fasta2bntseq;
+    use crate::bwa_mem2::fastmap::main_mem;
     use crate::bwa_mem2::fmi_search::FMI_search;
     use crate::output::{RunOutput, SharedWriterOutput};
     use rayon::ThreadPoolBuilder;
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -382,10 +395,11 @@ mod tests {
         }
         let mut pairs = Vec::new();
         let qual = b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII";
+        let names: Vec<String> = (0..20).map(|i| format!("read-lib-{i}")).collect();
         for i in 0..20 {
             let start = 10 + i * 9;
             pairs.push(MemReadPair {
-                name: format!("read-lib-{i}"),
+                name: names[i].as_str(),
                 r1: reference[start..start + 60].as_bytes(),
                 q1: qual,
                 r2: reference[start + 140..start + 200].as_bytes(),
@@ -407,6 +421,104 @@ mod tests {
         assert!(text.contains("[stdout] read-lib-0\t"), "{text}");
         assert!(text.contains("\tchr1\t"), "{text}");
 
+        fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn mem_aligner_matches_stock_fastmap_process_for_paired_batch() {
+        let dir = unique_temp_dir("bwa_mem2_rs_mem_api_parity");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let prefix = dir.join("ref");
+        let prefix_str = prefix.to_str().expect("utf8 path");
+
+        let reference = deterministic_reference(1000);
+        let fasta = format!(">chr1\n{reference}\n");
+        assert_eq!(
+            bns_fasta2bntseq(Cursor::new(fasta.as_bytes()), prefix_str, 1),
+            1000
+        );
+        let mut fmi = FMI_search::ctor(prefix_str);
+        assert_eq!(fmi.build_index(), 0);
+        fmi.dtor();
+
+        let reads1 = dir.join("reads_1.fq");
+        let reads2 = dir.join("reads_2.fq");
+        let out = dir.join("stock.sam");
+        let qual = b"IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII";
+        let names: Vec<String> = (0..12).map(|i| format!("read-parity-{i}")).collect();
+        let mut pairs = Vec::new();
+        {
+            let mut fq1 = fs::File::create(&reads1).expect("create reads1");
+            let mut fq2 = fs::File::create(&reads2).expect("create reads2");
+            for i in 0..names.len() {
+                let start = 20 + i * 13;
+                let r1 = reference[start..start + 60].as_bytes();
+                let r2 = reference[start + 180..start + 240].as_bytes();
+                writeln!(
+                    fq1,
+                    "@{}\n{}\n+\n{}",
+                    names[i],
+                    std::str::from_utf8(r1).expect("r1 utf8"),
+                    std::str::from_utf8(qual).expect("qual utf8")
+                )
+                .expect("write reads1");
+                writeln!(
+                    fq2,
+                    "@{}\n{}\n+\n{}",
+                    names[i],
+                    std::str::from_utf8(r2).expect("r2 utf8"),
+                    std::str::from_utf8(qual).expect("qual utf8")
+                )
+                .expect("write reads2");
+                pairs.push(MemReadPair {
+                    name: names[i].as_str(),
+                    r1,
+                    q1: qual,
+                    r2,
+                    q2: qual,
+                });
+            }
+        }
+
+        let argv = vec![
+            "mem".to_string(),
+            "-o".to_string(),
+            out.to_str().expect("utf8").to_string(),
+            "-t".to_string(),
+            "1".to_string(),
+            "-k".to_string(),
+            "2".to_string(),
+            "-W".to_string(),
+            "1".to_string(),
+            "-T".to_string(),
+            "1".to_string(),
+            prefix_str.to_string(),
+            reads1.to_str().expect("utf8").to_string(),
+            reads2.to_str().expect("utf8").to_string(),
+        ];
+        assert_eq!(main_mem(&argv), 0);
+        let stock_body = fs::read_to_string(&out)
+            .expect("read stock sam")
+            .lines()
+            .filter(|line| !line.starts_with('@'))
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        let mut aligner = MemAligner::new(&prefix, 1).expect("load generated index");
+        {
+            let opt = aligner.opt_mut();
+            opt.min_seed_len = 2;
+            opt.min_chain_weight = 1;
+            opt.T = 1;
+        }
+        let embedded_body = aligner
+            .align_pairs(&pairs)
+            .expect("align pairs")
+            .into_iter()
+            .map(|line| line.trim_end_matches('\n').to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(embedded_body, stock_body);
         fs::remove_dir_all(dir).expect("remove temp dir");
     }
 
