@@ -75,7 +75,7 @@ fn main() -> Result<(), String> {
         .build()?;
 
     let pairs = vec![MemReadPair {
-        name: "read-1".to_string(),
+        name: "read-1",
         r1: b"ACGTACGTACGT",
         q1: b"FFFFFFFFFFFF",
         r2: b"TGCATGCATGCA",
@@ -95,6 +95,12 @@ fn main() -> Result<(), String> {
 
     Ok(())
 }
+```
+
+The repository also includes a compile-checked example:
+
+```sh
+cargo run --example mem_api -- ref/ecoli_rel606
 ```
 
 The index files must already exist for `index_prefix`, for example from `bwa-mem2-rs index -p ref/ecoli_rel606 ref/ecoli_rel606.fasta`. For server applications that already use Rayon, pass an existing `Arc<rayon::ThreadPool>` with `.thread_pool(pool)` to share it instead of creating an internal pool. The `output` module also provides `StdioOutput` and `SharedWriterOutput` for stdout/stderr-style library capture.

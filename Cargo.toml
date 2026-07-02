@@ -13,6 +13,7 @@ include = [
     "/Cargo.toml",
     "/README.md",
     "/LICENSE",
+    "/examples/**",
     "/src/lib.rs",
     "/src/bin/bwa-mem2-rs.rs",
     "/src/mem_api.rs",
