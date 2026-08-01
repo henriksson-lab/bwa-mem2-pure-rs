@@ -25,6 +25,5 @@ pub mod main;
 pub(crate) mod memcpy_bwamem;
 pub(crate) mod profiling;
 pub mod read_index_ele;
-pub mod runsimd;
 pub mod sais;
 pub mod utils;

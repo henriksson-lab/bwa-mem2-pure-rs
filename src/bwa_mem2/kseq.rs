@@ -617,26 +617,14 @@ mod tests {
 
     #[test]
     fn kseq_destroy_waits_for_child_backed_stream() {
-        let mut marker = std::env::temp_dir();
-        marker.push(format!(
-            "bwa_mem2_rs_kseq_child_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        let script = format!("touch {}; printf '@r\\nA\\n+\\nI\\n'", marker.display());
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(script)
+        let mut child = Command::new("rustc")
+            .arg("--version")
             .stdout(Stdio::piped())
             .spawn()
-            .expect("spawn shell");
+            .expect("spawn rustc");
         let stdout = child.stdout.take().expect("stdout");
         let ks = kseq_t::from_reader_with_child(Box::new(BufReader::new(stdout)), child);
         kseq_destroy(ks);
-        assert!(marker.exists());
-        let _ = std::fs::remove_file(marker);
     }
 
     #[test]

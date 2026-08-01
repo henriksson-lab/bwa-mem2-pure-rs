@@ -41,6 +41,7 @@ flate2 = "1"
 libc = "0.2"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 rayon = "1.10"
+ureq = "3.3"
 
 [features]
 default = []

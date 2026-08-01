@@ -20,9 +20,7 @@ use crate::bwa_mem2::utils::{err_fclose, err_fwrite, err_xopen_core_lit, ErrFile
 use clap::Parser;
 use flate2::read::MultiGzDecoder;
 use rayon::scope;
-use std::io::{BufReader, Cursor, Read, Write};
-use std::net::TcpStream;
-use std::process::{Command, Stdio};
+use std::io::{BufReader, Cursor, Read};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 
@@ -298,59 +296,23 @@ fn has_numeric_field_after_delim(rest: &str) -> bool {
     parse_strtod_prefix(&rest[1..]).1 > 0
 }
 
-fn parse_http_url(url: &str) -> Option<(String, u16, String)> {
-    let rest = url.strip_prefix("http://")?;
-    let (host_port, path) = match rest.split_once('/') {
-        Some((host_port, path)) => (host_port, format!("/{}", path)),
-        None => (rest, "/".to_string()),
-    };
-    let (host, port) = match host_port.split_once(':') {
-        Some((host, port)) => (host.to_string(), port.parse().ok()?),
-        None => (host_port.to_string(), 80_u16),
-    };
-    Some((host, port, path))
+fn is_http_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
 }
 
-fn fetch_http_bytes(url: &str) -> Result<Vec<u8>, ()> {
-    let (host, port, path) = parse_http_url(url).ok_or(())?;
-    let mut stream = TcpStream::connect((host.as_str(), port)).map_err(|_| ())?;
-    write!(
-        stream,
-        "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: bwa-mem2-rs\r\nConnection: close\r\n\r\n",
-        path, host
-    )
-    .map_err(|_| ())?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).map_err(|_| ())?;
-    let header_end = response
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|idx| idx + 4)
-        .or_else(|| {
-            response
-                .windows(2)
-                .position(|w| w == b"\n\n")
-                .map(|idx| idx + 2)
-        })
-        .ok_or(())?;
-    let header = String::from_utf8_lossy(&response[..header_end]);
-    let status_line = header.lines().next().ok_or(())?;
-    if !status_line.starts_with("HTTP/") || !status_line.contains("200") {
-        return Err(());
-    }
-    Ok(response[header_end..].to_vec())
+fn open_remote_reader(url: &str) -> Result<Box<dyn Read + Send>, ()> {
+    let response = ureq::get(url)
+        .header("User-Agent", "bwa-mem2-rs")
+        .call()
+        .map_err(|_| ())?;
+    Ok(Box::new(response.into_body().into_reader()))
 }
 
-fn fetch_remote_with_tool(url: &str) -> Result<Vec<u8>, ()> {
-    for (program, args) in [("curl", vec!["-fsSL", url]), ("wget", vec!["-qO-", url])] {
-        let Ok(output) = Command::new(program).args(&args).output() else {
-            continue;
-        };
-        if output.status.success() {
-            return Ok(output.stdout);
-        }
-    }
-    Err(())
+fn fetch_remote_bytes(url: &str) -> Result<Vec<u8>, ()> {
+    let mut reader = open_remote_reader(url)?;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).map_err(|_| ())?;
+    Ok(bytes)
 }
 
 fn read_bytes_input(path: &str) -> Result<Vec<u8>, ()> {
@@ -358,21 +320,16 @@ fn read_bytes_input(path: &str) -> Result<Vec<u8>, ()> {
         let mut bytes = Vec::new();
         std::io::stdin().read_to_end(&mut bytes).map_err(|_| ())?;
         Ok(bytes)
-    } else if let Some(cmd) = path.trim_start().strip_prefix('<') {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(cmd.trim())
-            .output()
-            .map_err(|_| ())?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            Err(())
-        }
-    } else if path.starts_with("http://") {
-        fetch_http_bytes(path).or_else(|_| fetch_remote_with_tool(path))
+    } else if path.trim_start().starts_with('<') {
+        eprintln!(
+            "[E::main_mem] shell command inputs are not supported; pipe command output to stdin and use '-'"
+        );
+        Err(())
+    } else if is_http_url(path) {
+        fetch_remote_bytes(path)
     } else if path.starts_with("ftp://") {
-        fetch_remote_with_tool(path)
+        eprintln!("[E::main_mem] ftp:// inputs are not supported");
+        Err(())
     } else {
         std::fs::read(path).map_err(|_| ())
     }
@@ -473,37 +430,20 @@ fn open_kseq_input(path: &str) -> Result<kseq_t, ()> {
             Box::new(std::io::stdin()),
         )?));
     }
-    if let Some(cmd) = path.trim_start().strip_prefix('<') {
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(cmd.trim())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|_| ())?;
-        let stdout = child.stdout.take().ok_or(())?;
-        return Ok(kseq_t::from_reader_with_child(
-            gzip_or_plain_bufread_from_read(Box::new(stdout))?,
-            child,
-        ));
+    if path.trim_start().starts_with('<') {
+        eprintln!(
+            "[E::main_mem] shell command inputs are not supported; pipe command output to stdin and use '-'"
+        );
+        return Err(());
     }
-    if path.starts_with("http://") || path.starts_with("ftp://") {
-        for (program, args) in [("curl", vec!["-fsSL", path]), ("wget", vec!["-qO-", path])] {
-            let Ok(mut child) = Command::new(program)
-                .args(&args)
-                .stdout(Stdio::piped())
-                .spawn()
-            else {
-                continue;
-            };
-            let Some(stdout) = child.stdout.take() else {
-                continue;
-            };
-            return Ok(kseq_t::from_reader_with_child(
-                gzip_or_plain_bufread_from_read(Box::new(stdout))?,
-                child,
-            ));
-        }
-        return read_text_input(path).map(|text| kseq_t::from_text(&text));
+    if is_http_url(path) {
+        return Ok(kseq_t::from_reader(gzip_or_plain_bufread_from_read(
+            open_remote_reader(path)?,
+        )?));
+    }
+    if path.starts_with("ftp://") {
+        eprintln!("[E::main_mem] ftp:// inputs are not supported");
+        return Err(());
     }
     kseq_t::from_path(path).map_err(|_| ())
 }
@@ -2054,13 +1994,13 @@ mod tests {
     }
 
     #[test]
-    fn main_mem_reads_gz_fastq_from_pipe_command() {
+    fn main_mem_rejects_shell_command_inputs() {
         let mut dir = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        dir.push(format!("bwa_mem2_rs_main_mem_gz_pipe_{nanos}"));
+        dir.push(format!("bwa_mem2_rs_main_mem_shell_input_{nanos}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         let prefix = dir.join("ref");
         let fasta = b">chr1\nACGTACGTACGT\n";
@@ -2075,7 +2015,7 @@ mod tests {
         fmi.load_index();
         fmi.dtor();
 
-        let reads = dir.join("reads_pipe.fq.gz");
+        let reads = dir.join("reads_shell.fq.gz");
         let file = fs::File::create(&reads).expect("create gz");
         let mut enc = GzEncoder::new(file, Compression::default());
         std::io::Write::write_all(&mut enc, b"@pipegz\nACGTAC\n+\nIIIIII\n")
@@ -2096,27 +2036,24 @@ mod tests {
             prefix.to_str().expect("utf8").to_string(),
             format!("< cat {}", reads.display()),
         ];
-        assert_eq!(run_main_mem(&argv), 0);
-        let sam = fs::read_to_string(&out).expect("sam output");
-        assert!(sam.contains("pipegz\t"), "{sam}");
-        assert!(sam.contains("\tchr1\t"), "{sam}");
+        assert_eq!(run_main_mem(&argv), 1);
+        assert!(!out.exists() || fs::read_to_string(&out).expect("sam").is_empty());
 
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]
-    fn read_text_input_supports_pipe_commands() {
+    fn read_text_input_rejects_shell_command_inputs() {
         let mut dir = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock before epoch")
             .as_nanos();
-        dir.push(format!("bwa_mem2_rs_pipe_input_{nanos}"));
+        dir.push(format!("bwa_mem2_rs_shell_input_{nanos}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         let reads = dir.join("reads.fq");
         fs::write(&reads, b"@pipe0\nACGT\n+\nIIII\n").expect("write reads");
-        let text = read_text_input(&format!("< cat {}", reads.display())).expect("pipe text");
-        assert!(text.contains("@pipe0\nACGT\n+\nIIII\n"));
+        assert!(read_text_input(&format!("< cat {}", reads.display())).is_err());
         fs::remove_dir_all(&dir).expect("cleanup");
     }
 

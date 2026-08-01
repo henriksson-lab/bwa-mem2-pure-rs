@@ -8,7 +8,8 @@
 //! Port of `bwa-mem2/src/kopen.cpp`.
 
 use std::fs::File;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::io::Read;
+use std::process::Child;
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -28,14 +29,26 @@ pub struct ftpaux_t {
 }
 
 #[doc = "Original struct: koaux_t (bwa-mem2/src/kopen.cpp)"]
-#[derive(Debug)]
 pub struct koaux_t {
     pub type_: i32,
     pub fd: i32,
     pub pid: i32,
     pub file: Option<File>,
     pub child: Option<Child>,
-    pub pipe: Option<ChildStdout>,
+    pub pipe: Option<Box<dyn Read + Send>>,
+}
+
+impl std::fmt::Debug for koaux_t {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("koaux_t")
+            .field("type_", &self.type_)
+            .field("fd", &self.fd)
+            .field("pid", &self.pid)
+            .field("has_file", &self.file.is_some())
+            .field("has_child", &self.child.is_some())
+            .field("has_pipe", &self.pipe.is_some())
+            .finish()
+    }
 }
 
 impl Default for koaux_t {
@@ -51,24 +64,22 @@ impl Default for koaux_t {
     }
 }
 
-fn spawn_stdout_command(command: &str, type_: i32) -> Option<koaux_t> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdout(Stdio::piped())
-        .spawn()
+fn open_remote_reader(url: &str) -> Option<Box<dyn Read + Send>> {
+    let response = ureq::get(url)
+        .header("User-Agent", "bwa-mem2-rs")
+        .call()
         .ok()?;
-    let pipe = child.stdout.take()?;
-    #[cfg(unix)]
-    let fd = pipe.as_raw_fd();
-    #[cfg(not(unix))]
-    let fd = -1;
+    Some(Box::new(response.into_body().into_reader()))
+}
+
+fn remote_aux(url: &str, type_: i32) -> Option<koaux_t> {
+    let pipe = open_remote_reader(url)?;
     Some(koaux_t {
         type_,
-        fd,
-        pid: i32::try_from(child.id()).unwrap_or(0),
+        fd: -1,
+        pid: 0,
         file: None,
-        child: Some(child),
+        child: None,
         pipe: Some(pipe),
     })
 }
@@ -144,9 +155,9 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
 /// Open a file/stdin/http/ftp/pipe spec and return a `koaux_t` handle.
 ///
 /// Mirrors C's `void *kopen(const char *fn, int *_fd)`. `"-"` selects
-/// stdin; `"http://"` / `"ftp://"` are streamed through curl/wget, and
-/// `"<"`-prefixed pipe specs are executed by the shell. On success
-/// `fd_out` receives the underlying file descriptor when available.
+/// stdin; `"http://"` / `"https://"` are streamed with a Rust HTTP client.
+/// `"<"`-prefixed shell command specs are intentionally unsupported; pipe
+/// command output to stdin and pass `"-"` instead.
 ///
 /// # Arguments
 /// * `fn_` - filename or URL to open
@@ -154,21 +165,13 @@ pub fn cmd2argv(cmd: &str) -> Option<Vec<String>> {
 #[doc = "Original function: kopen:312"]
 pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     *fd_out = -1;
-    if fn_.starts_with("http://") || fn_.starts_with("ftp://") {
-        let type_ = if fn_.starts_with("ftp://") {
-            KO_FTP
-        } else {
-            KO_HTTP
-        };
-        for command in [
-            format!("curl -fsSL {}", shell_escape(fn_)),
-            format!("wget -qO- {}", shell_escape(fn_)),
-        ] {
-            if let Some(aux) = spawn_stdout_command(&command, type_) {
-                *fd_out = aux.fd;
-                return Some(aux);
-            }
-        }
+    if fn_.starts_with("http://") || fn_.starts_with("https://") {
+        let aux = remote_aux(fn_, KO_HTTP)?;
+        *fd_out = aux.fd;
+        return Some(aux);
+    }
+    if fn_.starts_with("ftp://") {
+        eprintln!("[E::kopen] ftp:// inputs are not supported");
         return None;
     }
     if fn_ == "-" {
@@ -184,10 +187,11 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
     }
 
     let trimmed = fn_.trim_start();
-    if let Some(command) = trimmed.strip_prefix('<') {
-        let aux = spawn_stdout_command(command.trim(), KO_PIPE)?;
-        *fd_out = aux.fd;
-        return Some(aux);
+    if trimmed.starts_with('<') {
+        eprintln!(
+            "[E::kopen] shell command inputs are not supported; pipe command output to stdin and use '-'"
+        );
+        return None;
     }
 
     let file = File::open(fn_).ok()?;
@@ -204,10 +208,6 @@ pub fn kopen(fn_: &str, fd_out: &mut i32) -> Option<koaux_t> {
         child: None,
         pipe: None,
     })
-}
-
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Release a handle returned by `kopen`.
@@ -239,7 +239,7 @@ pub(crate) fn main(
 
 #[cfg(test)]
 mod tests {
-    use super::{cmd2argv, kclose, kopen, shell_escape, KO_FILE, KO_PIPE, KO_STDIN};
+    use super::{cmd2argv, kclose, kopen, KO_FILE, KO_STDIN};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -286,23 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn kopen_opens_pipe_command_and_reports_fd() {
+    fn kopen_rejects_shell_command_inputs() {
         let mut fd = -1;
-        let aux = kopen("< printf ACGT", &mut fd).expect("pipe aux");
-        assert_eq!(aux.type_, KO_PIPE);
-        #[cfg(unix)]
-        assert!(fd >= 0);
-        #[cfg(not(unix))]
+        assert!(kopen("< printf ACGT", &mut fd).is_none());
         assert_eq!(fd, -1);
-        assert_eq!(aux.fd, fd);
-        assert_eq!(kclose(aux), 0);
-    }
-
-    #[test]
-    fn shell_escape_wraps_single_quoted_url_arguments() {
-        assert_eq!(
-            shell_escape("http://example/a'b"),
-            "'http://example/a'\\''b'"
-        );
     }
 }

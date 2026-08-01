@@ -2,6 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
+* 2026-08-01: Further unix-isms removed. CI added
 * 2026-07-02: Safer API for programs integrating bwa-mem2 algorithm, and bug fix to unsafe memory handling. Benchmark updated
 * 2026-07-01: Large improvements in paired-end RSS. The shipped CLI now constrains glibc allocator arenas before startup, and the translated seed storage follows upstream's arena-backed layout more closely
 * 2026-05-31: new audit; many edge cases now handled better
@@ -48,6 +49,25 @@ The binary is written to `target/release/bwa-mem2-rs` and mirrors the upstream s
 ./target/release/bwa-mem2-rs index [-p prefix] <ref.fa>
 ./target/release/bwa-mem2-rs mem -t <threads> -o out.sam <prefix> <r1.fq> [r2.fq]
 ```
+
+### Input Pipes and Remote Inputs
+
+This Rust port intentionally differs from upstream `bwa-mem2` for command-style
+inputs. Upstream accepts filenames beginning with `<` and runs the rest through
+the system shell, for example `'< gzip -dc reads.fq.gz'`. This port does not
+support that form, because it depends on Unix shell behavior and is awkward to
+support correctly on Windows.
+
+Use a normal shell pipeline into stdin instead:
+
+```sh
+gzip -dc reads.fq.gz | ./target/release/bwa-mem2-rs mem -t 4 -o out.sam ref -
+```
+
+The `-` input still means stdin, matching upstream behavior. Local `.gz` FASTQ
+and FASTA inputs are detected and decompressed directly. Remote `http://` and
+`https://` inputs are downloaded with Rust code rather than external `curl` or
+`wget`. `ftp://` inputs are not supported.
 
 The `mimalloc` feature is required for the shipped CLI binary and is not enabled by default for library users. For profiling builds that keep release optimizations plus debug symbols, use the `profiling` profile: `cargo build --profile profiling --bin bwa-mem2-rs --features mimalloc` (output at `target/profiling/bwa-mem2-rs`).
 
@@ -111,72 +131,47 @@ The published crate only ships the `bwa-mem2-rs` binary plus the library. Additi
 
 ## Benchmark Setup
 
-These numbers were measured on the real paired-end tutorial fixture in `external/tutorial_bwa_small`:
+Original benchmark baseline: vendored upstream BWA-MEM2 from
+`https://github.com/bwa-mem2/bwa-mem2`, commit `97978f950c3a`
+(`v2.3-1-g97978f9`).
 
-- Reads:
-  - `external/tutorial_bwa_small/SRR2584863_1.trim.sub.fastq`
-  - `external/tutorial_bwa_small/SRR2584863_2.trim.sub.fastq`
-- Reference:
-  - `external/tutorial_bwa_small/ecoli_rel606.fasta.gz`
-- Indexed reference prefix:
-  - `.tmp/real_bench/ecoli_rel606`
-- Command shape:
+### 2026-07-14 Overnight Rerun
 
-```bash
-target/release/bwa-mem2-rs mem -t 2 .tmp/real_bench/ecoli_rel606 <reads_1.fq> <reads_2.fq>
-```
-
-The full-fixture comparisons below were validated by exact SAM-body comparison against upstream output.
-
-Additional real-data conformance coverage can be prepared with:
+The current benchmark audit reran the available paired-end mapping cases with
+three repeats each, using `scripts/benchmark-median-real-data.sh` and comparing
+SAM bodies against the vendored C++ binary. The HOVD index-construction
+benchmark could not be rerun because its documented source FASTA
+`/husky/henriksson/atrandi/kraken_ref/hovd/rep2/HOVD-geneseqences.fasta` was
+not present locally.
 
 ```bash
-scripts/download-real-world-fixtures.py --extra miseq-2x250 --extra-read-limit 5000
-STRICT_KNOWN_GAPS=1 READ_LIMIT=2000 scripts/conformance-real-data-matrix.sh
+OUT_DIR=/tmp/pres_rustification_bwa_median \
+TMPDIR=/tmp/pres_rustification_bwa_tmp \
+RUNS=3 \
+RUN_CPP=1 \
+BENCH_K=20000000 \
+OPTIONAL_READ_LIMIT=5000 \
+scripts/benchmark-median-real-data.sh
 ```
 
-The optional `ecoli_miseq_2x250` fixture streams a 5,000-pair subset from ENA run `SRR13321180` (Illumina MiSeq 2x250 E. coli) and compares Rust against upstream C++ using the same REL606 reference index. The matrix also keeps a single-end pass over the tutorial fixture to exercise SE behavior.
+| Benchmark | Runs | Rust median | C++ median | Original/Rust speedup | Parity |
+|---|---:|---:|---:|---:|---|
+| `tutorial_bwa_small/default_pe_t1` | 3 | 10.919 s | 12.624 s | 1.156x | SAM body identical |
+| `ecoli_miseq_2x250/default_pe_t1` | 3 | 1.309 s | 2.439 s | 1.863x | SAM body identical |
+| `ecoli_miseq_2x250/seed_len_k5_pe` | 3 | 30.906 s | 27.779 s | 0.899x | SAM body identical |
 
-The focused SIMD16 regression guard for the non-default scoring case is:
+Across the completed paired-end mapping rows, the arithmetic mean
+original/Rust wall-time speedup is 1.31x. RSS was not captured separately by
+this median script, so the 2026-07-14 roll-up leaves the memory ratio as `NA`.
 
-```bash
-READ_LIMIT=2000 scripts/regression-simd16-a5.sh
-```
+### Historical Index Benchmark
 
-## Paired-End Speed and RSS Comparison
-
-Current `.tmp/real_bench/report.tsv` result, compared with the previous README full-dataset benchmark from commit `59eb464`. Lower ratios are faster.
-
-| Command | Previous Rust | Current Rust | Current/previous | Current upstream C++ | Current Rust/C++ |
-|---|---:|---:|---:|---:|---:|
-| `mem -t 1 -K 20000000` | 15.49s | 12.28s | 0.79x | 14.55s | 0.84x |
-| `mem -t 2 -K 20000000` | 10.51s | 7.49s | 0.71x | 8.55s | 0.88x |
-
-Interpretation: for paired-end `mem`, the Rust CLI is faster now than in the previous comparable README benchmark. Wall time improved by about 21% at `-t 1` and 29% at `-t 2`. It is also faster than the current upstream C++ run on this fixture.
-
-Local paired-end fixture, 200,000 read pairs, default `-K`, 10 threads.
-
-- Reference: `/husky/henriksson/atrandi/bwamem_ref/tanerella/all.fa`
-- Reads: `.tmp/perf-small/R1.200k.fq.gz` and `.tmp/perf-small/R2.200k.fq.gz`, sampled from `/husky/henriksson/atrandi/forbwamem_temp`
-
-| Command | Wall time | User time | System time | Max RSS |
-|---|---:|---:|---:|---:|
-| `bwa-mem2-rs mem -t 10` | 3.07s | 12.43s | 2.97s | 319,264 KB |
-| upstream `bwa-mem2.avx512bw mem -t 10` | 4.17s | 16.57s | 0.53s | 387,504 KB |
-| Rust/C++ ratio | 0.74x | 0.75x | 5.60x | 0.82x |
-
-Interpretation:
-
-- These timings exclude index construction.
-- Rust wall time was 26% lower than upstream C++ on this fixture, while max RSS was 18% lower. Rust spent substantially more system time.
-- Rust and upstream SAM bodies were byte-identical, ignoring header command-line differences.
-- The Rust CLI sets `MALLOC_ARENA_MAX=1` by re-execing itself on Linux when the user has not set that environment variable. This was needed to make glibc arena behavior match the observed retained RSS of the translated paired-end SAM path.
-- Older benchmark notes used different fixtures and should not be compared directly to this result.
-- Re-run locally with `scripts/benchmark-real-data.sh`; it emits `.tmp/real_bench/report.tsv` when the upstream C++ binary is available.
-
-## Index Generation Speed Comparison
-
-Index construction benchmark on the first approximately 50 MB of HOVD FASTA records from `/husky/henriksson/atrandi/kraken_ref/hovd/rep2/HOVD-geneseqences.fasta`, written to `.tmp/index_bench_hovd50/hovd_first_records_50mb.fa`.
+The historical README index-construction benchmark used the first approximately
+50 MB of HOVD FASTA records from
+`/husky/henriksson/atrandi/kraken_ref/hovd/rep2/HOVD-geneseqences.fasta`,
+written to `.tmp/index_bench_hovd50/hovd_first_records_50mb.fa`. That source
+file was missing during the 2026-07-14 audit, so these numbers are not part of
+the fresh rerun.
 
 | Command | Wall time | Max RSS |
 |---|---:|---:|
@@ -184,9 +179,8 @@ Index construction benchmark on the first approximately 50 MB of HOVD FASTA reco
 | upstream `bwa-mem2.avx512bw index` | 33.09s | 1,278,304 KB |
 | Rust/C++ ratio | 1.02x | 0.95x |
 
-The generated `.amb`, `.ann`, `.pac`, `.0123`, and `.bwt.2bit.64` files were md5-identical between Rust and upstream C++ for this fixture.
-
-Interpretation: for index generation on this fixture, Rust is currently slightly slower in wall time, but uses less memory.
+The generated `.amb`, `.ann`, `.pac`, `.0123`, and `.bwt.2bit.64` files were
+md5-identical between Rust and upstream C++ for that historical fixture.
 
 ## License
 
