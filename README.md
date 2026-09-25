@@ -2,6 +2,7 @@
 
 A faithful Rust translation of `bwa-mem2`
 
+* 2026-09-25: Optimization of load time; now faster than original
 * 2026-08-01: Further unix-isms removed. CI added
 * 2026-07-02: Safer API for programs integrating bwa-mem2 algorithm, and bug fix to unsafe memory handling. Benchmark updated
 * 2026-07-01: Large improvements in paired-end RSS. The shipped CLI now constrains glibc allocator arenas before startup, and the translated seed storage follows upstream's arena-backed layout more closely
@@ -40,7 +41,7 @@ This blurb might be out of date. Go to [this page](https://github.com/henriksson
 A release build is required — the workload is CPU-bound and a debug build is roughly an order of magnitude slower.
 
 ```sh
-cargo build --release --bin bwa-mem2-rs --features mimalloc
+cargo build --release --bin bwa-mem2-rs
 ```
 
 The binary is written to `target/release/bwa-mem2-rs` and mirrors the upstream subcommands:
@@ -69,7 +70,13 @@ and FASTA inputs are detected and decompressed directly. Remote `http://` and
 `https://` inputs are downloaded with Rust code rather than external `curl` or
 `wget`. `ftp://` inputs are not supported.
 
-The `mimalloc` feature is required for the shipped CLI binary and is not enabled by default for library users. For profiling builds that keep release optimizations plus debug symbols, use the `profiling` profile: `cargo build --profile profiling --bin bwa-mem2-rs --features mimalloc` (output at `target/profiling/bwa-mem2-rs`).
+The optional `mimalloc` feature can improve sustained alignment throughput, but
+the system allocator starts substantially faster for multi-gigabase references
+because the FM-index and `.0123` reference are read directly into very large
+allocations. Enable mimalloc when steady-state throughput matters more than
+one-process startup time. For profiling builds that keep release optimizations
+plus debug symbols, use the `profiling` profile: `cargo build --profile
+profiling --bin bwa-mem2-rs` (output at `target/profiling/bwa-mem2-rs`).
 
 ## Library Usage
 
@@ -125,7 +132,7 @@ cargo run --example mem_api -- ref/ecoli_rel606
 
 The index files must already exist for `index_prefix`, for example from `bwa-mem2-rs index -p ref/ecoli_rel606 ref/ecoli_rel606.fasta`. For server applications that already use Rayon, pass an existing `Arc<rayon::ThreadPool>` with `.thread_pool(pool)` to share it instead of creating an internal pool. The `output` module also provides `StdioOutput` and `SharedWriterOutput` for stdout/stderr-style library capture.
 
-Library consumers do not get [`mimalloc`](https://docs.rs/mimalloc/latest/mimalloc/) through default features. We recommend registering mimalloc, or another high-performance allocator such as `jemallocator`, as the global allocator in your own binary if alignment throughput matters. The default glibc allocator scales poorly under the per-thread allocation pressure of `mem`; on the 700k-read E. coli fixture, mimalloc reduces wall time by roughly 11% at `-t 1` and 17% at `-t 4`. The shipped `bwa-mem2-rs` binary uses mimalloc when built with `--features mimalloc`.
+Library consumers do not get [`mimalloc`](https://docs.rs/mimalloc/latest/mimalloc/) through default features. Register mimalloc, or another high-performance allocator such as `jemallocator`, when sustained alignment throughput matters more than startup. The default glibc allocator scales poorly under the per-thread allocation pressure of `mem`; on the 700k-read E. coli fixture, mimalloc reduces wall time by roughly 11% at `-t 1` and 17% at `-t 4`. Conversely, glibc is substantially faster when bulk-loading a multi-gigabyte FM-index, so short-lived commands over very large references should retain the default allocator.
 
 The published crate only ships the `bwa-mem2-rs` binary plus the library. Additional `src/bin/dump-*.rs` tools in the git repository (e.g. `dump-pe-batch-read`) are development-only and intentionally excluded from the crates.io package — build them from a git checkout if needed.
 

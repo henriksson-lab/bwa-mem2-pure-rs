@@ -15,6 +15,7 @@ use crate::bwa_mem2::bwamem_pair::{
     mem_pestat, mem_sam_pe_batch, mem_sam_pe_batch_post, mem_sam_pe_batch_pre,
 };
 use crate::bwa_mem2::bwt::bwtintv_v;
+use crate::bwa_mem2::fastmap::load_reference_genome;
 use crate::bwa_mem2::fmi_search::{FMI_search, SMEM};
 use crate::bwa_mem2::kstring::{
     kputc, kputl, kputs, kputsn, kputw, ks_resize, ksprintf, kstring_t,
@@ -538,18 +539,6 @@ pub(crate) fn query_string_for_aln(
     seq: &crate::bwa_mem2::bwa::bseq1_t,
 ) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(seq.seq.as_deref().unwrap_or(""))
-}
-
-fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
-    let l_pac_usize = usize::try_from(l_pac).expect("l_pac");
-    let mut forward = vec![0_u8; l_pac_usize];
-    for (i, base) in forward.iter_mut().enumerate() {
-        let shift = (((!(i as i64)) & 3) << 1) as u8;
-        *base = (pac[i >> 2] >> shift) & 3;
-    }
-    let mut ref_string = forward.clone();
-    ref_string.extend(forward.iter().rev().map(|&b| if b < 4 { 3 - b } else { b }));
-    ref_string
 }
 
 fn debug_trace_read(name: Option<&str>) -> bool {
@@ -3046,11 +3035,20 @@ pub fn mem_process_seqs(
     }
     debug_rss("mem_process_after_worker_buffers");
     w.nreads = n;
-    if w.ref_string.is_empty() {
+    let (index_prefix, expected_ref_len) = {
         let fmi = w.fmi.as_ref().expect("worker fmi missing");
-        let bns = fmi.base.idx.bns.as_ref().expect("fmi bns missing");
-        w.ref_string = pac_to_reference_layout(bns.l_pac, &fmi.base.idx.pac);
+        let l_pac = fmi.base.idx.bns.as_ref().expect("fmi bns missing").l_pac;
+        (fmi.file_name.clone(), l_pac.saturating_mul(2))
+    };
+    if w.ref_string.is_empty() {
+        w.ref_string = load_reference_genome(&index_prefix, expected_ref_len)
+            .unwrap_or_else(|err| panic!("{err}"));
     }
+    assert_eq!(
+        w.ref_string.len(),
+        usize::try_from(expected_ref_len).expect("reference length"),
+        "expanded reference must be loaded from the bwa-mem2 .0123 index before alignment"
+    );
 
     let n_ = n;
     // kt_for(worker_bwt, ...) // SMEMs (+SAL)
@@ -5021,8 +5019,7 @@ mod tests {
     use crate::bwa_mem2::bntseq::{bntann1_t, bntseq_t};
     use crate::bwa_mem2::bwa::bseq1_t;
     use crate::bwa_mem2::bwa::bseq_read_orig;
-    use crate::bwa_mem2::fastmap::ktp_aux_t;
-    use crate::bwa_mem2::fastmap::memory_alloc;
+    use crate::bwa_mem2::fastmap::{ktp_aux_t, memory_alloc};
     use crate::bwa_mem2::fmi_search::FMI_search;
     use crate::bwa_mem2::kseq::kseq_t;
     use crate::bwa_mem2::r#macro::BATCH_SIZE;
@@ -5103,9 +5100,10 @@ mod tests {
         let l_pac = {
             let fmi_ref = worker.fmi.as_ref().expect("worker fmi");
             let bns = fmi_ref.base.idx.bns.as_ref().expect("bns");
-            worker.ref_string = pac_to_reference_layout(bns.l_pac, &fmi_ref.base.idx.pac);
             bns.l_pac
         };
+        worker.ref_string =
+            load_reference_genome(prefix, l_pac.saturating_mul(2)).expect("read .0123");
 
         run_worker_chunks_parallel(&mut worker, n, worker_bwt);
         run_worker_chunks_parallel(&mut worker, n, worker_aln);
@@ -5201,11 +5199,12 @@ mod tests {
         worker.nreads = 2;
         worker.seqs = seqs;
 
-        {
+        let (index_prefix, expected_len) = {
             let fmi_ref = worker.fmi.as_ref().expect("worker fmi");
             let bns = fmi_ref.base.idx.bns.as_ref().expect("bns");
-            worker.ref_string = pac_to_reference_layout(bns.l_pac, &fmi_ref.base.idx.pac);
-        }
+            (fmi_ref.file_name.clone(), bns.l_pac.saturating_mul(2))
+        };
+        worker.ref_string = load_reference_genome(&index_prefix, expected_len).expect("read .0123");
 
         worker_bwt(&mut worker, 0, 2, 0);
         worker_aln(&mut worker, 0, 2, 0);
@@ -5246,11 +5245,12 @@ mod tests {
         worker.nreads = 2;
         worker.seqs = seqs;
 
-        {
+        let (index_prefix, expected_len) = {
             let fmi_ref = worker.fmi.as_ref().expect("worker fmi");
             let bns = fmi_ref.base.idx.bns.as_ref().expect("bns");
-            worker.ref_string = pac_to_reference_layout(bns.l_pac, &fmi_ref.base.idx.pac);
-        }
+            (fmi_ref.file_name.clone(), bns.l_pac.saturating_mul(2))
+        };
+        worker.ref_string = load_reference_genome(&index_prefix, expected_len).expect("read .0123");
 
         worker_bwt(&mut worker, 0, 2, 0);
         worker_aln(&mut worker, 0, 2, 0);
@@ -7735,6 +7735,9 @@ mod tests {
         opt.min_chain_weight = 1;
         opt.T = 1;
 
+        let ref_string =
+            load_reference_genome(prefix.to_str().expect("utf8"), 12_i64.saturating_mul(2))
+                .expect("read .0123");
         let mut worker = worker_t {
             opt: Some(Box::new(opt.clone())),
             seqs,
@@ -7743,7 +7746,7 @@ mod tests {
             seedBuf: vec![mem_seed_t::default(); 256],
             seedBufSize: 256,
             mmc: mem_cache::default(),
-            ref_string: pac_to_reference_layout(12, &fmi.base.idx.pac),
+            ref_string,
             fmi: Some(fmi),
             ..Default::default()
         };

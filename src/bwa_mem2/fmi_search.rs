@@ -11,7 +11,9 @@ use crate::bwa_mem2::bwa::bseq1_t;
 use crate::bwa_mem2::read_index_ele::{indexEle, BWA_IDX_ALL};
 use crate::bwa_mem2::sais::sais_suffixes_i64_upstream_port_mapped;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 // --- fmi_search.h ---
 
@@ -94,6 +96,120 @@ fn read_u32<R: Read>(reader: &mut R) -> u32 {
     let mut buf = [0_u8; 4];
     reader.read_exact(&mut buf).expect("read u32");
     u32::from_le_bytes(buf)
+}
+
+/// Types that can be populated by copying arbitrary index-file bytes directly
+/// into their storage.
+///
+/// # Safety
+/// Every bit pattern must be valid, and the type must not contain padding that
+/// remains unread. The on-disk byte order must also match before using the raw
+/// reader.
+unsafe trait RawIndexValue: Copy + Default {}
+
+unsafe impl RawIndexValue for i8 {}
+unsafe impl RawIndexValue for u32 {}
+unsafe impl RawIndexValue for CP_OCC {}
+
+#[cfg(unix)]
+fn read_raw_vec<T: RawIndexValue>(file: &mut File, len: usize, label: &str) -> Vec<T> {
+    let byte_len = len
+        .checked_mul(std::mem::size_of::<T>())
+        .unwrap_or_else(|| panic!("{label} byte length overflow"));
+    let mut storage: Vec<std::mem::MaybeUninit<T>> = Vec::with_capacity(len);
+    unsafe {
+        // SAFETY: MaybeUninit<T> may be uninitialized. The loop below fills all
+        // `byte_len` bytes before the allocation is converted into Vec<T>.
+        storage.set_len(len);
+    }
+
+    let mut filled = 0_usize;
+    while filled < byte_len {
+        // Linux limits a single read below 2 GiB. One-GiB chunks also keep this
+        // portable across Unix kernels while retaining bulk-read behaviour.
+        let request = (byte_len - filled).min(1 << 30);
+        let read = unsafe {
+            // SAFETY: `filled..filled+request` lies within the allocation, and
+            // libc::read initializes the returned number of bytes.
+            libc::read(
+                file.as_raw_fd(),
+                storage.as_mut_ptr().cast::<u8>().add(filled).cast(),
+                request,
+            )
+        };
+        if read == 0 {
+            panic!("unexpected EOF while reading {label}");
+        }
+        if read < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            panic!("failed to read {label}: {err}");
+        }
+        filled += usize::try_from(read).expect("read byte count");
+    }
+
+    let ptr = storage.as_mut_ptr().cast::<T>();
+    let capacity = storage.capacity();
+    std::mem::forget(storage);
+    unsafe {
+        // SAFETY: every byte of every element was initialized above, and
+        // RawIndexValue guarantees that all resulting bit patterns are valid.
+        Vec::from_raw_parts(ptr, len, capacity)
+    }
+}
+
+#[cfg(not(unix))]
+fn read_raw_vec<T: RawIndexValue>(file: &mut File, len: usize, label: &str) -> Vec<T> {
+    let mut values = vec![T::default(); len];
+    let bytes = unsafe {
+        // SAFETY: the allocation is initialized and RawIndexValue guarantees
+        // arbitrary bytes represent valid values.
+        std::slice::from_raw_parts_mut(
+            values.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(values.as_slice()),
+        )
+    };
+    file.read_exact(bytes)
+        .unwrap_or_else(|err| panic!("failed to read {label}: {err}"));
+    values
+}
+
+fn read_i8_vec(file: &mut File, len: usize) -> Vec<i8> {
+    read_raw_vec(file, len, "sa_ms_byte")
+}
+
+#[cfg(target_endian = "little")]
+fn read_u32_vec_le(file: &mut File, len: usize) -> Vec<u32> {
+    read_raw_vec(file, len, "sa_ls_word")
+}
+
+#[cfg(not(target_endian = "little"))]
+fn read_u32_vec_le(file: &mut File, len: usize) -> Vec<u32> {
+    (0..len).map(|_| read_u32(file)).collect()
+}
+
+#[cfg(target_endian = "little")]
+fn read_cp_occ_vec_le(file: &mut File, len: usize) -> Vec<CP_OCC> {
+    assert_eq!(std::mem::size_of::<CP_OCC>(), 64);
+    read_raw_vec(file, len, "cp_occ")
+}
+
+#[cfg(not(target_endian = "little"))]
+fn read_cp_occ_vec_le(file: &mut File, len: usize) -> Vec<CP_OCC> {
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        let mut cp = CP_OCC::default();
+        for value in &mut cp.cp_count {
+            *value = read_i64(file);
+        }
+        for value in &mut cp.one_hot_bwt_str {
+            *value = read_u64(file);
+        }
+        values.push(cp);
+    }
+    values
 }
 
 fn write_i8_slice<W: Write>(writer: &mut W, values: &[i8]) {
@@ -579,14 +695,10 @@ impl FMI_search {
 
         let ref_file_name = self.file_name.clone();
         let cp_file_name = format!("{ref_file_name}{CP_FILENAME_SUFFIX}");
-        // Read the BWT and FM index of the reference sequence.
-        // 64-byte read_exact calls in the cp_occ loop become one syscall per call without buffering
-        // — wrap in BufReader to batch them. C++ uses fread (buffered) so this matches semantics.
-        let mut cpstream = BufReader::with_capacity(
-            1 << 20,
-            File::open(&cp_file_name)
-                .unwrap_or_else(|e| panic!("ERROR! Unable to open the file: {cp_file_name}: {e}")),
-        );
+        // Read the large index arrays directly into their final allocations,
+        // matching upstream's bulk fread calls.
+        let mut cpstream = File::open(&cp_file_name)
+            .unwrap_or_else(|e| panic!("ERROR! Unable to open the file: {cp_file_name}: {e}"));
 
         eprintln!("* Index file found. Loading index from {cp_file_name}");
         self.reference_seq_len = read_i64(&mut cpstream);
@@ -604,17 +716,7 @@ impl FMI_search {
             *slot = read_i64(&mut cpstream);
         }
 
-        self.cp_occ = Vec::with_capacity(cp_occ_size);
-        for _ in 0..cp_occ_size {
-            let mut cp = CP_OCC::default();
-            for value in &mut cp.cp_count {
-                *value = read_i64(&mut cpstream);
-            }
-            for value in &mut cp.one_hot_bwt_str {
-                *value = read_u64(&mut cpstream);
-            }
-            self.cp_occ.push(cp);
-        }
+        self.cp_occ = read_cp_occ_vec_le(&mut cpstream, cp_occ_size);
         // update read count structure
         for value in &mut self.count {
             *value += 1;
@@ -622,14 +724,8 @@ impl FMI_search {
 
         let reference_seq_len_ =
             usize::try_from((self.reference_seq_len >> SA_COMPX) + 1).expect("compressed sa len");
-        let mut sa_ms_raw = vec![0_u8; reference_seq_len_];
-        cpstream.read_exact(&mut sa_ms_raw).expect("read sa ms");
-        self.sa_ms_byte = sa_ms_raw.into_iter().map(|v| v as i8).collect();
-
-        self.sa_ls_word = Vec::with_capacity(reference_seq_len_);
-        for _ in 0..reference_seq_len_ {
-            self.sa_ls_word.push(read_u32(&mut cpstream));
-        }
+        self.sa_ms_byte = read_i8_vec(&mut cpstream, reference_seq_len_);
+        self.sa_ls_word = read_u32_vec_le(&mut cpstream, reference_seq_len_);
 
         self.sentinel_index = read_i64(&mut cpstream);
         eprintln!("* sentinel-index: {}", self.sentinel_index);

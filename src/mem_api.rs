@@ -5,7 +5,9 @@ use crate::bwa_mem2::bntseq::bntseq_t;
 use crate::bwa_mem2::bwa::bseq1_t;
 use crate::bwa_mem2::bwamem::{mem_opt_init, with_current_rayon_pool, MEM_F_PE};
 use crate::bwa_mem2::bwamem::{mem_opt_t, worker_t};
-use crate::bwa_mem2::fastmap::{ktp_aux_t, ktp_data_t, memory_alloc, process_batch};
+use crate::bwa_mem2::fastmap::{
+    ktp_aux_t, ktp_data_t, load_reference_genome, memory_alloc, process_batch,
+};
 use crate::bwa_mem2::fmi_search::FMI_search;
 use crate::output::RunOutput;
 
@@ -80,7 +82,7 @@ impl MemAligner {
         let prefix = index_prefix
             .to_str()
             .ok_or_else(|| format!("index path is not valid UTF-8: {}", index_prefix.display()))?;
-        for suffix in [".bwt.2bit.64", ".ann", ".amb", ".pac"] {
+        for suffix in [".0123", ".bwt.2bit.64", ".ann", ".amb", ".pac"] {
             let path = format!("{prefix}{suffix}");
             if !Path::new(&path).is_file() {
                 return Err(format!(
@@ -93,6 +95,8 @@ impl MemAligner {
         if fmi.base.idx.bns.is_none() {
             return Err(format!("failed to load bwa-mem2 index from {}", prefix));
         }
+        let l_pac = fmi.base.idx.bns.as_ref().expect("bns checked above").l_pac;
+        let ref_string = load_reference_genome(prefix, l_pac.saturating_mul(2))?;
 
         let mut opt = *mem_opt_init();
         opt.n_threads = i32::try_from(threads.max(1))
@@ -101,6 +105,7 @@ impl MemAligner {
 
         let mut worker = worker_t {
             fmi: Some(fmi),
+            ref_string,
             ..Default::default()
         };
         worker.nthreads = i16::try_from(opt.n_threads.max(1)).expect("nthreads");

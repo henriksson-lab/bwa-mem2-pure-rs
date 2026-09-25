@@ -5,22 +5,9 @@ use bwa_mem2_rs::bwa_mem2::bwamem::{
 };
 use bwa_mem2_rs::bwa_mem2::bwamem::mem_chain_v;
 use bwa_mem2_rs::bwa_mem2::bwamem::worker_t;
-use bwa_mem2_rs::bwa_mem2::fastmap::memory_alloc;
-use bwa_mem2_rs::bwa_mem2::fastmap::ktp_aux_t;
+use bwa_mem2_rs::bwa_mem2::fastmap::{ktp_aux_t, load_reference_genome, memory_alloc};
 use bwa_mem2_rs::bwa_mem2::fmi_search::FMI_search;
 use bwa_mem2_rs::bwa_mem2::kseq::kseq_t;
-
-fn pac_to_reference_layout(l_pac: i64, pac: &[u8]) -> Vec<u8> {
-    let l_pac_usize = usize::try_from(l_pac).expect("l_pac");
-    let mut forward = vec![0_u8; l_pac_usize];
-    for (i, base) in forward.iter_mut().enumerate() {
-        let shift = (((!(i as i64)) & 3) << 1) as u8;
-        *base = (pac[i >> 2] >> shift) & 3;
-    }
-    let mut ref_string = forward.clone();
-    ref_string.extend(forward.iter().rev().map(|&b| if b < 4 { 3 - b } else { b }));
-    ref_string
-}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -51,11 +38,12 @@ fn main() {
     worker.n_processed = 0;
     worker.nreads = 1;
     worker.seqs = seqs;
-    {
+    let expected_len = {
         let fmi_ref = worker.fmi.as_ref().expect("worker fmi");
         let bns = fmi_ref.base.idx.bns.as_ref().expect("bns");
-        worker.ref_string = pac_to_reference_layout(bns.l_pac, &fmi_ref.base.idx.pac);
-    }
+        bns.l_pac.saturating_mul(2)
+    };
+    worker.ref_string = load_reference_genome(&prefix, expected_len).expect("read .0123");
 
     let mut tot_smem = 0_i64;
     let mut match_array = Vec::new();
